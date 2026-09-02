@@ -16,7 +16,6 @@ class OperationSpec:
         permission: Minimum caller permission.
         contexts: Allowed conversation contexts.
         target_kind: Target scope used by permission checks.
-        confirmation: Whether confirmation is always required.
         bot_role: Minimum QQ role required from the bot in a target group.
     """
 
@@ -28,7 +27,6 @@ class OperationSpec:
     permission: str = "member"
     contexts: tuple[str, ...] = ("group", "private")
     target_kind: str = "none"
-    confirmation: bool = False
     bot_role: str = "member"
 
     @property
@@ -52,7 +50,6 @@ def _op(
     permission: str = "member",
     contexts: tuple[str, ...] = ("group", "private"),
     target_kind: str = "none",
-    confirmation: bool = False,
     bot_role: str = "member",
 ) -> OperationSpec:
     """Create a compact operation declaration.
@@ -66,7 +63,6 @@ def _op(
         permission: Minimum caller permission.
         contexts: Allowed contexts.
         target_kind: Target scope.
-        confirmation: Whether confirmation is mandatory.
         bot_role: Required bot group role.
 
     Returns:
@@ -82,7 +78,6 @@ def _op(
         permission,
         contexts,
         target_kind,
-        confirmation,
         bot_role,
     )
 
@@ -186,7 +181,6 @@ OPERATIONS = (
         "request",
         risk="privileged",
         permission="astrbot_admin",
-        confirmation=True,
     ),
     _op(
         "qq_friend_manage",
@@ -196,7 +190,6 @@ OPERATIONS = (
         risk="destructive",
         permission="astrbot_admin",
         target_kind="private",
-        confirmation=True,
     ),
     _op(
         "qq_friend_manage",
@@ -282,7 +275,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -331,7 +323,6 @@ OPERATIONS = (
         risk="destructive",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -342,7 +333,6 @@ OPERATIONS = (
         risk="destructive",
         permission="group_owner",
         target_kind="group",
-        confirmation=True,
         bot_role="owner",
     ),
     _op(
@@ -353,7 +343,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -364,7 +353,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -375,7 +363,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -395,7 +382,6 @@ OPERATIONS = (
         risk="destructive",
         permission="astrbot_admin",
         target_kind="group",
-        confirmation=True,
     ),
     _op("qq_send_message", "send", None, "message", risk="write"),
     _op("qq_send_forward", "send", None, "message", risk="write"),
@@ -407,7 +393,6 @@ OPERATIONS = (
         "delete_msg",
         "message",
         risk="destructive",
-        confirmation=True,
     ),
     _op("qq_message_manage", "mark_read", "mark_msg_as_read", "message", risk="write"),
     _op(
@@ -465,7 +450,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -475,7 +459,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -485,8 +468,6 @@ OPERATIONS = (
         risk="destructive",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -496,8 +477,6 @@ OPERATIONS = (
         risk="destructive",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -507,7 +486,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -517,7 +495,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        bot_role="admin",
     ),
     _op(
         "qq_group_files",
@@ -527,8 +504,6 @@ OPERATIONS = (
         risk="privileged",
         permission="astrbot_admin",
         target_kind="group",
-        confirmation=True,
-        bot_role="admin",
     ),
     _op(
         "qq_private_files",
@@ -556,7 +531,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -567,7 +541,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op("qq_notice", "list", "_get_group_notice", "group", target_kind="group"),
@@ -580,7 +553,6 @@ OPERATIONS = (
         risk="privileged",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
     _op(
@@ -591,7 +563,6 @@ OPERATIONS = (
         risk="destructive",
         permission="group_admin",
         target_kind="group",
-        confirmation=True,
         bot_role="admin",
     ),
 )
@@ -695,7 +666,7 @@ OPERATION_PARAMETERS = {
     "qq_group_history.list": _params(
         "group_id", optional=("message_seq", "count", *PAGE_PARAMS)
     ),
-    "qq_group_request.list": _params("group_id", optional=("status", *PAGE_PARAMS)),
+    "qq_group_request.list": _params(optional=("group_id",)),
     "qq_group_request.ignored": _params("group_id", optional=PAGE_PARAMS),
     "qq_group_request.approve": _params("group_id", "flag", "sub_type"),
     "qq_group_request.reject": _params(
@@ -809,7 +780,7 @@ if set(OPERATION_PARAMETERS) != set(OPERATION_MAP):
 TOOL_DESCRIPTIONS = {
     "qq_status": "查询 QQ 登录、运行、版本、客户端与消息能力。",
     "qq_account_manage": "修改机器人公开资料、头像或在线状态。",
-    "qq_user_info": "查询陌生人或群成员公开资料。",
+    "qq_user_info": "查询陌生人或群成员公开资料；查询非好友仅限管理员私聊。",
     "qq_friend_list": "查询好友或单向好友列表。",
     "qq_friend_history": "分页查询好友私聊历史。",
     "qq_friend_interact": "向好友点赞或戳一戳。",
@@ -819,7 +790,7 @@ TOOL_DESCRIPTIONS = {
     "qq_group_info": "查询群详情、荣誉、@全体次数或禁言列表。",
     "qq_group_members": "查询群成员列表或成员详情。",
     "qq_group_history": "分页查询群聊历史。",
-    "qq_group_request": "查询、通过或拒绝加群申请和群邀请。",
+    "qq_group_request": "查询、通过或拒绝加群申请和群邀请；管理员私聊可查询全部群申请。",
     "qq_group_member_manage": "戳一戳群成员，或修改群成员名片、头衔、禁言、移出和管理员身份。",
     "qq_group_manage": "执行全员禁言、改群名或头像、签到、退群。",
     "qq_send_message": "向当前或获授权的 QQ 会话发送结构化消息。",
@@ -856,10 +827,21 @@ KEYWORD_TOOLS = {
     },
     "群员": {"qq_group_members", "qq_group_member_manage"},
     "群成员": {"qq_group_members", "qq_group_member_manage"},
+    "群昵称": {"qq_group_member_manage"},
+    "群名片": {"qq_group_member_manage"},
+    "成员名片": {"qq_group_member_manage"},
+    "群名称": {"qq_group_manage"},
+    "修改群名": {"qq_group_manage"},
+    "改群名": {"qq_group_manage"},
     "禁言": {"qq_group_member_manage", "qq_group_manage"},
     "踢": {"qq_group_member_manage"},
+    "移除": {"qq_group_member_manage"},
+    "移出": {"qq_group_member_manage"},
+    "踢出": {"qq_group_member_manage"},
     "管理员": {"qq_group_member_manage"},
     "签到": {"qq_group_manage"},
+    "退出群": {"qq_group_manage"},
+    "退群": {"qq_group_manage"},
     "群聊": {
         "qq_group_list",
         "qq_group_info",

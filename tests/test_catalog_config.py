@@ -34,15 +34,36 @@ def test_version_range_is_explicit() -> None:
     assert NAPCAT_MAX_VERSION == (5, 0, 0)
 
 
+def test_default_confirmation_operations_are_explicit() -> None:
+    operations = validate_config(None)["confirmation"]["operations"]
+    assert set(operations) == {
+        "qq_friend_manage.delete",
+        "qq_group_files.rmdir",
+        "qq_group_manage.avatar",
+        "qq_group_manage.leave",
+        "qq_group_manage.name",
+        "qq_group_manage.whole_ban",
+        "qq_group_member_manage.admin",
+        "qq_group_member_manage.kick",
+    }
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert schema["confirmation"]["items"]["operations"]["default"] == operations
+
+
 @pytest.mark.parametrize(
     "config",
     [
         {"legacy_admin_list": []},
         {"confirmation": {"enabled": True}},
+        {"confirmation": {"extra_operations": []}},
         {"events": {"trigger_llm": True}},
         {"platform": {"minimum_napcat_version": "4.18.19"}},
         {"toolsets": {"exposure_mode": "everything"}},
+        {"permissions": {"admin_users": []}},
         {"permissions": {"allow_cross_group": "true"}},
+        {"permissions": {"cross_group_allowlist": ["30001"]}},
+        {"permissions": {"cross_private_allowlist": ["10001"]}},
         {"limits": {"page_size": 0}},
         {
             "permissions": {
@@ -60,10 +81,13 @@ def test_valid_config_preserves_explicit_values() -> None:
     result = validate_config(
         {
             "toolsets": {"exposure_mode": "compact", "enabled_packs": ["group"]},
-            "permissions": {"admin_users": ["123456"]},
             "confirmation": {"ttl_seconds": 120},
         }
     )
     assert result["toolsets"]["exposure_mode"] == "compact"
-    assert result["permissions"]["admin_users"] == ["123456"]
+    assert "admin_users" not in result["permissions"]
     assert result["confirmation"]["ttl_seconds"] == 120
+    assert result["confirmation"]["operations"]
+
+    disabled = validate_config({"confirmation": {"operations": []}})
+    assert disabled["confirmation"]["operations"] == []

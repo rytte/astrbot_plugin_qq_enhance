@@ -30,6 +30,14 @@ class FakeClient:
             return {"role": self.roles.get(int(params["user_id"]), "member")}
         if action == "get_group_list":
             return [{"group_id": 30001, "group_name": "test"}]
+        if action == "get_group_system_msg":
+            return {
+                "join_requests": [
+                    {"group_id": 30001, "requester_uin": 20001},
+                    {"group_id": 30002, "requester_uin": 20002},
+                ],
+                "invited_requests": [],
+            }
         if action == "get_friend_list":
             return [{"user_id": 10001}, {"user_id": 20001}]
         if action == "get_login_info":
@@ -443,7 +451,28 @@ async def test_current_group_poke_uses_group_poke_action(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cross_group_requires_private_admin_switch_and_allowlist(
+async def test_group_file_operations_allow_member_bot_role(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(
+        tmp_path,
+        {"permissions": {"allow_cross_group": True}},
+    )
+    client.roles[99999] = "member"
+
+    for spec in OPERATION_MAP.values():
+        if spec.tool != "qq_group_files":
+            continue
+        assert spec.bot_role == "member"
+        authorized = await runtime.authorize(
+            FakeEvent(admin=True),
+            spec,
+            {"group_id": 30001},
+        )
+        assert authorized == ("group", "30001", True)
+    assert not any(action == "get_group_member_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_cross_group_requires_private_admin_switch_and_existing_target(
     tmp_path,
 ) -> None:
     event = FakeEvent(admin=True)
@@ -460,7 +489,6 @@ async def test_cross_group_requires_private_admin_switch_and_allowlist(
         {
             "permissions": {
                 "allow_cross_group": True,
-                "cross_group_allowlist": ["30001"],
             }
         },
     )
@@ -469,6 +497,208 @@ async def test_cross_group_requires_private_admin_switch_and_allowlist(
         OPERATION_MAP["qq_group_info.detail"],
         {"group_id": 30001},
     ) == ("group", "30001", True)
+
+
+@pytest.mark.asyncio
+async def test_cross_private_requires_private_admin_switch_and_existing_target(
+    tmp_path,
+) -> None:
+    event = FakeEvent(admin=True)
+    spec = OPERATION_MAP["qq_friend_history.list"]
+    runtime, _, _ = await make_runtime(tmp_path)
+    with pytest.raises(QQToolError, match="跨好友操作"):
+        await runtime.authorize(event, spec, {"user_id": 20001})
+
+    runtime, _, _ = await make_runtime(
+        tmp_path / "enabled",
+        {"permissions": {"allow_cross_private": True}},
+    )
+    assert await runtime.authorize(event, spec, {"user_id": 20001}) == (
+        "private",
+        "20001",
+        True,
+    )
+    with pytest.raises(QQToolError, match="目标用户不在机器人好友列表中"):
+        await runtime.authorize(event, spec, {"user_id": 30003})
+
+
+@pytest.mark.asyncio
+async def test_stranger_info_allows_only_admin_private_cross_target(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    spec = OPERATION_MAP["qq_user_info.stranger"]
+
+    assert await runtime.authorize(
+        FakeEvent(admin=True), spec, {"user_id": 30003}
+    ) == ("private", "30003", True)
+    assert not any(action == "get_friend_list" for action, _ in client.calls)
+
+    with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
+        await runtime.authorize(
+            FakeEvent(admin=False), spec, {"user_id": 30003}
+        )
+    with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
+        await runtime.authorize(
+            FakeEvent(group_id="30001", admin=True), spec, {"user_id": 30003}
+        )
+
+
+@pytest.mark.asyncio
+async def test_group_request_list_allows_admin_private_without_group_id(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_group_request",
+            "list",
+            {},
+        )
+    )
+    assert result["ok"] is True
+    assert {item["group_id"] for item in result["data"]["join_requests"]} == {
+        30001,
+        30002,
+    }
+    assert ("get_group_system_msg", {}) in client.calls
+
+    filtered = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_group_request",
+            "list",
+            {"group_id": 30001},
+        )
+    )
+    assert [item["group_id"] for item in filtered["data"]["join_requests"]] == [
+        30001
+    ]
+
+    denied = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=False),
+            "qq_group_request",
+            "list",
+            {},
+        )
+    )
+    assert denied["error"]["code"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_cross_group_request_approve_and_reject_skip_confirmation(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_runtime(
+        tmp_path,
+        {"permissions": {"allow_cross_group": True}},
+    )
+    event = FakeEvent(admin=True)
+
+    approved = json.loads(
+        await runtime.execute(
+            event,
+            "qq_group_request",
+            "approve",
+            {"group_id": 30001, "flag": "request-1", "sub_type": "add"},
+        )
+    )
+    assert approved["ok"] is True
+    assert (
+        "set_group_add_request",
+        {"flag": "request-1", "sub_type": "add", "approve": True},
+    ) in client.calls
+
+    rejected = json.loads(
+        await runtime.execute(
+            event,
+            "qq_group_request",
+            "reject",
+            {"group_id": 30001, "flag": "request-2", "sub_type": "add"},
+        )
+    )
+    assert rejected["ok"] is True
+    assert (
+        "set_group_add_request",
+        {"flag": "request-2", "sub_type": "add", "approve": False},
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_long_group_ban_skips_confirmation(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001", admin=True),
+            "qq_group_member_manage",
+            "ban",
+            {"group_id": 30001, "user_id": 20001, "duration": 3600},
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "set_group_ban",
+        {"group_id": 30001, "user_id": 20001, "duration": 3600},
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_notice_delete_uses_napcat_notice_id_parameter(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001", admin=True),
+            "qq_notice",
+            "delete",
+            {"group_id": 30001, "notice_id": "notice-1"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "_del_group_notice",
+        {"group_id": 30001, "notice_id": "notice-1"},
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_cross_session_write_skips_confirmation_unless_configured(
+    tmp_path,
+) -> None:
+    event = FakeEvent(admin=True)
+    params = {"user_id": 20001, "remark": "test"}
+    runtime, client, _ = await make_runtime(
+        tmp_path / "direct",
+        {"permissions": {"allow_cross_private": True}},
+    )
+
+    direct = json.loads(
+        await runtime.execute(event, "qq_friend_manage", "set_remark", params)
+    )
+    assert direct["ok"] is True
+    assert (
+        "set_friend_remark",
+        {"user_id": 20001, "remark": "test"},
+    ) in client.calls
+
+    runtime, client, _ = await make_runtime(
+        tmp_path / "configured",
+        {
+            "permissions": {"allow_cross_private": True},
+            "confirmation": {
+                "operations": ["qq_friend_manage.set_remark"]
+            },
+        },
+    )
+    configured = json.loads(
+        await runtime.execute(event, "qq_friend_manage", "set_remark", params)
+    )
+    assert configured["error"]["code"] == "confirmation_required"
+    assert not any(action == "set_friend_remark" for action, _ in client.calls)
 
 
 @pytest.mark.asyncio

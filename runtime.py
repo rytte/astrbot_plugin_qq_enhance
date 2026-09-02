@@ -44,16 +44,25 @@ DEFAULT_CONFIG = {
         "disabled_operations": [],
     },
     "permissions": {
-        "admin_users": [],
         "allow_group_admin": True,
         "allow_group_owner": True,
         "allow_cross_group": False,
         "allow_cross_private": False,
-        "cross_group_allowlist": [],
-        "cross_private_allowlist": [],
         "per_operation_rules": {},
     },
-    "confirmation": {"ttl_seconds": 60, "extra_operations": []},
+    "confirmation": {
+        "ttl_seconds": 60,
+        "operations": [
+            "qq_friend_manage.delete",
+            "qq_group_files.rmdir",
+            "qq_group_manage.avatar",
+            "qq_group_manage.leave",
+            "qq_group_manage.name",
+            "qq_group_manage.whole_ban",
+            "qq_group_member_manage.admin",
+            "qq_group_member_manage.kick",
+        ],
+    },
     "limits": {
         "page_size": 20,
         "max_page_size": 100,
@@ -258,10 +267,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     list_fields = (
         ("toolsets", "enabled_packs"),
         ("toolsets", "disabled_operations"),
-        ("permissions", "admin_users"),
-        ("permissions", "cross_group_allowlist"),
-        ("permissions", "cross_private_allowlist"),
-        ("confirmation", "extra_operations"),
+        ("confirmation", "operations"),
         ("files", "allowed_roots"),
         ("network", "allowed_domains"),
         ("network", "blocked_domains"),
@@ -281,7 +287,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(f"未知能力包: {', '.join(sorted(unknown_packs))}")
     for group, key in (
         ("toolsets", "disabled_operations"),
-        ("confirmation", "extra_operations"),
+        ("confirmation", "operations"),
     ):
         unknown = set(result[group][key]) - set(OPERATION_MAP)
         if unknown:
@@ -334,11 +340,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(f"{operation_id} 只允许配置 disabled=true")
         if rule["disabled"] is not True:
             raise ValueError(f"{operation_id}.disabled 只能是 true")
-
-    for key in ("admin_users", "cross_group_allowlist", "cross_private_allowlist"):
-        for value in result["permissions"][key]:
-            if not value.isdigit() or int(value) <= 0:
-                raise ValueError(f"permissions.{key} 只能包含正整数 ID 字符串")
 
     resolved_roots = []
     for raw_path in result["files"]["allowed_roots"]:
@@ -450,14 +451,12 @@ class QQRuntime:
                 raise QQToolError("capability_unavailable", "该 QQ 操作已被配置禁用")
             await self.verify_platform(event)
             normalized = self.validate_parameters(operation_id, params)
-            target_kind, target_id, cross_session = await self.authorize(
-                event, spec, normalized
-            )
+            target_kind, target_id, _ = await self.authorize(event, spec, normalized)
             action, action_params, local_result = await self.prepare_action(
                 event, spec, normalized
             )
-            confirmation_required = self.needs_confirmation(
-                spec, normalized, cross_session
+            confirmation_required = (
+                spec.operation_id in self.config["confirmation"]["operations"]
             )
             params_hash = self.hash_params(action_params)
             if confirmation_required:
@@ -525,7 +524,10 @@ class QQRuntime:
             data = local_result
             if action is not None:
                 data = await self.call_action(event, action, action_params)
-                if operation_id == "qq_group_request.ignored":
+                if operation_id in {
+                    "qq_group_request.list",
+                    "qq_group_request.ignored",
+                } and normalized.get("group_id"):
                     data = self.filter_group_data(data, int(normalized["group_id"]))
                 elif operation_id == "qq_forward_get.get":
                     depth = min(
@@ -921,9 +923,7 @@ class QQRuntime:
         caller_id = str(event.get_sender_id() or "")
         if not caller_id:
             raise QQToolError("permission_denied", "无法识别调用者 ID")
-        is_admin = (
-            event.is_admin() or caller_id in self.config["permissions"]["admin_users"]
-        )
+        is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
         is_private = event.is_private_chat()
         target_kind = spec.target_kind
@@ -953,41 +953,54 @@ class QQRuntime:
         if target_kind == "group":
             cross_session = not current_group or target_id != current_group
             if cross_session:
-                allowed = (
-                    is_admin
-                    and is_private
-                    and self.config["permissions"]["allow_cross_group"]
-                    and target_id in self.config["permissions"]["cross_group_allowlist"]
-                )
-                if not allowed:
-                    raise QQToolError(
-                        "permission_denied",
-                        "跨群操作仅允许管理员在私聊中对配置白名单目标发起",
+                if spec.operation_id == "qq_group_request.list":
+                    if not is_admin or not is_private:
+                        raise QQToolError(
+                            "permission_denied",
+                            "全部群申请查询仅允许管理员在私聊中发起",
+                        )
+                else:
+                    allowed = (
+                        is_admin
+                        and is_private
+                        and self.config["permissions"]["allow_cross_group"]
                     )
-                if not await self.target_exists(event, "group", target_id):
-                    raise QQToolError("target_not_found", "目标群不在机器人群列表中")
+                    if not allowed:
+                        raise QQToolError(
+                            "permission_denied",
+                            "跨群操作仅允许管理员在私聊中开启后发起",
+                        )
+                    if not await self.target_exists(event, "group", target_id):
+                        raise QQToolError(
+                            "target_not_found", "目标群不在机器人群列表中"
+                        )
         elif target_kind == "private":
             cross_session = not is_private or target_id != caller_id
             if cross_session:
-                allowed = (
-                    is_admin
-                    and is_private
-                    and self.config["permissions"]["allow_cross_private"]
-                    and target_id
-                    in self.config["permissions"]["cross_private_allowlist"]
-                )
-                if not allowed:
-                    raise QQToolError(
-                        "permission_denied",
-                        "跨好友操作仅允许管理员在私聊中对配置白名单目标发起",
+                if spec.operation_id == "qq_user_info.stranger":
+                    if not is_admin or not is_private:
+                        raise QQToolError(
+                            "permission_denied",
+                            "非好友公开资料查询仅允许管理员在私聊中发起",
+                        )
+                else:
+                    allowed = (
+                        is_admin
+                        and is_private
+                        and self.config["permissions"]["allow_cross_private"]
                     )
-                if not await self.target_exists(event, "private", target_id):
-                    raise QQToolError(
-                        "target_not_found", "目标用户不在机器人好友列表中"
-                    )
+                    if not allowed:
+                        raise QQToolError(
+                            "permission_denied",
+                            "跨好友操作仅允许管理员在私聊中开启后发起",
+                        )
+                    if not await self.target_exists(event, "private", target_id):
+                        raise QQToolError(
+                            "target_not_found", "目标用户不在机器人好友列表中"
+                        )
 
         if spec.permission == "astrbot_admin" and not is_admin:
-            raise QQToolError("permission_denied", "该操作仅允许 AstrBot 或插件管理员")
+            raise QQToolError("permission_denied", "该操作仅允许 AstrBot 管理员")
         caller_role = "member"
         if spec.permission in {"group_admin", "group_owner"} and not is_admin:
             if not current_group or target_id != current_group:
@@ -1072,20 +1085,14 @@ class QQRuntime:
                 for item in OPERATIONS
                 if self.operation_enabled(item.operation_id)
             ]
-        elif operation_id in {"qq_friend_request.list", "qq_group_request.list"}:
-            request_type = "friend" if spec.tool == "qq_friend_request" else "group"
+        elif operation_id == "qq_friend_request.list":
             local_result = await self.storage.list_requests(
-                request_type,
+                "friend",
                 str(action_params.pop("status", "pending")),
                 self.config["limits"]["max_page_size"],
             )
-            if operation_id == "qq_group_request.list":
-                group_id = str(action_params.pop("group_id"))
-                local_result = [
-                    item
-                    for item in local_result
-                    if str(item.get("group_id", "")) == group_id
-                ]
+        elif operation_id == "qq_group_request.list":
+            action_params.pop("group_id", None)
         elif operation_id == "qq_private_files.url" and not action_params.get(
             "file_id"
         ):
@@ -1156,8 +1163,6 @@ class QQRuntime:
                 action_params.pop("user_id", None)
             elif operation_id == "qq_notice.detail":
                 action_params.pop("notice_id", None)
-            elif operation_id == "qq_notice.delete":
-                action_params["fid"] = action_params.pop("notice_id")
             elif operation_id == "qq_notice.send":
                 image = action_params.get("image")
                 if image:
@@ -1443,30 +1448,6 @@ class QQRuntime:
             "user_id": int(target["id"]),
             "messages": built_nodes,
         }
-
-    def needs_confirmation(
-        self, spec: OperationSpec, params: dict[str, Any], cross_session: bool
-    ) -> bool:
-        """Apply immutable and configurable confirmation requirements.
-
-        Args:
-            spec: Operation declaration.
-            params: Normalized operation parameters.
-            cross_session: Whether the target differs from the current session.
-
-        Returns:
-            Whether a real-user confirmation command is mandatory.
-        """
-
-        return (
-            spec.confirmation
-            or spec.operation_id in self.config["confirmation"]["extra_operations"]
-            or (
-                spec.operation_id == "qq_group_member_manage.ban"
-                and params.get("duration", 0) >= 3600
-            )
-            or (cross_session and spec.risk != "read")
-        )
 
     async def call_action(
         self,

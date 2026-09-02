@@ -43,12 +43,6 @@
     "description": "权限",
     "default": {},
     "items": {
-      "admin_users": {
-        "type": "list",
-        "description": "插件管理员 QQ 号",
-        "hint": "AstrBot 自身管理员也自动拥有插件管理员权限。",
-        "default": []
-      },
       "allow_group_admin": {
         "type": "bool",
         "description": "允许当前群管理员操作当前群",
@@ -61,23 +55,13 @@
       },
       "allow_cross_group": {
         "type": "bool",
-        "description": "允许管理员私聊跨群操作",
+        "description": "允许 AstrBot 管理员在私聊中跨群操作",
         "default": false
       },
       "allow_cross_private": {
         "type": "bool",
-        "description": "允许管理员私聊跨好友操作",
+        "description": "允许 AstrBot 管理员在私聊中跨好友操作",
         "default": false
-      },
-      "cross_group_allowlist": {
-        "type": "list",
-        "description": "允许跨会话操作的群号",
-        "default": []
-      },
-      "cross_private_allowlist": {
-        "type": "list",
-        "description": "允许跨会话操作的好友 QQ 号",
-        "default": []
       },
       "per_operation_rules": {
         "type": "dict",
@@ -99,10 +83,20 @@
         "minimum": 30,
         "maximum": 300
       },
-      "extra_operations": {
+      "operations": {
         "type": "list",
-        "description": "额外要求二次确认的操作",
-        "default": []
+        "description": "需要二次确认的操作",
+        "hint": "使用 tool.operation 格式；此列表是二次确认规则的唯一来源。",
+        "default": [
+          "qq_friend_manage.delete",
+          "qq_group_files.rmdir",
+          "qq_group_manage.avatar",
+          "qq_group_manage.leave",
+          "qq_group_manage.name",
+          "qq_group_manage.whole_ban",
+          "qq_group_member_manage.admin",
+          "qq_group_member_manage.kick"
+        ]
       }
     }
   },

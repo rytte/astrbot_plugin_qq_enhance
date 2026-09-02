@@ -27,6 +27,75 @@ from .catalog import (
 from .runtime import QQRuntime, validate_config
 from .storage import Storage
 
+
+def _format_audit_rows(rows: list[dict]) -> str:
+    """Format metadata-only audit rows for QQ chat output.
+
+    Args:
+        rows: Audit records ordered from newest to oldest.
+
+    Returns:
+        Human-readable audit text without sensitive parameters.
+    """
+
+    if not rows:
+        return "暂无审计记录。"
+    risk_labels = {
+        "read": "读取",
+        "write": "写入",
+        "privileged": "高权限",
+        "destructive": "破坏性",
+    }
+    decision_labels = {
+        "allowed": "已放行",
+        "confirmation_required": "待确认",
+        "confirmed": "已确认",
+        "denied": "已拒绝",
+        "failed": "失败",
+    }
+    result_labels = {
+        "ok": "成功",
+        "started": "开始执行",
+        "confirmation_required": "等待确认",
+        "permission_denied": "权限不足",
+        "invalid_parameters": "参数无效",
+        "target_not_found": "目标不存在",
+        "capability_unavailable": "能力不可用",
+        "protocol_rejected": "QQ 协议拒绝",
+        "network_error": "网络错误",
+        "timeout": "超时",
+        "response_invalid": "响应无效",
+        "internal_error": "内部错误",
+    }
+    entries = []
+    for index, row in enumerate(rows, 1):
+        target_kind = {
+            "group": "群",
+            "private": "私聊用户",
+            "none": "无",
+        }.get(row["target_kind"], row["target_kind"])
+        target = (
+            f"{target_kind} {row['target_id']}" if row["target_id"] else target_kind
+        )
+        risk = row["risk"]
+        decision = row["decision"]
+        result_code = row["result_code"]
+        lines = [
+            f"{index}. {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(row['created_at']))}",
+            f"   操作：{row['operation_id']}",
+            f"   调用者：{row['caller_id']}",
+            f"   目标：{target}",
+            f"   风险：{risk_labels.get(risk, risk)}（{risk}）",
+            f"   决策：{decision_labels.get(decision, decision)}（{decision}）",
+            f"   结果：{result_labels.get(result_code, result_code)}（{result_code}）",
+            f"   耗时：{row['duration_ms']} ms",
+        ]
+        if row["pending_id"]:
+            lines.append(f"   确认 ID：{row['pending_id']}")
+        entries.append("\n".join(lines))
+    return f"最近 {len(rows)} 条审计记录：\n\n" + "\n\n".join(entries)
+
+
 _persisted_config_path = (
     Path(get_astrbot_config_path())
     / f"{Path(__file__).resolve().parent.name}_config.json"
@@ -132,10 +201,7 @@ class QQExtensionToolsPlugin(Star):
                 request.func_tool.remove_tool(tool_name)
             return
 
-        caller_id = str(event.get_sender_id() or "")
-        is_admin = (
-            event.is_admin() or caller_id in self.config["permissions"]["admin_users"]
-        )
+        is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
         raw = getattr(event.message_obj, "raw_message", {})
         raw_sender = raw.get("sender", {}) if isinstance(raw, dict) else {}
@@ -173,14 +239,20 @@ class QQExtensionToolsPlugin(Star):
                     continue
                 if not current_group and spec.target_kind == "group":
                     if not (
-                        is_admin and self.config["permissions"]["allow_cross_group"]
+                        is_admin
+                        and (
+                            self.config["permissions"]["allow_cross_group"]
+                            or operation_id == "qq_group_request.list"
+                        )
                     ):
                         continue
                 visible.add(tool_name)
                 break
 
         prompt = request.prompt or event.message_str or ""
-        if len(prompt.strip()) <= 16:
+        if len(prompt.strip()) <= 16 and not any(
+            keyword in prompt for keyword in KEYWORD_TOOLS
+        ):
             # Short follow-ups need the immediately preceding user intent for routing.
             for context_item in reversed(request.contexts):
                 if (
@@ -249,6 +321,8 @@ class QQExtensionToolsPlugin(Star):
                             "qq_recent_contacts",
                         }
                     )
+                    if not current_group:
+                        selected.add("qq_friend_request")
                 maximum = 15
             else:
                 selected.update(requested)
@@ -368,18 +442,15 @@ class QQExtensionToolsPlugin(Star):
             )
             if rows:
                 text = "待确认操作：\n" + "\n".join(
-                    f"- {row['pending_id']} {row['summary']}（{row['expires_at']} 到期）"
+                    f"- {row['pending_id']} {row['summary']}（剩余约 "
+                    f"{max(0, row['expires_at'] - int(time.time()))} 秒）"
                     for row in rows
                 )
             else:
                 text = "当前会话没有待确认操作。"
         elif action == "audit":
-            caller_id = str(event.get_sender_id() or "")
-            if not (
-                event.is_admin()
-                or caller_id in self.config["permissions"]["admin_users"]
-            ):
-                text = "仅 AstrBot 或插件管理员可以查询审计记录。"
+            if not event.is_admin():
+                text = "仅 AstrBot 管理员可以查询审计记录。"
             else:
                 try:
                     limit = int(value or 20)
@@ -389,7 +460,7 @@ class QQExtensionToolsPlugin(Star):
                     text = "审计条数必须是 1～100 的整数。"
                 else:
                     rows = await self.storage.list_audit(limit)
-                    text = json.dumps(rows, ensure_ascii=False)
+                    text = _format_audit_rows(rows)
         else:
             text = (
                 "QQ 扩展工具命令：\n"

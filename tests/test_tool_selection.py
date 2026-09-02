@@ -156,6 +156,46 @@ async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None
 
 
 @pytest.mark.asyncio
+async def test_private_admin_balanced_exposes_friend_request_without_keyword() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="看一下有没有人加你",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_friend_request") is not None
+
+
+@pytest.mark.asyncio
+async def test_private_admin_group_request_prompt_exposes_group_request_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="查看下是否有进群申请",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_request") is not None
+
+
+@pytest.mark.asyncio
 async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
     plugin.config = validate_config(None)
@@ -194,6 +234,50 @@ async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
     await plugin.select_tools(PrivateAdminRemarkSelectionEvent(), request)
 
     assert request.func_tool.get_tool("qq_friend_manage") is not None
+
+
+@pytest.mark.asyncio
+async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {"permissions": {"allow_cross_group": True}}
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="把 Milika 的群昵称改为 QQ扩展测试",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminRemarkSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_member_manage") is not None
+
+
+@pytest.mark.asyncio
+async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {"permissions": {"allow_cross_group": True}}
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="把 Milika 移除群聊",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_member_manage") is not None
 
 
 @pytest.mark.asyncio
@@ -260,6 +344,55 @@ async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
     await plugin.select_tools(GroupOwnerSelectionEvent(), request)
 
     assert request.func_tool.get_tool("qq_group_manage") is not None
+
+
+@pytest.mark.asyncio
+async def test_group_name_prompt_exposes_group_manage_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="把当前群名称修改为 QQ扩展确认测试",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(GroupOwnerSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_manage") is not None
+
+
+@pytest.mark.asyncio
+async def test_private_admin_leave_group_prompt_ignores_stale_request_context() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {"permissions": {"allow_cross_group": True}}
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="退出群965582257",
+        contexts=[
+            {
+                "role": "user",
+                "content": "通过当前群的群邀请，sub_type 为 invite",
+            }
+        ],
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_manage") is not None
+    assert request.func_tool.get_tool("qq_group_request") is None
 
 
 @pytest.mark.asyncio
