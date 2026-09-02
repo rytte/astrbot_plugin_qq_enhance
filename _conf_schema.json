@@ -1,0 +1,163 @@
+{
+  "platform": {
+    "type": "object",
+    "description": "平台",
+    "default": {},
+    "items": {
+      "platform_id": {
+        "type": "string",
+        "description": "限定的平台实例 ID",
+        "hint": "留空时允许任意 aiocqhttp 实例；填写后只允许该实例。",
+        "default": ""
+      }
+    }
+  },
+  "toolsets": {
+    "type": "object",
+    "description": "模型工具集",
+    "default": {},
+    "items": {
+      "exposure_mode": {
+        "type": "string",
+        "description": "工具暴露模式",
+        "default": "balanced",
+        "options": ["compact", "balanced", "full"],
+        "labels": ["精简", "平衡", "完整"]
+      },
+      "enabled_packs": {
+        "type": "list",
+        "description": "启用的能力包",
+        "hint": "留空表示全部能力包。可填写 status、account、friend、group、message、media、file、request。",
+        "default": []
+      },
+      "disabled_operations": {
+        "type": "list",
+        "description": "禁用的内部操作",
+        "hint": "使用 tool.operation 格式，例如 qq_group_manage.leave。",
+        "default": []
+      }
+    }
+  },
+  "permissions": {
+    "type": "object",
+    "description": "权限",
+    "default": {},
+    "items": {
+      "admin_users": {
+        "type": "list",
+        "description": "插件管理员 QQ 号",
+        "hint": "AstrBot 自身管理员也自动拥有插件管理员权限。",
+        "default": []
+      },
+      "allow_group_admin": {
+        "type": "bool",
+        "description": "允许当前群管理员操作当前群",
+        "default": true
+      },
+      "allow_group_owner": {
+        "type": "bool",
+        "description": "允许当前群主操作当前群",
+        "default": true
+      },
+      "allow_cross_group": {
+        "type": "bool",
+        "description": "允许管理员私聊跨群操作",
+        "default": false
+      },
+      "allow_cross_private": {
+        "type": "bool",
+        "description": "允许管理员私聊跨好友操作",
+        "default": false
+      },
+      "cross_group_allowlist": {
+        "type": "list",
+        "description": "允许跨会话操作的群号",
+        "default": []
+      },
+      "cross_private_allowlist": {
+        "type": "list",
+        "description": "允许跨会话操作的好友 QQ 号",
+        "default": []
+      },
+      "per_operation_rules": {
+        "type": "dict",
+        "description": "逐操作收紧规则",
+        "hint": "首版只接受 disabled=true；不能用来放宽内置权限。",
+        "default": {}
+      }
+    }
+  },
+  "confirmation": {
+    "type": "object",
+    "description": "二次确认",
+    "default": {},
+    "items": {
+      "ttl_seconds": {
+        "type": "int",
+        "description": "确认有效期（秒）",
+        "default": 60,
+        "minimum": 30,
+        "maximum": 300
+      },
+      "extra_operations": {
+        "type": "list",
+        "description": "额外要求二次确认的操作",
+        "default": []
+      }
+    }
+  },
+  "limits": {
+    "type": "object",
+    "description": "输出与消息限制",
+    "default": {},
+    "items": {
+      "page_size": {"type": "int", "description": "默认页大小", "default": 20, "minimum": 1, "maximum": 100},
+      "max_page_size": {"type": "int", "description": "最大页大小", "default": 100, "minimum": 1, "maximum": 200},
+      "max_output_chars": {"type": "int", "description": "最大工具输出字符数", "default": 12000, "minimum": 1000, "maximum": 50000},
+      "max_forward_nodes": {"type": "int", "description": "最大合并转发节点数", "default": 30, "minimum": 1, "maximum": 100},
+      "max_forward_depth": {"type": "int", "description": "最大合并转发展开深度", "default": 3, "minimum": 1, "maximum": 5},
+      "max_components": {"type": "int", "description": "单条消息最大组件数", "default": 30, "minimum": 1, "maximum": 100}
+    }
+  },
+  "files": {
+    "type": "object",
+    "description": "文件安全",
+    "default": {},
+    "items": {
+      "allowed_roots": {"type": "list", "description": "额外允许的绝对目录", "default": []},
+      "max_file_size_mb": {"type": "int", "description": "本地文件上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048},
+      "max_base64_size_mb": {"type": "int", "description": "Base64 解码上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
+      "temp_ttl_seconds": {"type": "int", "description": "插件临时文件生命周期（秒）", "default": 21600, "minimum": 600, "maximum": 604800},
+      "cleanup_interval_seconds": {"type": "int", "description": "临时文件清理间隔（秒）", "default": 600, "minimum": 60, "maximum": 86400}
+    }
+  },
+  "network": {
+    "type": "object",
+    "description": "网络下载安全",
+    "default": {},
+    "items": {
+      "allowed_domains": {"type": "list", "description": "允许的域名；留空表示不额外限制公网域名", "default": []},
+      "blocked_domains": {"type": "list", "description": "禁止的域名", "default": []},
+      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": false},
+      "timeout_seconds": {"type": "int", "description": "下载总超时（秒）", "default": 30, "minimum": 3, "maximum": 180},
+      "max_download_size_mb": {"type": "int", "description": "下载上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048}
+    }
+  },
+  "events": {
+    "type": "object",
+    "description": "事件记录",
+    "default": {},
+    "items": {
+      "enabled_types": {"type": "list", "description": "需要记录的 OneBot 事件类型；留空表示全部支持的类型", "default": []},
+      "retention_days": {"type": "int", "description": "事件保留天数", "default": 30, "minimum": 1, "maximum": 365}
+    }
+  },
+  "audit": {
+    "type": "object",
+    "description": "审计",
+    "default": {},
+    "items": {
+      "retention_days": {"type": "int", "description": "审计保留天数", "default": 90, "minimum": 7, "maximum": 365}
+    }
+  }
+}

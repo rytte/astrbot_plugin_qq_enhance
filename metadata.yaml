@@ -1,0 +1,9 @@
+name: astrbot_plugin_qq_extension_tools
+display_name: QQ 扩展工具集
+desc: 面向 NapCat OneBot v11 的安全、动态、完整 QQ 模型工具集。
+version: 0.1.0
+author: rytte
+repo: ""
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.27,<5"
