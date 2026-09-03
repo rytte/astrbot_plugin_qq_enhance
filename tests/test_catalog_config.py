@@ -51,6 +51,16 @@ def test_default_confirmation_operations_are_explicit() -> None:
     assert schema["confirmation"]["items"]["operations"]["default"] == operations
 
 
+def test_inbound_schema_defaults_match_runtime_config() -> None:
+    defaults = validate_config(None)["inbound"]
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert {
+        key: item["default"] for key, item in schema["inbound"]["items"].items()
+    } == defaults
+
+
 @pytest.mark.parametrize(
     "config",
     [
@@ -64,6 +74,10 @@ def test_default_confirmation_operations_are_explicit() -> None:
         {"permissions": {"allow_cross_group": "true"}},
         {"permissions": {"cross_group_allowlist": ["30001"]}},
         {"permissions": {"cross_private_allowlist": ["10001"]}},
+        {"inbound": {"semanticize_components": "true"}},
+        {"inbound": {"respond_to_poke": 1}},
+        {"inbound": {"respond_to_red_packet": "true"}},
+        {"inbound": {"max_semantic_chars": 255}},
         {"limits": {"page_size": 0}},
         {
             "permissions": {
@@ -88,6 +102,12 @@ def test_valid_config_preserves_explicit_values() -> None:
     assert "admin_users" not in result["permissions"]
     assert result["confirmation"]["ttl_seconds"] == 120
     assert result["confirmation"]["operations"]
+    assert result["inbound"] == {
+        "semanticize_components": True,
+        "respond_to_poke": True,
+        "respond_to_red_packet": True,
+        "max_semantic_chars": 2000,
+    }
 
     disabled = validate_config({"confirmation": {"operations": []}})
     assert disabled["confirmation"]["operations"] == []

@@ -1,6 +1,6 @@
 # QQ 扩展工具集
 
-`astrbot_plugin_qq_extension_tools` 是面向 AstrBot 与 NapCat OneBot v11 的 QQ 模型工具插件。它将约 75 个明确支持的 QQ 操作合并为 26 个资源型工具，并在每次模型请求前按平台、会话、调用者权限和请求内容动态裁剪。
+`astrbot_plugin_qq_extension_tools` 是面向 AstrBot 与 NapCat OneBot v11 的 QQ 模型工具和入站消息语义化插件。它将约 75 个明确支持的 QQ 操作合并为 26 个资源型工具，在每次模型请求前按平台、会话、调用者权限和请求内容动态裁剪，并将 AstrBot 默认忽略的 QQ 组件转换为受限的模型可读文本。
 
 插件不提供万能 `call_action`，不允许模型自行确认危险操作，也不读取旧版 QQ 工具插件的配置。
 
@@ -115,6 +115,16 @@ QQ extension tools initialized
 
 媒体来源必须且只能选择 `path`、`url`、`base64`、`media_ref` 中的一项。Base64 也可使用标准 `data:*/*;base64,...` 形式。
 
+## 入站组件语义化
+
+插件默认将 NapCat 上报但 AstrBot 不会写入 `message_str` 的 QQ 组件转换为模型可读的受限文本，例如 `[QQ表情：微笑]`、`[QQ商城表情：拜托拜托]`、`[QQ位置：北京；纬度 39.9042，经度 116.4074]` 和 `[QQ互动：用户 10001 戳了你]`。支持标准表情、商城表情摘要、语音/视频/文件提示、音乐、戳一戳、骰子、猜拳、联系人、位置、分享、JSON/XML/小程序卡片、合并转发、在线文件和闪传组件。
+
+标准表情优先使用 NapCat `face.data.raw.faceText`；该字段缺失时，使用插件内置的 NapCat 4.18.19 `sysface` 名称表。映射中仍不存在的 ID 会明确标记为名称未知，并要求模型不要根据编号猜测含义。JSON、XML 和小程序卡片只提取标题、提示、说明、摘要、内容、名称、标签和去掉查询参数的链接，不会把任意字段或完整载荷送入模型。对于结构符合 QQ 联系人卡片协议的群名片和个人名片，插件会额外校验 `mqqapi://card/show_pslcard` 的 `card_type` 与纯数字 `uin`，并分别提供群号或 QQ 号。
+
+`notice_type=notify`、`sub_type=poke` 且 `target_id` 为机器人自身时，插件会生成戳一戳语义并允许模型回复；其他成员之间的戳一戳和机器人自身触发的事件不会响应。
+
+NapCat 4.18.19 默认不会把 QQ `walletElement` 转换为 OneBot 消息段。只有对应网络适配器开启 `debug`、上报事件包含顶层 `raw` 时，插件才能根据明确的 wallet 标记识别红包，并向模型提供 `[QQ红包消息（仅识别，不能代领）]`；能够正常上报的红包 JSON/XML 卡片也会识别。`inbound.respond_to_red_packet` 启用时，识别到红包会主动唤醒模型。普通空消息不会被当作红包，插件也不提供领取红包能力。
+
 ## 文件与网络边界
 
 - 默认本地根目录仅包括 AstrBot 临时目录和本插件专属数据目录。
@@ -138,13 +148,14 @@ WebUI 配置按以下分组组织：
 - `files`：允许根目录、大小和临时文件生命周期。
 - `network`：域名、私网、超时和下载大小。
 - `events`：OneBot 请求/通知事件记录范围和保留期。
+- `inbound`：组件语义化、戳一戳/红包响应和单条语义文本长度上限。
 - `audit`：审计保留期。
 
 配置只有当前 `_conf_schema.json` 中的一套字段。类型错误、未知枚举、未知 operation、无意义的逐操作规则会阻止插件加载；不存在旧字段别名或静默迁移。
 
 ## 事件与审计
 
-插件记录规范化后的 OneBot `request` 和 `notice` 事件，但不会用事件主动触发 LLM。好友和群申请处理使用已捕获的 request flag。
+插件记录规范化后的 OneBot `request` 和 `notice` 事件。除明确以机器人为目标且启用了 `inbound.respond_to_poke` 的戳一戳外，其他通知不会主动触发 LLM。好友和群申请处理使用已捕获的 request flag。
 
 审计默认保留 90 天，只保存 operation、调用者、目标、权限决策、结果码、耗时和参数哈希。不会保存消息正文、完整 Base64、账号凭证、文件内容或完整本地路径。有副作用操作会在协议调用前先写审计；审计不可用时不会执行该操作。
 

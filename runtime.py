@@ -86,6 +86,12 @@ DEFAULT_CONFIG = {
         "max_download_size_mb": 100,
     },
     "events": {"enabled_types": [], "retention_days": 30},
+    "inbound": {
+        "semanticize_components": True,
+        "respond_to_poke": True,
+        "respond_to_red_packet": True,
+        "max_semantic_chars": 2000,
+    },
     "audit": {"retention_days": 90},
 }
 
@@ -301,6 +307,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("permissions", "allow_cross_group"),
         ("permissions", "allow_cross_private"),
         ("network", "allow_private_network"),
+        ("inbound", "semanticize_components"),
+        ("inbound", "respond_to_poke"),
+        ("inbound", "respond_to_red_packet"),
     )
     for group, key in bool_fields:
         if type(result[group][key]) is not bool:
@@ -321,6 +330,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "timeout_seconds"): (3, 180),
         ("network", "max_download_size_mb"): (1, 2048),
         ("events", "retention_days"): (1, 365),
+        ("inbound", "max_semantic_chars"): (256, 8000),
         ("audit", "retention_days"): (7, 365),
     }
     for (group, key), (minimum, maximum) in ranges.items():

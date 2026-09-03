@@ -146,6 +146,37 @@
       "retention_days": {"type": "int", "description": "事件保留天数", "default": 30, "minimum": 1, "maximum": 365}
     }
   },
+  "inbound": {
+    "type": "object",
+    "description": "入站消息语义化",
+    "default": {},
+    "items": {
+      "semanticize_components": {
+        "type": "bool",
+        "description": "将 QQ 表情和结构化组件转换为模型可读文本",
+        "default": true
+      },
+      "respond_to_poke": {
+        "type": "bool",
+        "description": "被戳一戳时允许唤醒模型回复",
+        "hint": "仅处理 target_id 为机器人自身的 poke 通知。",
+        "default": true
+      },
+      "respond_to_red_packet": {
+        "type": "bool",
+        "description": "识别到红包时允许唤醒模型回复",
+        "hint": "NapCat 4.18.19 的 walletElement 识别要求网络适配器开启 debug。",
+        "default": true
+      },
+      "max_semantic_chars": {
+        "type": "int",
+        "description": "单条消息追加的组件语义文本上限",
+        "default": 2000,
+        "minimum": 256,
+        "maximum": 8000
+      }
+    }
+  },
   "audit": {
     "type": "object",
     "description": "审计",

@@ -24,6 +24,7 @@ from .catalog import (
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
+from .inbound import describe_inbound_event, is_red_packet_event
 from .runtime import QQRuntime, validate_config
 from .storage import Storage
 
@@ -111,7 +112,7 @@ if _persisted_config_path.is_file():
 
 
 class QQExtensionToolsPlugin(Star):
-    """Expose bounded QQ resource tools to AstrBot models."""
+    """Expose bounded QQ tools and inbound semantics to AstrBot models."""
 
     def __init__(
         self, context: Context, config: AstrBotConfig | dict | None = None
@@ -181,6 +182,48 @@ class QQExtensionToolsPlugin(Star):
             except Exception:
                 logger.exception("QQ extension tools cleanup failed")
             await asyncio.sleep(self.config["files"]["cleanup_interval_seconds"])
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def enrich_inbound_qq_components(self, event: AstrMessageEvent) -> None:
+        """Append bounded semantics for NapCat components ignored by AstrBot.
+
+        Args:
+            event: Current message or notice event.
+        """
+
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        platform_id = self.config["platform"]["platform_id"]
+        if platform_id and event.get_platform_id() != platform_id:
+            return
+        inbound = self.config["inbound"]
+        raw = getattr(event.message_obj, "raw_message", None)
+        semantics = describe_inbound_event(
+            raw,
+            str(event.get_self_id() or ""),
+            semanticize_components=inbound["semanticize_components"],
+            respond_to_poke=inbound["respond_to_poke"],
+            max_components=self.config["limits"]["max_components"],
+            max_chars=inbound["max_semantic_chars"],
+        )
+        if not semantics:
+            return
+        current = str(event.message_str or "").strip()
+        enriched = f"{current}\n{semantics}" if current else semantics
+        event.message_str = enriched
+        event.message_obj.message_str = enriched
+        targeted_poke = (
+            isinstance(raw, dict)
+            and raw.get("post_type") == "notice"
+            and raw.get("notice_type") == "notify"
+            and raw.get("sub_type") == "poke"
+        )
+        red_packet = inbound["respond_to_red_packet"] and is_red_packet_event(
+            raw, self.config["limits"]["max_components"]
+        )
+        if targeted_poke or red_packet:
+            event.is_wake = True
+            event.is_at_or_wake_command = True
 
     @filter.on_llm_request()
     async def select_tools(
