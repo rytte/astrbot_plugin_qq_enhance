@@ -1213,6 +1213,14 @@ class QQRuntime:
         components = params["components"]
         if not components or len(components) > self.config["limits"]["max_components"]:
             raise QQToolError("invalid_parameters", "components 数量为空或超过配置上限")
+        if len(components) != 1 and any(
+            isinstance(component, dict) and component.get("type") == "music"
+            for component in components
+        ):
+            raise QQToolError(
+                "invalid_parameters",
+                "音乐卡片必须作为唯一组件单独发送",
+            )
         message = []
         allowed_fields = {
             "text": {"type", "text"},
@@ -1234,6 +1242,8 @@ class QQRuntime:
                 "title",
                 "content",
                 "image",
+                "query",
+                "artist",
             },
             "contact": {"type", "contact_type", "id"},
             "location": {"type", "lat", "lon", "title", "content"},
@@ -1241,6 +1251,7 @@ class QQRuntime:
         }
         required_fields = {
             "text": {"text"},
+            "music": {"music_type"},
             "at": {"id"},
             "reply": {"id"},
             "face": {"id"},
@@ -1284,13 +1295,141 @@ class QQRuntime:
             elif component_type in {"dice", "rps"}:
                 message.append({"type": component_type, "data": {}})
             elif component_type == "music":
-                data = {key: value for key, value in component.items() if key != "type"}
-                if "music_type" in data:
-                    data["type"] = data.pop("music_type")
-                if data.get("type") not in {"qq", "163", "custom"}:
+                music_type = component["music_type"]
+                id_types = {"qq", "163", "kugou", "kuwo", "migu"}
+                if not isinstance(music_type, str):
                     raise QQToolError(
                         "invalid_parameters",
-                        "music.music_type 必须是 qq、163 或 custom",
+                        "music.music_type 必须是字符串",
+                    )
+                if music_type == "qq_search":
+                    unexpected = [
+                        key
+                        for key in (
+                            "id",
+                            "url",
+                            "audio",
+                            "title",
+                            "content",
+                            "image",
+                        )
+                        if component.get(key) not in (None, "")
+                    ]
+                    if unexpected:
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "qq_search 音乐组件不能提供解析结果字段："
+                            + "、".join(unexpected),
+                        )
+                    query = component.get("query")
+                    artist = component.get("artist")
+                    if not isinstance(query, str) or not query.strip():
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "qq_search 音乐组件必须提供有效 query",
+                        )
+                    if len(query.strip()) > 100:
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "qq_search.query 不能超过 100 个字符",
+                        )
+                    if artist is not None and (
+                        not isinstance(artist, str) or not artist.strip()
+                    ):
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "qq_search.artist 必须是非空字符串",
+                        )
+                    data = await self.resolve_qq_music(
+                        query.strip(), artist.strip() if artist else None
+                    )
+                elif music_type == "custom":
+                    if component.get("id") not in (None, ""):
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "custom 音乐组件不能提供 id",
+                        )
+                    if component.get("query") not in (None, "") or component.get(
+                        "artist"
+                    ) not in (None, ""):
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "custom 音乐组件不能提供 query 或 artist",
+                        )
+                    invalid = [
+                        key
+                        for key in ("url", "audio", "title", "content", "image")
+                        if component.get(key) is not None
+                        and not isinstance(component[key], str)
+                    ]
+                    if invalid:
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "custom 音乐组件字段必须是字符串：" + "、".join(invalid),
+                        )
+                    missing = [
+                        key
+                        for key in ("url", "image")
+                        if not isinstance(component.get(key), str)
+                        or not component[key].strip()
+                    ]
+                    if missing:
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "custom 音乐组件缺少有效字段：" + "、".join(missing),
+                        )
+                    data = {
+                        key: value for key, value in component.items() if key != "type"
+                    }
+                    data["type"] = data.pop("music_type")
+                elif music_type in id_types:
+                    music_id = component.get("id")
+                    if (
+                        isinstance(music_id, bool)
+                        or not isinstance(music_id, (str, int))
+                        or not str(music_id).strip()
+                    ):
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "平台音乐组件必须提供有效 id",
+                        )
+                    raw_music_id = str(music_id).strip()
+                    current_message = str(getattr(event, "message_str", "") or "")
+                    if not re.search(
+                        rf"(?<![A-Za-z0-9]){re.escape(raw_music_id)}(?![A-Za-z0-9])",
+                        current_message,
+                    ):
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "平台音乐 ID 必须由用户在当前消息中明确提供；"
+                            "按歌名点歌必须使用 qq_search",
+                        )
+                    unexpected = [
+                        key
+                        for key in (
+                            "url",
+                            "audio",
+                            "title",
+                            "content",
+                            "image",
+                            "query",
+                            "artist",
+                        )
+                        if component.get(key) not in (None, "")
+                    ]
+                    if unexpected:
+                        raise QQToolError(
+                            "invalid_parameters",
+                            "平台音乐组件不能提供自定义字段：" + "、".join(unexpected),
+                        )
+                    data = {
+                        key: value for key, value in component.items() if key != "type"
+                    }
+                    data["type"] = data.pop("music_type")
+                else:
+                    raise QQToolError(
+                        "invalid_parameters",
+                        "music.music_type 必须是 qq_search、qq、163、kugou、kuwo、migu 或 custom",
                     )
                 for key in ("url", "audio", "image"):
                     if data.get(key):
@@ -1372,6 +1511,108 @@ class QQRuntime:
                 )
             action_params["group_id"] = int(group_id)
         return "send_private_msg", action_params
+
+    async def resolve_qq_music(self, query: str, artist: str | None) -> dict[str, str]:
+        """Resolve an exact QQ Music title to a custom music card payload.
+
+        Args:
+            query: Exact song title requested by the user.
+            artist: Optional artist name used to disambiguate results.
+
+        Returns:
+            OneBot custom music data backed by verified QQ Music metadata.
+
+        Raises:
+            QQToolError: If the search fails or has no exact matching result.
+        """
+
+        search_url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+        await self.validate_url(search_url)
+        timeout = aiohttp.ClientTimeout(total=self.config["network"]["timeout_seconds"])
+        connector = aiohttp.TCPConnector(resolver=_ValidatedResolver(False))
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout, trust_env=False, connector=connector
+            ) as session:
+                async with session.get(
+                    search_url,
+                    params={
+                        "w": f"{query} {artist or ''}".strip(),
+                        "p": 1,
+                        "n": 10,
+                        "format": "json",
+                    },
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": "https://y.qq.com/",
+                    },
+                    allow_redirects=False,
+                ) as response:
+                    if response.status != 200:
+                        raise QQToolError(
+                            "network_error",
+                            f"QQ 音乐搜索返回 HTTP {response.status}",
+                        )
+                    body = await response.content.read(1048577)
+        except QQToolError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            raise QQToolError("network_error", "QQ 音乐搜索请求失败") from exc
+        if len(body) > 1048576:
+            raise QQToolError("response_invalid", "QQ 音乐搜索响应过大")
+        try:
+            payload = json.loads(body)
+            songs = payload["data"]["song"]["list"]
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise QQToolError("response_invalid", "QQ 音乐搜索响应格式无效") from exc
+        if not isinstance(songs, list):
+            raise QQToolError("response_invalid", "QQ 音乐搜索结果不是列表")
+
+        normalized_query = query.casefold()
+        normalized_artist = artist.casefold() if artist else None
+        for song in songs:
+            if not isinstance(song, dict):
+                continue
+            title = str(song.get("songname") or "").strip()
+            song_mid = str(song.get("songmid") or "").strip()
+            album_mid = str(song.get("albummid") or "").strip()
+            raw_singers = song.get("singer")
+            singer_names = (
+                [
+                    str(singer.get("name") or "").strip()
+                    for singer in raw_singers
+                    if isinstance(singer, dict) and singer.get("name")
+                ]
+                if isinstance(raw_singers, list)
+                else []
+            )
+            if title.casefold() != normalized_query:
+                continue
+            if normalized_artist and not any(
+                normalized_artist == name.casefold() for name in singer_names
+            ):
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9]+", song_mid) or not re.fullmatch(
+                r"[A-Za-z0-9]+", album_mid
+            ):
+                continue
+            song_url = f"https://y.qq.com/n/ryqq/songDetail/{song_mid}"
+            return {
+                "type": "custom",
+                "url": song_url,
+                "audio": song_url,
+                "title": title,
+                "content": "/".join(singer_names) or "QQ音乐",
+                "image": (
+                    "https://y.gtimg.cn/music/photo_new/"
+                    f"T002R300x300M000{album_mid}.jpg"
+                ),
+            }
+        detail = f"，歌手为“{artist}”" if artist else ""
+        raise QQToolError(
+            "target_not_found",
+            f"未找到歌名完全匹配“{query}”{detail}的 QQ 音乐；不得改用猜测的歌曲 ID",
+        )
 
     async def prepare_forward(
         self, event: Any, params: dict[str, Any]
@@ -1917,6 +2158,15 @@ class QQRuntime:
                 "summary": data["summary"],
                 "data": data["data"],
                 "next_cursor": data["next_cursor"],
+                "warnings": [],
+            }
+        if operation_id in {"qq_send_message.send", "qq_send_forward.send"}:
+            return {
+                "ok": True,
+                "operation": operation_id,
+                "summary": "NapCat 已接受发送请求；最终回复不要重复消息正文或卡片",
+                "data": self.sanitize_data(data),
+                "next_cursor": None,
                 "warnings": [],
             }
         return {

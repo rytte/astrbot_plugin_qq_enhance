@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -102,6 +102,7 @@ class FakeEvent:
             else f"platform-a:FriendMessage:{sender_id}"
         )
         self.message_obj = SimpleNamespace(raw_message={})
+        self.message_str = ""
 
     def get_sender_id(self) -> str:
         return self.sender_id
@@ -857,6 +858,235 @@ async def test_structured_message_is_converted_to_onebot_segments(tmp_path) -> N
         "dice",
         "reply",
     ]
+
+
+@pytest.mark.asyncio
+async def test_music_components_follow_napcat_contract(tmp_path) -> None:
+    runtime, _, _ = await make_runtime(tmp_path)
+    event = FakeEvent()
+
+    runtime.resolve_qq_music = AsyncMock(
+        return_value={
+            "type": "custom",
+            "url": "https://y.qq.com/n/ryqq/songDetail/0035GveV3i9dBM",
+            "audio": "https://y.qq.com/n/ryqq/songDetail/0035GveV3i9dBM",
+            "title": "小苹果",
+            "content": "筷子兄弟",
+            "image": "https://y.gtimg.cn/cover.jpg",
+        }
+    )
+    runtime.validate_url = AsyncMock()
+    _, search_params = await runtime.prepare_message(
+        event,
+        {
+            "target": {"type": "current"},
+            "components": [
+                {
+                    "type": "music",
+                    "music_type": "qq_search",
+                    "query": "小苹果",
+                    "artist": "筷子兄弟",
+                }
+            ],
+        },
+    )
+    runtime.resolve_qq_music.assert_awaited_once_with("小苹果", "筷子兄弟")
+    assert search_params["message"][0]["data"]["title"] == "小苹果"
+    assert search_params["message"][0]["data"]["content"] == "筷子兄弟"
+
+    event.message_str = "请发送音乐 ID song-1"
+    _, platform_params = await runtime.prepare_message(
+        event,
+        {
+            "target": {"type": "current"},
+            "components": [
+                {"type": "music", "music_type": "kugou", "id": "song-1"}
+            ],
+        },
+    )
+    assert platform_params["message"] == [
+        {"type": "music", "data": {"type": "kugou", "id": "song-1"}}
+    ]
+
+    event.message_str = "我要听小苹果"
+    with pytest.raises(QQToolError, match="按歌名点歌必须使用 qq_search"):
+        await runtime.prepare_message(
+            event,
+            {
+                "target": {"type": "current"},
+                "components": [
+                    {"type": "music", "music_type": "163", "id": "28059417"}
+                ],
+            },
+        )
+
+    with pytest.raises(QQToolError, match="音乐卡片必须作为唯一组件单独发送"):
+        await runtime.prepare_message(
+            event,
+            {
+                "target": {"type": "current"},
+                "components": [
+                    {"type": "text", "text": "Listen to this"},
+                    {"type": "music", "music_type": "qq", "id": "123"},
+                ],
+            },
+        )
+
+    runtime.validate_url.reset_mock()
+    _, custom_params = await runtime.prepare_message(
+        event,
+        {
+            "target": {"type": "current"},
+            "components": [
+                {
+                    "type": "music",
+                    "music_type": "custom",
+                    "url": "https://example.com/song",
+                    "image": "https://example.com/cover.jpg",
+                    "title": "Song",
+                    "content": "Singer",
+                }
+            ],
+        },
+    )
+    assert custom_params["message"] == [
+        {
+            "type": "music",
+            "data": {
+                "type": "custom",
+                "url": "https://example.com/song",
+                "image": "https://example.com/cover.jpg",
+                "title": "Song",
+                "content": "Singer",
+            },
+        }
+    ]
+    assert runtime.validate_url.await_count == 2
+
+    with pytest.raises(QQToolError, match="缺少有效字段：image"):
+        await runtime.prepare_message(
+            event,
+            {
+                "target": {"type": "current"},
+                "components": [
+                    {
+                        "type": "music",
+                        "music_type": "custom",
+                        "url": "https://example.com/song",
+                    }
+                ],
+            },
+        )
+
+    with pytest.raises(QQToolError, match="必须提供有效 id"):
+        await runtime.prepare_message(
+            event,
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "music", "music_type": "qq"}],
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_qq_music_search_uses_exact_metadata(tmp_path) -> None:
+    runtime, _, _ = await make_runtime(tmp_path)
+    runtime.validate_url = AsyncMock()
+    payload = {
+        "data": {
+            "song": {
+                "list": [
+                    {
+                        "songname": "小苹果 (DJ版)",
+                        "songmid": "wrong",
+                        "albummid": "wrong",
+                        "singer": [{"name": "筷子兄弟"}],
+                    },
+                    {
+                        "songname": "小苹果",
+                        "songmid": "0035GveV3i9dBM",
+                        "albummid": "000owywt4caGcV",
+                        "singer": [{"name": "筷子兄弟"}],
+                    },
+                ]
+            }
+        }
+    }
+
+    class FakeContent:
+        async def read(self, limit: int) -> bytes:
+            assert limit == 1048577
+            return json.dumps(payload, ensure_ascii=False).encode()
+
+    class FakeResponse:
+        status = 200
+        content = FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        def get(self, url, **kwargs):
+            self.request = (url, kwargs)
+            return FakeResponse()
+
+    session = FakeSession()
+    with (
+        patch(
+            "astrbot_plugin_qq_extension_tools.runtime.aiohttp.TCPConnector",
+            return_value=object(),
+        ),
+        patch(
+            "astrbot_plugin_qq_extension_tools.runtime.aiohttp.ClientSession",
+            return_value=session,
+        ),
+    ):
+        data = await runtime.resolve_qq_music("小苹果", "筷子兄弟")
+
+    runtime.validate_url.assert_awaited_once_with(
+        "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+    )
+    assert session.request[1]["params"]["w"] == "小苹果 筷子兄弟"
+    assert data == {
+        "type": "custom",
+        "url": "https://y.qq.com/n/ryqq/songDetail/0035GveV3i9dBM",
+        "audio": "https://y.qq.com/n/ryqq/songDetail/0035GveV3i9dBM",
+        "title": "小苹果",
+        "content": "筷子兄弟",
+        "image": (
+            "https://y.gtimg.cn/music/photo_new/"
+            "T002R300x300M000000owywt4caGcV.jpg"
+        ),
+    }
+
+
+def test_send_success_result_tells_model_not_to_repeat_content() -> None:
+    config = validate_config(None)
+    runtime = object.__new__(QQRuntime)
+    runtime.config = config
+
+    result = runtime.success_result(
+        "qq_send_message.send",
+        {"message_id": 123},
+        {},
+    )
+
+    assert result["ok"] is True
+    assert "NapCat 已接受发送请求" in result["summary"]
+    assert "直接发送成功" not in result["summary"]
+    assert "不要重复消息正文或卡片" in result["summary"]
 
 
 @pytest.mark.asyncio

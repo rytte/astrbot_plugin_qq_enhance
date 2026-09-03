@@ -98,6 +98,12 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     send_tool = manager.get_func("qq_send_message")
     params_description = send_tool.parameters["properties"]["params"]["description"]
     assert "不得使用 data 包装" in params_description
+    assert '"music_type":"custom"' in params_description
+    assert '"music_type":"qq_search"' in params_description
+    assert "不得凭记忆猜歌曲 ID" in params_description
+    assert "音乐卡片必须作为唯一组件单独发送" in params_description
+    assert "调用成功仅表示 NapCat 已接受发送请求" in params_description
+    assert "最终回复不得重复其中的正文或卡片" in params_description
     forward_tool = manager.get_func("qq_send_forward")
     forward_description = forward_tool.parameters["properties"]["params"][
         "description"

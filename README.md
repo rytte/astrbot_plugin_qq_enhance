@@ -109,6 +109,8 @@ QQ extension tools initialized
 
 支持的组件类型为：`text`、`image`、`record`、`video`、`file`、`at`、`reply`、`face`、`dice`、`rps`、`music`、`contact`、`location`、`json`。
 
+用户按歌名点歌时使用 `{"type":"music","music_type":"qq_search","query":"准确歌名","artist":"可选歌手"}`，插件会查询 QQ 音乐，并且只发送歌名及可选歌手完全匹配的结果。不得凭记忆猜测歌曲 ID。平台 ID 卡片 `{"type":"music","music_type":"qq","id":"歌曲ID"}` 仅用于 ID 明确出现在用户当前消息中的场景；模型自行补出的 ID 会被拒绝。平台可为 `qq`、`163`、`kugou`、`kuwo` 或 `migu`；该格式依赖 NapCat 的 `musicSignUrl` 服务支持 ID 解析。也可直接使用 `{"type":"music","music_type":"custom","url":"跳转地址","image":"封面地址","audio":"可选音频地址","title":"可选标题","content":"可选简介"}`。音乐卡片必须作为唯一组件单独发送，否则插件会拒绝请求，防止 NapCat 静默丢弃失败的音乐段后仍返回其他组件的消息 ID。
+
 媒体来源必须且只能选择 `path`、`url`、`base64`、`media_ref` 中的一项。Base64 也可使用标准 `data:*/*;base64,...` 形式。
 
 ## 文件与网络边界
@@ -118,6 +120,7 @@ QQ extension tools initialized
 - 路径会在解析符号链接后再次校验；目录、设备文件和越界路径会拒绝。
 - 本地文件与 HTTP(S) 下载默认上限为 100 MiB，Base64 解码默认上限为 10 MiB。
 - URL 会校验协议、凭据、域名策略、所有 DNS 结果以及每次重定向；默认拒绝回环、私网、链路本地和保留地址。
+- `qq_search` 会把歌名和可选歌手发送到 QQ 音乐公开搜索接口，并继续遵守 `network.allowed_domains` 与 `network.blocked_domains`。
 - 插件创建的临时媒体默认保留 6 小时。NapCat 或 AstrBot 创建的文件不会由本插件删除。
 - 模型只获得不透明 `media_ref`，不会获得 NapCat 返回的绝对媒体路径。
 

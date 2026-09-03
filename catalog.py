@@ -702,7 +702,18 @@ OPERATION_PARAMETERS = {
             '{"type":"face","id":14}、{"type":"at","id":正整数}、'
             '{"type":"reply","id":正整数}、{"type":"dice"}、{"type":"rps"}、'
             "媒体组件 type 必须是 image、record、video 或 file，并提供 path、url、"
-            "base64、media_ref 中恰好一项。"
+            "base64、media_ref 中恰好一项。用户按歌名点歌时必须使用 "
+            '{"type":"music","music_type":"qq_search","query":"准确歌名",'
+            '"artist":"可选歌手"}，插件会查询并校验 QQ 音乐结果；不得凭记忆猜歌曲 ID。'
+            "只有平台 ID 明确出现在用户当前消息中时才可使用平台 ID 卡片 "
+            '{"type":"music","music_type":"qq","id":"歌曲ID"}，平台支持 '
+            "qq、163、kugou、kuwo、migu；该模式依赖 NapCat 的 musicSignUrl "
+            "支持 ID 解析。签名服务不支持 ID 时，使用 "
+            '{"type":"music","music_type":"custom","url":"跳转地址",'
+            '"image":"封面地址","audio":"可选音频地址","title":"可选标题",'
+            '"content":"可选简介"}。不要先发送测试或占位消息。'
+            "音乐卡片必须作为唯一组件单独发送；如需附带说明文字，请在最终回复中简短说明。"
+            "调用成功仅表示 NapCat 已接受发送请求，最终回复不得重复其中的正文或卡片。"
         ),
     ),
     "qq_send_forward.send": _params(
@@ -793,7 +804,10 @@ TOOL_DESCRIPTIONS = {
     "qq_group_request": "查询、通过或拒绝加群申请和群邀请；管理员私聊可查询全部群申请。",
     "qq_group_member_manage": "戳一戳群成员，或修改群成员名片、头衔、禁言、移出和管理员身份。",
     "qq_group_manage": "执行全员禁言、改群名或头像、签到、退群。",
-    "qq_send_message": "向当前或获授权的 QQ 会话发送结构化消息。",
+    "qq_send_message": (
+        "向当前或获授权的 QQ 会话发送结构化消息；音乐卡片必须作为唯一组件单独发送。"
+        "调用成功仅表示 NapCat 已接受发送请求；不要在最终回复中重复消息正文或卡片。"
+    ),
     "qq_send_forward": "发送群聊或私聊合并转发。",
     "qq_message_get": "根据消息 ID 获取并规范化消息。",
     "qq_forward_get": "读取并展开合并转发消息。",
