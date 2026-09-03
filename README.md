@@ -109,6 +109,8 @@ QQ extension tools initialized
 
 支持的组件类型为：`text`、`image`、`record`、`video`、`file`、`at`、`reply`、`face`、`dice`、`rps`、`share`、`music`、`contact`、`location`、`json`。
 
+发送 `dice` 或 `rps` 时，插件会在 NapCat 接受消息后使用返回的 `message_id` 自动读取一次消息，并通过工具结果的 `data.random_results` 返回最终点数或手势。回查失败不会把已成功发送的消息报告为失败，而会在 `warnings` 中说明。
+
 分享卡片使用 `{"type":"share","url":"跳转地址","title":"标题","content":"可选内容","image":"可选预览图"}`。插件会校验 URL 并固定生成新闻 Ark JSON；分享卡片必须作为唯一组件发送，不要让模型自行拼接底层 JSON，也不得擅自替换用户提供的 URL。
 
 用户按歌名点歌时使用 `{"type":"music","music_type":"qq_search","query":"准确歌名","artist":"可选歌手"}`，插件会查询 QQ 音乐，并且只发送歌名及可选歌手完全匹配的结果。不得凭记忆猜测歌曲 ID。平台 ID 卡片 `{"type":"music","music_type":"qq","id":"歌曲ID"}` 仅用于 ID 明确出现在用户当前消息中的场景；模型自行补出的 ID 会被拒绝。平台可为 `qq`、`163`、`kugou`、`kuwo` 或 `migu`；该格式依赖 NapCat 的 `musicSignUrl` 服务支持 ID 解析。也可直接使用 `{"type":"music","music_type":"custom","url":"跳转地址","image":"封面地址","audio":"可选音频地址","title":"可选标题","content":"可选简介"}`。音乐卡片必须作为唯一组件单独发送，否则插件会拒绝请求，防止 NapCat 静默丢弃失败的音乐段后仍返回其他组件的消息 ID。

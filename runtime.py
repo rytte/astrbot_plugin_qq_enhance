@@ -451,6 +451,7 @@ class QQRuntime:
         caller_id = str(event.get_sender_id() or "")
         target_kind = "none"
         target_id = ""
+        warnings: list[str] = []
         spec = OPERATION_MAP.get(operation_id)
         try:
             if spec is None or operation not in TOOL_OPERATIONS.get(tool, ()):
@@ -534,6 +535,75 @@ class QQRuntime:
             data = local_result
             if action is not None:
                 data = await self.call_action(event, action, action_params)
+                if operation_id == "qq_send_message.send" and any(
+                    isinstance(component, dict)
+                    and component.get("type") in {"dice", "rps"}
+                    for component in normalized["components"]
+                ):
+                    message_id = (
+                        data.get("message_id") if isinstance(data, dict) else None
+                    )
+                    if (
+                        isinstance(message_id, (str, int))
+                        and not isinstance(message_id, bool)
+                        and str(message_id).lstrip("-").isdecimal()
+                    ):
+                        try:
+                            sent_message = await self.call_action(
+                                event, "get_msg", {"message_id": message_id}
+                            )
+                        except QQToolError as exc:
+                            warnings.append(f"随机结果自动回查失败：{exc.message}")
+                        else:
+                            message = (
+                                sent_message.get("message")
+                                if isinstance(sent_message, dict)
+                                else None
+                            )
+                            random_results = []
+                            if isinstance(message, list):
+                                for component in message:
+                                    if not isinstance(component, dict):
+                                        continue
+                                    component_type = component.get("type")
+                                    component_data = component.get("data")
+                                    if component_type not in {
+                                        "dice",
+                                        "rps",
+                                    } or not isinstance(component_data, dict):
+                                        continue
+                                    raw_result = str(
+                                        component_data.get("result") or ""
+                                    ).strip()
+                                    if component_type == "dice":
+                                        resolved_result = (
+                                            raw_result
+                                            if raw_result
+                                            in {"1", "2", "3", "4", "5", "6"}
+                                            else "未知"
+                                        )
+                                    else:
+                                        resolved_result = {
+                                            "1": "布",
+                                            "2": "剪刀",
+                                            "3": "石头",
+                                        }.get(raw_result, "未知")
+                                    random_results.append(
+                                        {
+                                            "type": component_type,
+                                            "result": resolved_result,
+                                        }
+                                    )
+                            if random_results:
+                                data = {**data, "random_results": random_results}
+                            else:
+                                warnings.append(
+                                    "消息已发送，但未能读取随机组件的最终结果"
+                                )
+                    else:
+                        warnings.append(
+                            "消息已发送，但响应中没有可用于回查的 message_id"
+                        )
                 if operation_id in {
                     "qq_group_request.list",
                     "qq_group_request.ignored",
@@ -578,6 +648,8 @@ class QQRuntime:
                     )
             data = await self.normalize_media_result(event, spec, data)
             result = self.success_result(operation_id, data, normalized)
+            if warnings:
+                result["warnings"] = warnings
             await self.audit(
                 event,
                 spec,
@@ -2252,10 +2324,16 @@ class QQRuntime:
                 "warnings": [],
             }
         if operation_id in {"qq_send_message.send", "qq_send_forward.send"}:
+            summary = "NapCat 已接受发送请求；最终回复不要重复消息正文或卡片"
+            if isinstance(data, dict) and data.get("random_results"):
+                summary = (
+                    "NapCat 已接受发送请求；随机组件最终结果见 data.random_results；"
+                    "最终回复不要重复消息正文或卡片"
+                )
             return {
                 "ok": True,
                 "operation": operation_id,
-                "summary": "NapCat 已接受发送请求；最终回复不要重复消息正文或卡片",
+                "summary": summary,
                 "data": self.sanitize_data(data),
                 "next_cursor": None,
                 "warnings": [],

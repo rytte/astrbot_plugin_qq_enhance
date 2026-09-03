@@ -44,6 +44,14 @@ class FakeClient:
         if action == "get_login_info":
             return {"user_id": 99999, "nickname": "bot"}
         if action == "get_msg":
+            if params["message_id"] == 125:
+                return {
+                    "message_id": 125,
+                    "message": [
+                        {"type": "rps", "data": {"result": "3"}},
+                        {"type": "dice", "data": {"result": 5}},
+                    ],
+                }
             if params["message_id"] == 124:
                 return {"message_id": 124, "raw_message": "plain fallback"}
             return {
@@ -61,6 +69,8 @@ class FakeClient:
                     }
                 ],
             }
+        if action in {"send_private_msg", "send_group_msg"}:
+            return {"message_id": 125}
         if action == "ocr_image":
             return [{"text": f"line-{index}"} for index in range(33)]
         if action == "get_forward_msg":
@@ -226,9 +236,7 @@ async def test_private_file_url_uses_current_attachment_without_file_id(
         ],
     )
 
-    result = json.loads(
-        await runtime.execute(event, "qq_private_files", "url", {})
-    )
+    result = json.loads(await runtime.execute(event, "qq_private_files", "url", {}))
 
     assert result["ok"] is True
     assert result["data"] == [
@@ -529,15 +537,15 @@ async def test_stranger_info_allows_only_admin_private_cross_target(tmp_path) ->
     runtime, client, _ = await make_runtime(tmp_path)
     spec = OPERATION_MAP["qq_user_info.stranger"]
 
-    assert await runtime.authorize(
-        FakeEvent(admin=True), spec, {"user_id": 30003}
-    ) == ("private", "30003", True)
+    assert await runtime.authorize(FakeEvent(admin=True), spec, {"user_id": 30003}) == (
+        "private",
+        "30003",
+        True,
+    )
     assert not any(action == "get_friend_list" for action, _ in client.calls)
 
     with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
-        await runtime.authorize(
-            FakeEvent(admin=False), spec, {"user_id": 30003}
-        )
+        await runtime.authorize(FakeEvent(admin=False), spec, {"user_id": 30003})
     with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
         await runtime.authorize(
             FakeEvent(group_id="30001", admin=True), spec, {"user_id": 30003}
@@ -573,9 +581,7 @@ async def test_group_request_list_allows_admin_private_without_group_id(
             {"group_id": 30001},
         )
     )
-    assert [item["group_id"] for item in filtered["data"]["join_requests"]] == [
-        30001
-    ]
+    assert [item["group_id"] for item in filtered["data"]["join_requests"]] == [30001]
 
     denied = json.loads(
         await runtime.execute(
@@ -691,9 +697,7 @@ async def test_cross_session_write_skips_confirmation_unless_configured(
         tmp_path / "configured",
         {
             "permissions": {"allow_cross_private": True},
-            "confirmation": {
-                "operations": ["qq_friend_manage.set_remark"]
-            },
+            "confirmation": {"operations": ["qq_friend_manage.set_remark"]},
         },
     )
     configured = json.loads(
@@ -916,9 +920,7 @@ async def test_music_components_follow_napcat_contract(tmp_path) -> None:
         event,
         {
             "target": {"type": "current"},
-            "components": [
-                {"type": "music", "music_type": "kugou", "id": "song-1"}
-            ],
+            "components": [{"type": "music", "music_type": "kugou", "id": "song-1"}],
         },
     )
     assert platform_params["message"] == [
@@ -1083,8 +1085,7 @@ async def test_qq_music_search_uses_exact_metadata(tmp_path) -> None:
         "title": "小苹果",
         "content": "筷子兄弟",
         "image": (
-            "https://y.gtimg.cn/music/photo_new/"
-            "T002R300x300M000000owywt4caGcV.jpg"
+            "https://y.gtimg.cn/music/photo_new/T002R300x300M000000owywt4caGcV.jpg"
         ),
     }
 
@@ -1104,6 +1105,35 @@ def test_send_success_result_tells_model_not_to_repeat_content() -> None:
     assert "NapCat 已接受发送请求" in result["summary"]
     assert "直接发送成功" not in result["summary"]
     assert "不要重复消息正文或卡片" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_random_components_are_resolved_after_send(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "rps"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "message_id": 125,
+        "random_results": [
+            {"type": "rps", "result": "石头"},
+            {"type": "dice", "result": "5"},
+        ],
+    }
+    assert "随机组件最终结果见 data.random_results" in result["summary"]
+    assert result["warnings"] == []
+    assert ("get_msg", {"message_id": 125}) in client.calls
 
 
 @pytest.mark.asyncio
