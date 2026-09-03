@@ -1221,6 +1221,14 @@ class QQRuntime:
                 "invalid_parameters",
                 "音乐卡片必须作为唯一组件单独发送",
             )
+        if len(components) != 1 and any(
+            isinstance(component, dict) and component.get("type") == "share"
+            for component in components
+        ):
+            raise QQToolError(
+                "invalid_parameters",
+                "分享卡片必须作为唯一组件单独发送",
+            )
         message = []
         allowed_fields = {
             "text": {"type", "text"},
@@ -1233,6 +1241,7 @@ class QQRuntime:
             "face": {"type", "id"},
             "dice": {"type"},
             "rps": {"type"},
+            "share": {"type", "url", "title", "content", "image"},
             "music": {
                 "type",
                 "music_type",
@@ -1251,6 +1260,7 @@ class QQRuntime:
         }
         required_fields = {
             "text": {"text"},
+            "share": {"url", "title"},
             "music": {"music_type"},
             "at": {"id"},
             "reply": {"id"},
@@ -1294,6 +1304,60 @@ class QQRuntime:
                 )
             elif component_type in {"dice", "rps"}:
                 message.append({"type": component_type, "data": {}})
+            elif component_type == "share":
+                invalid = [
+                    key
+                    for key in ("url", "title", "content", "image")
+                    if key in component and not isinstance(component[key], str)
+                ]
+                if invalid:
+                    raise QQToolError(
+                        "invalid_parameters",
+                        "分享卡片字段必须是字符串：" + "、".join(invalid),
+                    )
+                url = component["url"].strip()
+                title = component["title"].strip()
+                content = str(component.get("content") or "").strip()
+                image = str(component.get("image") or "").strip()
+                if not url or not title:
+                    raise QQToolError(
+                        "invalid_parameters",
+                        "分享卡片的 url 和 title 不能为空",
+                    )
+                if (
+                    len(url) > 4096
+                    or len(image) > 4096
+                    or len(title) > 200
+                    or len(content) > 2000
+                ):
+                    raise QQToolError(
+                        "invalid_parameters",
+                        "分享卡片字段超过长度上限",
+                    )
+                await self.validate_url(url, resolve_dns=False)
+                if image:
+                    await self.validate_url(image, resolve_dns=False)
+                news = {
+                    "title": title,
+                    "desc": content,
+                    "jumpUrl": url,
+                    "preview": image,
+                    "tag": "链接分享",
+                }
+                encoded = json.dumps(
+                    {
+                        "app": "com.tencent.structmsg",
+                        "config": {"autosize": 1, "forward": 1, "type": "normal"},
+                        "desc": "新闻",
+                        "meta": {"news": news},
+                        "prompt": f"[分享] {title}",
+                        "ver": "0.0.0.1",
+                        "view": "news",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                message.append({"type": "json", "data": {"data": encoded}})
             elif component_type == "music":
                 music_type = component["music_type"]
                 id_types = {"qq", "163", "kugou", "kuwo", "migu"}
@@ -2018,11 +2082,14 @@ class QQRuntime:
                     return path
             raise QQToolError("network_error", "下载重定向次数超过 5 次")
 
-    async def validate_url(self, raw_url: str) -> None:
+    async def validate_url(self, raw_url: str, *, resolve_dns: bool = True) -> None:
         """Validate URL scheme, hostname policy, and all DNS answers.
 
         Args:
             raw_url: Untrusted URL.
+            resolve_dns: Whether the plugin will connect to the host and must validate
+                every resolved address. Disable only for URLs embedded without a
+                server-side request.
 
         Raises:
             QQToolError: If any URL or resolved address is forbidden.
@@ -2042,6 +2109,20 @@ class QQRuntime:
             hostname == item or hostname.endswith("." + item) for item in allowed
         ):
             raise QQToolError("permission_denied", "URL 域名不在允许列表")
+        if not resolve_dns:
+            try:
+                literal_ip = ipaddress.ip_address(hostname)
+            except ValueError:
+                if "." not in hostname or hostname.endswith(
+                    (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+                ):
+                    raise QQToolError(
+                        "permission_denied", "嵌入 URL 不允许使用本地主机名"
+                    )
+                return
+            if self.config["network"]["allow_private_network"] or literal_ip.is_global:
+                return
+            raise QQToolError("permission_denied", "嵌入 URL 不允许使用私网或保留 IP")
         try:
             addresses = await asyncio.get_running_loop().getaddrinfo(
                 hostname,

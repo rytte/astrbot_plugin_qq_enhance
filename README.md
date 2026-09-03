@@ -56,7 +56,7 @@ QQ extension tools initialized
 | `qq_essence` | 群精华消息 |
 | `qq_notice` | 群公告 |
 
-明确不实现以下能力：主动添加好友、删除单向好友、匿名成员禁言、窗口抖动、分享卡片，以及 Cookies/Token/CSRF 等账号凭证读取。NapCat 4.18.19 会以“未知的消息类型”拒绝 `shake` 和 `share` 消息段；好友戳一戳由 `qq_friend_interact.poke` 单独提供。
+明确不实现以下能力：主动添加好友、删除单向好友、匿名成员禁言、窗口抖动，以及 Cookies/Token/CSRF 等账号凭证读取。NapCat 4.18.19 会以“未知的消息类型”拒绝原生 `shake` 和 `share` 消息段；插件提供的结构化 `share` 组件会在校验后编码为受限的 Ark JSON 卡片。好友戳一戳由 `qq_friend_interact.poke` 单独提供。
 
 ## 权限规则
 
@@ -107,7 +107,9 @@ QQ extension tools initialized
 }
 ```
 
-支持的组件类型为：`text`、`image`、`record`、`video`、`file`、`at`、`reply`、`face`、`dice`、`rps`、`music`、`contact`、`location`、`json`。
+支持的组件类型为：`text`、`image`、`record`、`video`、`file`、`at`、`reply`、`face`、`dice`、`rps`、`share`、`music`、`contact`、`location`、`json`。
+
+分享卡片使用 `{"type":"share","url":"跳转地址","title":"标题","content":"可选内容","image":"可选预览图"}`。插件会校验 URL 并固定生成新闻 Ark JSON；分享卡片必须作为唯一组件发送，不要让模型自行拼接底层 JSON，也不得擅自替换用户提供的 URL。
 
 用户按歌名点歌时使用 `{"type":"music","music_type":"qq_search","query":"准确歌名","artist":"可选歌手"}`，插件会查询 QQ 音乐，并且只发送歌名及可选歌手完全匹配的结果。不得凭记忆猜测歌曲 ID。平台 ID 卡片 `{"type":"music","music_type":"qq","id":"歌曲ID"}` 仅用于 ID 明确出现在用户当前消息中的场景；模型自行补出的 ID 会被拒绝。平台可为 `qq`、`163`、`kugou`、`kuwo` 或 `migu`；该格式依赖 NapCat 的 `musicSignUrl` 服务支持 ID 解析。也可直接使用 `{"type":"music","music_type":"custom","url":"跳转地址","image":"封面地址","audio":"可选音频地址","title":"可选标题","content":"可选简介"}`。音乐卡片必须作为唯一组件单独发送，否则插件会拒绝请求，防止 NapCat 静默丢弃失败的音乐段后仍返回其他组件的消息 ID。
 
@@ -119,7 +121,7 @@ QQ extension tools initialized
 - 额外目录通过 `files.allowed_roots` 配置，并且必须是已经存在的绝对目录。
 - 路径会在解析符号链接后再次校验；目录、设备文件和越界路径会拒绝。
 - 本地文件与 HTTP(S) 下载默认上限为 100 MiB，Base64 解码默认上限为 10 MiB。
-- URL 会校验协议、凭据、域名策略、所有 DNS 结果以及每次重定向；默认拒绝回环、私网、链路本地和保留地址。
+- 插件会实际请求的 URL 校验协议、凭据、域名策略、所有 DNS 结果以及每次重定向，默认拒绝回环、私网、链路本地和保留地址。分享卡片中仅嵌入而不由插件请求的 URL 不解析 DNS，但仍校验协议、凭据、域名策略、本地主机名和 IP 字面量。
 - `qq_search` 会把歌名和可选歌手发送到 QQ 音乐公开搜索接口，并继续遵守 `network.allowed_domains` 与 `network.blocked_domains`。
 - 插件创建的临时媒体默认保留 6 小时。NapCat 或 AstrBot 创建的文件不会由本插件删除。
 - 模型只获得不透明 `media_ref`，不会获得 NapCat 返回的绝对媒体路径。

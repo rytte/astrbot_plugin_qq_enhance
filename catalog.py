@@ -701,6 +701,9 @@ OPERATION_PARAMETERS = {
             '不得使用 data 包装。常用组件：{"type":"text","text":"..."}、'
             '{"type":"face","id":14}、{"type":"at","id":正整数}、'
             '{"type":"reply","id":正整数}、{"type":"dice"}、{"type":"rps"}、'
+            '{"type":"share","url":"跳转地址","title":"标题",'
+            '"content":"可选内容","image":"可选预览图"}。分享卡片会安全编码为 Ark JSON，'
+            "必须作为唯一组件发送；不要自行拼接分享卡片 JSON，也不得擅自替换用户提供的 URL。"
             "媒体组件 type 必须是 image、record、video 或 file，并提供 path、url、"
             "base64、media_ref 中恰好一项。用户按歌名点歌时必须使用 "
             '{"type":"music","music_type":"qq_search","query":"准确歌名",'

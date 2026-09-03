@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from types import SimpleNamespace
@@ -835,6 +836,22 @@ async def test_url_validator_rejects_private_addresses_by_default(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_embedded_url_validation_skips_dns_but_rejects_local_hosts(
+    tmp_path,
+) -> None:
+    runtime, _, _ = await make_runtime(tmp_path)
+    loop = asyncio.get_running_loop()
+    with patch.object(loop, "getaddrinfo", new=AsyncMock()) as resolver:
+        await runtime.validate_url("https://example.com", resolve_dns=False)
+    resolver.assert_not_awaited()
+
+    with pytest.raises(QQToolError, match="不允许使用本地主机名"):
+        await runtime.validate_url("http://localhost/path", resolve_dns=False)
+    with pytest.raises(QQToolError, match="不允许使用私网或保留 IP"):
+        await runtime.validate_url("http://198.18.1.2/path", resolve_dns=False)
+
+
+@pytest.mark.asyncio
 async def test_structured_message_is_converted_to_onebot_segments(tmp_path) -> None:
     runtime, _, _ = await make_runtime(tmp_path)
     event = FakeEvent()
@@ -1104,20 +1121,52 @@ async def test_window_shake_is_not_exposed_as_a_message_component(tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_share_is_not_exposed_as_a_message_component(tmp_path) -> None:
+async def test_share_component_is_converted_to_bounded_json(tmp_path) -> None:
     runtime, _, _ = await make_runtime(tmp_path)
+    runtime.validate_url = AsyncMock()
 
-    with pytest.raises(QQToolError, match="type 不受支持"):
+    _, params = await runtime.prepare_message(
+        FakeEvent(),
+        {
+            "target": {"type": "current"},
+            "components": [
+                {
+                    "type": "share",
+                    "url": "https://example.com",
+                    "title": "QQ扩展分享测试",
+                    "content": "分享组件测试",
+                }
+            ],
+        },
+    )
+
+    runtime.validate_url.assert_awaited_once_with(
+        "https://example.com", resolve_dns=False
+    )
+    assert params["message"][0]["type"] == "json"
+    card = json.loads(params["message"][0]["data"]["data"])
+    assert card["app"] == "com.tencent.structmsg"
+    assert card["prompt"] == "[分享] QQ扩展分享测试"
+    assert card["meta"]["news"] == {
+        "title": "QQ扩展分享测试",
+        "desc": "分享组件测试",
+        "jumpUrl": "https://example.com",
+        "preview": "",
+        "tag": "链接分享",
+    }
+
+    with pytest.raises(QQToolError, match="分享卡片必须作为唯一组件单独发送"):
         await runtime.prepare_message(
             FakeEvent(),
             {
                 "target": {"type": "current"},
                 "components": [
+                    {"type": "text", "text": "duplicate"},
                     {
                         "type": "share",
-                        "url": "https://www.qq.com/",
-                        "title": "unsupported",
-                    }
+                        "url": "https://example.com",
+                        "title": "Share",
+                    },
                 ],
             },
         )

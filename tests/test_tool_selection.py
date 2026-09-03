@@ -98,6 +98,9 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     send_tool = manager.get_func("qq_send_message")
     params_description = send_tool.parameters["properties"]["params"]["description"]
     assert "不得使用 data 包装" in params_description
+    assert '"type":"share"' in params_description
+    assert "不要自行拼接分享卡片 JSON" in params_description
+    assert "不得擅自替换用户提供的 URL" in params_description
     assert '"music_type":"custom"' in params_description
     assert '"music_type":"qq_search"' in params_description
     assert "不得凭记忆猜歌曲 ID" in params_description
