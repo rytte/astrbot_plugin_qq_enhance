@@ -163,15 +163,15 @@ def test_json_card_uses_allowlist_and_strips_url_secrets() -> None:
 def test_json_contact_cards_expose_only_validated_identity() -> None:
     group_card = {
         "app": "com.tencent.contact.lua",
-        "prompt": "群名片: QQ扩展确认测试",
+        "prompt": "群名片: 示例测试群",
         "view": "contact",
         "meta": {
             "contact": {
-                "contact": "965582257",
-                "nickname": "QQ扩展确认测试",
+                "contact": "30001",
+                "nickname": "示例测试群",
                 "tag": "群名片",
                 "jumpUrl": (
-                    "mqqapi://card/show_pslcard?uin=965582257&card_type=group"
+                    "mqqapi://card/show_pslcard?uin=30001&card_type=group"
                     "&source=qrcode"
                 ),
             }
@@ -182,11 +182,11 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
         "view": "contact",
         "meta": {
             "contact": {
-                "contact": "1661851214",
-                "nickname": "Illidan",
+                "contact": "20001",
+                "nickname": "示例用户",
                 "tag": "QQ号",
                 "jumpUrl": (
-                    "mqqapi://card/show_pslcard?uin=1661851214&card_type=person"
+                    "mqqapi://card/show_pslcard?uin=20001&card_type=person"
                 ),
             }
         },
@@ -194,16 +194,16 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
     recommended_friend_card = {
         "app": "com.tencent.contact.lua",
         "bizsrc": "cardshare.cardshare",
-        "prompt": "推荐联系人：FF",
+        "prompt": "推荐联系人：示例联系人",
         "view": "contact",
         "meta": {
             "contact": {
-                "contact": "账号：1748088442",
-                "nickname": "FF",
+                "contact": "账号：20002",
+                "nickname": "示例联系人",
                 "tag": "推荐好友",
                 "jumpUrl": (
                     "mqqapi://card/show_pslcard?src_type=internal"
-                    "&source=sharecard&version=1&uin=1748088442"
+                    "&source=sharecard&version=1&uin=20002"
                 ),
             }
         },
@@ -245,11 +245,11 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
         }
     )
 
-    assert group_result.startswith("[QQ群名片：群号：965582257；名称：QQ扩展确认测试")
+    assert group_result.startswith("[QQ群名片：群号：30001；名称：示例测试群")
     assert "mqqapi" not in group_result
-    assert person_result.startswith("[QQ联系人名片：QQ号：1661851214；名称：Illidan")
+    assert person_result.startswith("[QQ联系人名片：QQ号：20001；名称：示例用户")
     assert recommended_friend_result.startswith(
-        "[QQ联系人名片：QQ号：1748088442；名称：FF"
+        "[QQ联系人名片：QQ号：20002；名称：示例联系人"
     )
     assert "mqqapi" not in recommended_friend_result
     assert "123456" not in generic_result

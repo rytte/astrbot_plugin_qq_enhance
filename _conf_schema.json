@@ -146,6 +146,24 @@
       "retention_days": {"type": "int", "description": "事件保留天数", "default": 30, "minimum": 1, "maximum": 365}
     }
   },
+  "request_notifications": {
+    "type": "object",
+    "description": "申请事件机器人通知",
+    "default": {},
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "收到好友申请、入群申请或群邀请时由模型通知管理员",
+        "default": false
+      },
+      "admin_user_ids": {
+        "type": "list",
+        "description": "接收机器人私聊通知的管理员 QQ 号",
+        "hint": "必须填写字符串形式的 QQ 号，例如 [\"10001\", \"10002\"]；若需处理申请，账号必须已是 AstrBot 管理员，本列表不会授予管理员权限；开启通知时不能为空。",
+        "default": []
+      }
+    }
+  },
   "inbound": {
     "type": "object",
     "description": "入站消息语义化",

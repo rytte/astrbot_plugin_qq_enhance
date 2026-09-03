@@ -70,3 +70,33 @@ async def test_expired_pending_cannot_be_claimed(tmp_path) -> None:
         await storage.claim_pending("deadbeef", "10001", "session-a", "platform-a")
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_request_event_is_stored_once_and_returns_request_id(tmp_path) -> None:
+    storage = Storage(tmp_path / "data.sqlite3")
+    await storage.initialize()
+    record = {
+        "created_at": int(time.time()),
+        "platform_id": "platform-a",
+        "post_type": "request",
+        "event_type": "friend",
+        "sub_type": "",
+        "actor_id": "10001",
+        "group_id": "",
+        "event_key": "same-request-event",
+        "data": {},
+        "flag": "request-flag",
+        "comment_hash": "comment-hash",
+    }
+
+    request_id = await storage.add_event(record)
+    duplicate_id = await storage.add_event(record)
+
+    assert request_id == 1
+    assert duplicate_id is None
+    requests = await storage.list_requests("friend")
+    assert len(requests) == 1
+    assert requests[0]["request_id"] == request_id
+    assert await storage.get_pending_request(request_id, "platform-a") == requests[0]
+    assert await storage.get_pending_request(request_id, "platform-b") is None

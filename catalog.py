@@ -651,8 +651,14 @@ OPERATION_PARAMETERS = {
     "qq_friend_interact.like": _params("user_id", optional=("times",)),
     "qq_friend_interact.poke": _params("user_id"),
     "qq_friend_request.list": _params(optional=("status", *PAGE_PARAMS)),
-    "qq_friend_request.approve": _params("flag", optional=("remark",)),
-    "qq_friend_request.reject": _params("flag"),
+    "qq_friend_request.approve": _params(
+        optional=("request_id", "flag", "remark"),
+        hint="使用通知中的 request_id，或直接提供 flag；request_id 与 flag 必须二选一。",
+    ),
+    "qq_friend_request.reject": _params(
+        optional=("request_id", "flag"),
+        hint="使用通知中的 request_id，或直接提供 flag；request_id 与 flag 必须二选一。",
+    ),
     "qq_friend_manage.delete": _params("user_id"),
     "qq_friend_manage.set_remark": _params("user_id", "remark"),
     "qq_group_list.list": _params(optional=(*PAGE_PARAMS, "no_cache")),
@@ -668,9 +674,19 @@ OPERATION_PARAMETERS = {
     ),
     "qq_group_request.list": _params(optional=("group_id",)),
     "qq_group_request.ignored": _params("group_id", optional=PAGE_PARAMS),
-    "qq_group_request.approve": _params("group_id", "flag", "sub_type"),
+    "qq_group_request.approve": _params(
+        optional=("request_id", "group_id", "flag", "sub_type"),
+        hint=(
+            "优先使用通知中的 request_id；否则必须同时提供 group_id、flag、sub_type。"
+            "两种形式不能混用。"
+        ),
+    ),
     "qq_group_request.reject": _params(
-        "group_id", "flag", "sub_type", optional=("reason",)
+        optional=("request_id", "group_id", "flag", "sub_type", "reason"),
+        hint=(
+            "优先使用通知中的 request_id；否则必须同时提供 group_id、flag、sub_type。"
+            "两种形式不能混用。"
+        ),
     ),
     "qq_group_member_manage.poke": _params("group_id", "user_id"),
     "qq_group_member_manage.card": _params("group_id", "user_id", "card"),

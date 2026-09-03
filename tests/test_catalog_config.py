@@ -61,6 +61,17 @@ def test_inbound_schema_defaults_match_runtime_config() -> None:
     } == defaults
 
 
+def test_request_notification_schema_defaults_match_runtime_config() -> None:
+    defaults = validate_config(None)["request_notifications"]
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert {
+        key: item["default"]
+        for key, item in schema["request_notifications"]["items"].items()
+    } == defaults
+
+
 @pytest.mark.parametrize(
     "config",
     [
@@ -68,6 +79,10 @@ def test_inbound_schema_defaults_match_runtime_config() -> None:
         {"confirmation": {"enabled": True}},
         {"confirmation": {"extra_operations": []}},
         {"events": {"trigger_llm": True}},
+        {"request_notifications": {"enabled": True}},
+        {"request_notifications": {"admin_user_ids": ["not-a-qq-id"]}},
+        {"request_notifications": {"admin_user_ids": ["0"]}},
+        {"request_notifications": {"enabled": 1}},
         {"platform": {"minimum_napcat_version": "4.18.19"}},
         {"toolsets": {"exposure_mode": "everything"}},
         {"permissions": {"admin_users": []}},
@@ -96,12 +111,20 @@ def test_valid_config_preserves_explicit_values() -> None:
         {
             "toolsets": {"exposure_mode": "compact", "enabled_packs": ["group"]},
             "confirmation": {"ttl_seconds": 120},
+            "request_notifications": {
+                "enabled": True,
+                "admin_user_ids": ["10001"],
+            },
         }
     )
     assert result["toolsets"]["exposure_mode"] == "compact"
     assert "admin_users" not in result["permissions"]
     assert result["confirmation"]["ttl_seconds"] == 120
     assert result["confirmation"]["operations"]
+    assert result["request_notifications"] == {
+        "enabled": True,
+        "admin_user_ids": ["10001"],
+    }
     assert result["inbound"] == {
         "semanticize_components": True,
         "respond_to_poke": True,

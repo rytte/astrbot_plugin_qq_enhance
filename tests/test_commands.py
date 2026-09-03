@@ -9,9 +9,9 @@ def test_format_audit_rows_is_human_readable() -> None:
             {
                 "created_at": 0,
                 "operation_id": "qq_group_manage.leave",
-                "caller_id": "1661851214",
+                "caller_id": "10001",
                 "target_kind": "group",
-                "target_id": "965582257",
+                "target_id": "30001",
                 "risk": "destructive",
                 "decision": "confirmed",
                 "result_code": "ok",
@@ -24,8 +24,8 @@ def test_format_audit_rows_is_human_readable() -> None:
     assert text.startswith("最近 1 条审计记录：")
     assert "1970-01-01" in text
     assert "操作：qq_group_manage.leave" in text
-    assert "调用者：1661851214" in text
-    assert "目标：群 965582257" in text
+    assert "调用者：10001" in text
+    assert "目标：群 30001" in text
     assert "风险：破坏性（destructive）" in text
     assert "决策：已确认（confirmed）" in text
     assert "结果：成功（ok）" in text

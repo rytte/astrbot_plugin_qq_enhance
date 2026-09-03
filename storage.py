@@ -84,6 +84,8 @@ class Storage:
                     );
                     CREATE INDEX IF NOT EXISTS idx_events_created
                         ON events(created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_events_key
+                        ON events(event_key);
 
                     CREATE TABLE IF NOT EXISTS requests (
                         request_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -353,20 +355,31 @@ class Storage:
 
         return await asyncio.to_thread(list_sync)
 
-    async def add_event(self, record: dict[str, Any]) -> None:
+    async def add_event(self, record: dict[str, Any]) -> int | None:
         """Persist one normalized OneBot request or notice event.
 
         Args:
             record: Normalized event metadata.
+
+        Returns:
+            The request ID for a request, the event ID for a notice, or ``None``
+            when the same event was already stored.
         """
 
         data_json = json.dumps(
             record.get("data", {}), sort_keys=True, ensure_ascii=False
         )
 
-        def add_sync() -> None:
+        def add_sync() -> int | None:
             with sqlite3.connect(self.database_path, timeout=10) as connection:
-                connection.execute(
+                connection.execute("BEGIN IMMEDIATE")
+                duplicate = connection.execute(
+                    "SELECT 1 FROM events WHERE event_key = ? LIMIT 1",
+                    (record["event_key"],),
+                ).fetchone()
+                if duplicate:
+                    return None
+                event_cursor = connection.execute(
                     """
                     INSERT INTO events (
                         created_at, platform_id, post_type, event_type, sub_type,
@@ -386,7 +399,7 @@ class Storage:
                     ),
                 )
                 if record["post_type"] == "request":
-                    connection.execute(
+                    request_cursor = connection.execute(
                         """
                         INSERT INTO requests (
                             created_at, platform_id, request_type, sub_type,
@@ -404,8 +417,10 @@ class Storage:
                             record.get("comment_hash", ""),
                         ),
                     )
+                    return int(request_cursor.lastrowid)
+                return int(event_cursor.lastrowid)
 
-        await asyncio.to_thread(add_sync)
+        return await asyncio.to_thread(add_sync)
 
     async def list_requests(
         self, request_type: str, status: str = "pending", limit: int = 50
@@ -437,6 +452,35 @@ class Storage:
                 return [dict(row) for row in rows]
 
         return await asyncio.to_thread(list_sync)
+
+    async def get_pending_request(
+        self, request_id: int, platform_id: str
+    ) -> dict[str, Any] | None:
+        """Return one pending request scoped to the current platform instance.
+
+        Args:
+            request_id: Plugin-local request identifier shown in notifications.
+            platform_id: Current AstrBot platform instance identifier.
+
+        Returns:
+            Pending request metadata including its internal flag, or ``None``.
+        """
+
+        def get_sync() -> dict[str, Any] | None:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    """
+                    SELECT request_id, created_at, platform_id, request_type,
+                           sub_type, actor_id, group_id, flag, status
+                    FROM requests
+                    WHERE request_id = ? AND platform_id = ? AND status = 'pending'
+                    """,
+                    (request_id, platform_id),
+                ).fetchone()
+                return dict(row) if row else None
+
+        return await asyncio.to_thread(get_sync)
 
     async def update_request(self, flag: str, status: str) -> None:
         """Mark all matching captured requests as processed.

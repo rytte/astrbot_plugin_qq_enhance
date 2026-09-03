@@ -5,13 +5,16 @@ import hashlib
 import json
 import time
 from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import File
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
+from astrbot.core.platform.message_session import MessageSession
+from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_config_path,
     get_astrbot_plugin_data_path,
@@ -125,6 +128,8 @@ class QQExtensionToolsPlugin(Star):
         self.storage = Storage(data_dir / "qq_extension_tools.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
         self.cleanup_task: asyncio.Task[None] | None = None
+        self.notification_tasks: set[asyncio.Task[None]] = set()
+        self.notification_locks: dict[str, asyncio.Lock] = {}
 
     async def initialize(self) -> None:
         """Initialize persistence, tool schemas, and lifecycle cleanup."""
@@ -293,15 +298,15 @@ class QQExtensionToolsPlugin(Star):
                 break
 
         prompt = request.prompt or event.message_str or ""
+        notification_tool = ""
         if len(prompt.strip()) <= 16 and not any(
             keyword in prompt for keyword in KEYWORD_TOOLS
         ):
-            # Short follow-ups need the immediately preceding user intent for routing.
+            # Short follow-ups may refer to a prior user intent or a trusted notification.
             for context_item in reversed(request.contexts):
-                if (
-                    not isinstance(context_item, dict)
-                    or context_item.get("role") != "user"
-                ):
+                if not isinstance(context_item, dict) or context_item.get(
+                    "role"
+                ) not in {"user", "assistant"}:
                     continue
                 content = context_item.get("content", "")
                 if isinstance(content, str):
@@ -315,8 +320,22 @@ class QQExtensionToolsPlugin(Star):
                     )
                 else:
                     previous_prompt = ""
+                if context_item.get("role") == "assistant" and any(
+                    keyword in prompt
+                    for keyword in ("通过", "同意", "批准", "接受", "拒绝", "驳回")
+                ):
+                    if "[QQ 好友申请]" in previous_prompt:
+                        notification_tool = "qq_friend_request"
+                        break
+                    if (
+                        "[QQ 入群申请]" in previous_prompt
+                        or "[QQ 群邀请]" in previous_prompt
+                    ):
+                        notification_tool = "qq_group_request"
+                        break
                 if (
-                    previous_prompt.strip()
+                    context_item.get("role") == "user"
+                    and previous_prompt.strip()
                     and previous_prompt.strip() != prompt.strip()
                     and any(keyword in previous_prompt for keyword in KEYWORD_TOOLS)
                 ):
@@ -326,6 +345,8 @@ class QQExtensionToolsPlugin(Star):
         for keyword, tool_names in KEYWORD_TOOLS.items():
             if keyword in prompt:
                 requested.update(tool_names)
+        if notification_tool:
+            requested.add(notification_tool)
         message_components = getattr(event.message_obj, "message", [])
         if not current_group and any(
             isinstance(component, File) for component in message_components
@@ -381,13 +402,16 @@ class QQExtensionToolsPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def capture_onebot_event(self, event: AstrMessageEvent) -> None:
-        """Persist normalized OneBot requests and notices without triggering LLM.
+        """Persist normalized OneBot requests and schedule configured notifications.
 
         Args:
             event: Incoming adapter event.
         """
 
         if event.get_platform_name() != "aiocqhttp":
+            return
+        configured_platform_id = self.config["platform"]["platform_id"]
+        if configured_platform_id and event.get_platform_id() != configured_platform_id:
             return
         raw = getattr(event.message_obj, "raw_message", None)
         if not isinstance(raw, dict) or raw.get("post_type") not in {
@@ -409,6 +433,7 @@ class QQExtensionToolsPlugin(Star):
         group_id = str(raw.get("group_id") or "")
         sub_type = str(raw.get("sub_type") or "")
         flag = str(raw.get("flag") or "")
+        created_at = int(raw.get("time") or time.time())
         safe_data = {
             key: raw[key]
             for key in (
@@ -429,17 +454,21 @@ class QQExtensionToolsPlugin(Star):
                     post_type,
                     event_type,
                     sub_type,
+                    actor_id,
+                    group_id,
                     flag,
-                    raw.get("time"),
+                    None if flag else raw.get("time"),
+                    raw.get("message_id"),
+                    raw.get("target_id"),
                 ],
                 ensure_ascii=False,
                 default=str,
             ).encode()
         ).hexdigest()
         comment = str(raw.get("comment") or "")
-        await self.storage.add_event(
+        stored_id = await self.storage.add_event(
             {
-                "created_at": int(raw.get("time") or time.time()),
+                "created_at": created_at,
                 "platform_id": event.get_platform_id(),
                 "post_type": post_type,
                 "event_type": event_type,
@@ -454,6 +483,200 @@ class QQExtensionToolsPlugin(Star):
                 else "",
             }
         )
+        notification_config = self.config["request_notifications"]
+        if (
+            stored_id is None
+            or post_type != "request"
+            or not notification_config["enabled"]
+            or (event_type, sub_type)
+            not in {("friend", ""), ("group", "add"), ("group", "invite")}
+        ):
+            return
+        task = asyncio.create_task(
+            self._notify_request_admins(
+                {
+                    "request_id": stored_id,
+                    "platform_id": event.get_platform_id(),
+                    "request_type": event_type,
+                    "sub_type": sub_type,
+                    "actor_id": actor_id,
+                    "group_id": group_id,
+                    "comment": comment,
+                    "created_at": created_at,
+                }
+            )
+        )
+        self.notification_tasks.add(task)
+        task.add_done_callback(self.notification_tasks.discard)
+
+    async def _notify_request_admins(self, request: dict) -> None:
+        """Ask the configured session persona to notify QQ administrators.
+
+        Args:
+            request: Trusted normalized request metadata without the OneBot flag.
+        """
+
+        request_kind = (request["request_type"], request["sub_type"])
+        labels = {
+            ("friend", ""): ("好友申请", "申请人 QQ", "验证消息"),
+            ("group", "add"): ("入群申请", "申请人 QQ", "申请理由"),
+            ("group", "invite"): ("群邀请", "邀请人 QQ", "附言"),
+        }
+        label, actor_label, comment_label = labels[request_kind]
+        comment = str(request["comment"]).replace("\r", " ").replace("\n", " ").strip()
+        if len(comment) > 500:
+            comment = comment[:500] + "…"
+        details = [
+            f"[QQ {label}]",
+            f"申请编号：{request['request_id']}",
+            f"{actor_label}：{request['actor_id']}",
+        ]
+        if request["group_id"]:
+            details.append(f"群号：{request['group_id']}")
+        if comment:
+            details.append(f"{comment_label}：{comment}")
+        details.append(
+            "收到时间："
+            + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(request["created_at"]))
+        )
+        fact_block = "\n".join(details)
+
+        for admin_user_id in self.config["request_notifications"]["admin_user_ids"]:
+            session = MessageSession(
+                str(request["platform_id"]),
+                MessageType.FRIEND_MESSAGE,
+                admin_user_id,
+            )
+            unified_msg_origin = str(session)
+            lock = self.notification_locks.setdefault(
+                unified_msg_origin, asyncio.Lock()
+            )
+            async with lock:
+                intro = f"收到一条新的{label}，请查看下面的申请信息。"
+                conversation_id = None
+                history = None
+                try:
+                    conversation_id = await self.context.conversation_manager.get_curr_conversation_id(
+                        unified_msg_origin
+                    )
+                    if conversation_id is None:
+                        conversation_id = (
+                            await self.context.conversation_manager.new_conversation(
+                                unified_msg_origin,
+                                platform_id=str(request["platform_id"]),
+                            )
+                        )
+                    conversation = (
+                        await self.context.conversation_manager.get_conversation(
+                            unified_msg_origin, conversation_id
+                        )
+                    )
+                    if conversation is None:
+                        raise RuntimeError("administrator conversation is unavailable")
+                    history = json.loads(conversation.history or "[]")
+                    if not isinstance(history, list):
+                        raise ValueError(
+                            "administrator conversation history is not a list"
+                        )
+                    provider_config = self.context.get_config(umo=unified_msg_origin)
+                    provider_settings = (
+                        provider_config.get("provider_settings", {}) or {}
+                    )
+                    (
+                        _,
+                        persona,
+                        _,
+                        _,
+                    ) = await self.context.persona_manager.resolve_selected_persona(
+                        umo=unified_msg_origin,
+                        conversation_persona_id=conversation.persona_id,
+                        platform_name="aiocqhttp",
+                        provider_settings=provider_settings,
+                    )
+                    model_contexts = deepcopy(history)
+                    persona_prompt = ""
+                    if persona:
+                        persona_prompt = str(persona.get("prompt") or "").strip()
+                        begin_dialogs = deepcopy(
+                            persona.get("_begin_dialogs_processed") or []
+                        )
+                        if begin_dialogs:
+                            model_contexts[:0] = begin_dialogs
+                    system_prompt = (
+                        (
+                            f"# Persona Instructions\n\n{persona_prompt}\n\n"
+                            if persona_prompt
+                            else ""
+                        )
+                        + "# QQ Request Notification\n\n"
+                        "你正在主动通知一位机器人管理员。只按当前人格生成一至两句简短开场，"
+                        "说明收到了一条新的 QQ 申请并请管理员查看随后由系统追加的事实信息。"
+                        "不要编造申请信息，不要声称已经同意或拒绝，不要要求或输出底层 flag，"
+                        "也不要执行任何操作。"
+                    )
+                    response = await self.context.llm_generate(
+                        chat_provider_id=(
+                            await self.context.get_current_chat_provider_id(
+                                unified_msg_origin
+                            )
+                        ),
+                        prompt=f"请为一条新的 QQ {label}生成通知开场。",
+                        contexts=model_contexts,
+                        system_prompt=system_prompt,
+                        tools=None,
+                    )
+                    generated_intro = str(response.completion_text or "").strip()
+                    if generated_intro:
+                        intro = generated_intro
+                    else:
+                        logger.warning(
+                            "QQ request notification model returned empty output for admin %s",
+                            admin_user_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to generate QQ request notification for admin %s",
+                        admin_user_id,
+                    )
+
+                notification = f"{intro}\n\n{fact_block}"
+                try:
+                    sent = await self.context.send_message(
+                        session, MessageChain().message(notification).use_t2i(False)
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send QQ request notification to admin %s",
+                        admin_user_id,
+                    )
+                    continue
+                if not sent:
+                    logger.warning(
+                        "QQ request notification platform was unavailable for admin %s",
+                        admin_user_id,
+                    )
+                    continue
+                logger.info(
+                    "QQ request notification sent: request_id=%s type=%s/%s platform=%s admin=%s",
+                    request["request_id"],
+                    request["request_type"],
+                    request["sub_type"] or "none",
+                    request["platform_id"],
+                    admin_user_id,
+                )
+                if conversation_id is not None and history is not None:
+                    try:
+                        history.append({"role": "assistant", "content": notification})
+                        await self.context.conversation_manager.update_conversation(
+                            unified_msg_origin,
+                            conversation_id,
+                            history=history,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist QQ request notification history for admin %s",
+                            admin_user_id,
+                        )
 
     @filter.command("qq")
     async def qq_command(
@@ -859,6 +1082,12 @@ class QQExtensionToolsPlugin(Star):
     async def terminate(self) -> None:
         """Stop cleanup without deleting persistent plugin data."""
 
+        notification_tasks = list(self.notification_tasks)
+        for task in notification_tasks:
+            task.cancel()
+        if notification_tasks:
+            await asyncio.gather(*notification_tasks, return_exceptions=True)
+        self.notification_tasks.clear()
         if self.cleanup_task is not None:
             self.cleanup_task.cancel()
             with suppress(asyncio.CancelledError):

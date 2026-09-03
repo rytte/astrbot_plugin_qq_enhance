@@ -86,6 +86,10 @@ DEFAULT_CONFIG = {
         "max_download_size_mb": 100,
     },
     "events": {"enabled_types": [], "retention_days": 30},
+    "request_notifications": {
+        "enabled": False,
+        "admin_user_ids": [],
+    },
     "inbound": {
         "semanticize_components": True,
         "respond_to_poke": True,
@@ -142,7 +146,7 @@ REDACTED_KEYS = {
     "extbuffer",
 }
 PATH_LIKE_IDENTIFIER_KEYS = {"folder", "folderid"}
-ID_KEYS = {"group_id", "user_id"}
+ID_KEYS = {"group_id", "user_id", "request_id"}
 INTEGER_KEYS = {
     "message_id",
     "message_seq",
@@ -165,6 +169,17 @@ BOOLEAN_KEYS = {
 }
 MEDIA_SOURCE_KEYS = ("path", "url", "base64", "media_ref")
 WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+REQUEST_DECISION_OPERATIONS = frozenset(
+    {
+        "qq_friend_request.approve",
+        "qq_friend_request.reject",
+        "qq_group_request.approve",
+        "qq_group_request.reject",
+    }
+)
+GROUP_REQUEST_DECISION_OPERATIONS = frozenset(
+    {"qq_group_request.approve", "qq_group_request.reject"}
+)
 
 
 class QQToolError(Exception):
@@ -278,6 +293,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "allowed_domains"),
         ("network", "blocked_domains"),
         ("events", "enabled_types"),
+        ("request_notifications", "admin_user_ids"),
     )
     for group, key in list_fields:
         value = result[group][key]
@@ -307,6 +323,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("permissions", "allow_cross_group"),
         ("permissions", "allow_cross_private"),
         ("network", "allow_private_network"),
+        ("request_notifications", "enabled"),
         ("inbound", "semanticize_components"),
         ("inbound", "respond_to_poke"),
         ("inbound", "respond_to_red_packet"),
@@ -339,6 +356,14 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(f"{group}.{key} 必须是 {minimum}～{maximum} 的整数")
     if result["limits"]["page_size"] > result["limits"]["max_page_size"]:
         raise ValueError("limits.page_size 不能大于 limits.max_page_size")
+
+    admin_user_ids = result["request_notifications"]["admin_user_ids"]
+    if any(not user_id.isdecimal() or int(user_id) <= 0 for user_id in admin_user_ids):
+        raise ValueError(
+            "request_notifications.admin_user_ids 只能包含正整数 QQ 号字符串"
+        )
+    if result["request_notifications"]["enabled"] and not admin_user_ids:
+        raise ValueError("request_notifications.enabled=true 时必须填写 admin_user_ids")
 
     rules = result["permissions"]["per_operation_rules"]
     if not isinstance(rules, dict):
@@ -462,6 +487,41 @@ class QQRuntime:
                 raise QQToolError("capability_unavailable", "该 QQ 操作已被配置禁用")
             await self.verify_platform(event)
             normalized = self.validate_parameters(operation_id, params)
+            if (
+                operation_id in REQUEST_DECISION_OPERATIONS
+                and "request_id" in normalized
+            ):
+                stored_request = await self.storage.get_pending_request(
+                    normalized["request_id"], event.get_platform_id()
+                )
+                if stored_request is None:
+                    raise QQToolError(
+                        "target_not_found", "申请编号不存在、已处理或不属于当前平台"
+                    )
+                expected_type = (
+                    "group"
+                    if operation_id in GROUP_REQUEST_DECISION_OPERATIONS
+                    else "friend"
+                )
+                if stored_request["request_type"] != expected_type:
+                    raise QQToolError(
+                        "invalid_parameters", "申请编号与当前操作类型不匹配"
+                    )
+                flag = str(stored_request["flag"] or "")
+                if not flag:
+                    raise QQToolError("response_invalid", "保存的申请缺少有效 flag")
+                normalized["flag"] = flag
+                if expected_type == "group":
+                    group_id = str(stored_request["group_id"] or "")
+                    sub_type = str(stored_request["sub_type"] or "")
+                    if not group_id.isdecimal() or int(group_id) <= 0:
+                        raise QQToolError(
+                            "response_invalid", "保存的群申请缺少有效群号"
+                        )
+                    if sub_type not in {"add", "invite"}:
+                        raise QQToolError("response_invalid", "保存的群申请类型无效")
+                    normalized["group_id"] = int(group_id)
+                    normalized["sub_type"] = sub_type
             target_kind, target_id, _ = await self.authorize(event, spec, normalized)
             action, action_params, local_result = await self.prepare_action(
                 event, spec, normalized
@@ -636,12 +696,7 @@ class QQRuntime:
                         for key, value in data.items()
                         if key != "raw_message"
                     }
-                if operation_id in {
-                    "qq_friend_request.approve",
-                    "qq_friend_request.reject",
-                    "qq_group_request.approve",
-                    "qq_group_request.reject",
-                }:
+                if operation_id in REQUEST_DECISION_OPERATIONS:
                     await self.storage.update_request(
                         str(normalized["flag"]),
                         "approved" if operation == "approve" else "rejected",
@@ -925,6 +980,29 @@ class QQRuntime:
             "invite",
         }:
             raise QQToolError("invalid_parameters", "sub_type 必须是 add 或 invite")
+        if operation_id in REQUEST_DECISION_OPERATIONS:
+            has_request_id = "request_id" in normalized
+            direct_fields = (
+                ("group_id", "flag", "sub_type")
+                if operation_id in GROUP_REQUEST_DECISION_OPERATIONS
+                else ("flag",)
+            )
+            supplied_direct_fields = [
+                key for key in direct_fields if normalized.get(key) not in (None, "")
+            ]
+            if has_request_id and supplied_direct_fields:
+                raise QQToolError(
+                    "invalid_parameters", "request_id 不能与底层申请参数混用"
+                )
+            if not has_request_id:
+                missing_direct_fields = [
+                    key for key in direct_fields if normalized.get(key) in (None, "")
+                ]
+                if missing_direct_fields:
+                    raise QQToolError(
+                        "invalid_parameters",
+                        "必须提供 request_id，或完整提供：" + "、".join(direct_fields),
+                    )
         if "honor_type" in normalized and normalized["honor_type"] not in {
             "talkative",
             "performer",
@@ -1052,7 +1130,13 @@ class QQRuntime:
                             "permission_denied",
                             "跨群操作仅允许管理员在私聊中开启后发起",
                         )
-                    if not await self.target_exists(event, "group", target_id):
+                    group_invite_decision = (
+                        spec.operation_id in GROUP_REQUEST_DECISION_OPERATIONS
+                        and params.get("sub_type") == "invite"
+                    )
+                    if not group_invite_decision and not await self.target_exists(
+                        event, "group", target_id
+                    ):
                         raise QQToolError(
                             "target_not_found", "目标群不在机器人群列表中"
                         )
@@ -1106,7 +1190,11 @@ class QQRuntime:
             if not allowed:
                 raise QQToolError("permission_denied", "调用者的当前群角色不足")
 
-        if spec.bot_role != "member":
+        group_invite_decision = (
+            spec.operation_id in GROUP_REQUEST_DECISION_OPERATIONS
+            and params.get("sub_type") == "invite"
+        )
+        if spec.bot_role != "member" and not group_invite_decision:
             if not target_id:
                 raise QQToolError("permission_denied", "无法确定目标群")
             self_id = str(event.get_self_id() or "")
@@ -1153,6 +1241,8 @@ class QQRuntime:
         operation_id = spec.operation_id
         action = spec.action
         action_params = deepcopy(params)
+        if operation_id in REQUEST_DECISION_OPERATIONS:
+            action_params.pop("request_id", None)
         local_result: Any = None
         cursor = action_params.pop("cursor", None)
         page_size = action_params.pop("page_size", self.config["limits"]["page_size"])

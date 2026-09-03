@@ -44,11 +44,11 @@ class PrivateAdminSelectionEvent(SelectionEvent):
 
 
 class PrivateAdminProfileSelectionEvent(PrivateAdminSelectionEvent):
-    message_str = "把昵称修改为 Airi-QQ扩展测试"
+    message_str = "把昵称修改为测试机器人"
 
 
 class PrivateAdminRemarkSelectionEvent(PrivateAdminSelectionEvent):
-    message_str = "把我的备注修改为 QQ扩展测试"
+    message_str = "把我的备注修改为测试备注"
 
 
 class PrivateAdminFileSelectionEvent(PrivateAdminSelectionEvent):
@@ -60,7 +60,7 @@ class PrivateAdminFileSelectionEvent(PrivateAdminSelectionEvent):
 
 
 class PrivateAdminProfileFollowUpSelectionEvent(PrivateAdminSelectionEvent):
-    message_str = "改回Airi"
+    message_str = "改回测试机器人"
 
 
 class GroupOwnerSelectionEvent(SelectionEvent):
@@ -90,6 +90,8 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
         cleanup=AsyncMock(),
     )
     plugin.cleanup_task = None
+    plugin.notification_tasks = set()
+    plugin.notification_locks = {}
 
     await plugin.initialize()
 
@@ -107,6 +109,11 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     assert "音乐卡片必须作为唯一组件单独发送" in params_description
     assert "调用成功仅表示 NapCat 已接受发送请求" in params_description
     assert "最终回复不得重复其中的正文或卡片" in params_description
+    request_tool = manager.get_func("qq_group_request")
+    request_description = request_tool.parameters["properties"]["params"][
+        "description"
+    ]
+    assert "通知中的 request_id" in request_description
     forward_tool = manager.get_func("qq_send_forward")
     forward_description = forward_tool.parameters["properties"]["params"][
         "description"
@@ -205,6 +212,37 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
 
 
 @pytest.mark.asyncio
+async def test_request_notification_follow_up_exposes_group_request_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {"permissions": {"allow_cross_group": True}}
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="通过",
+        contexts=[
+            {
+                "role": "assistant",
+                "content": (
+                    "收到一条新申请。\n\n[QQ 入群申请]\n"
+                    "申请编号：17\n申请人 QQ：20001\n群号：30001"
+                ),
+            }
+        ],
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_request") is not None
+
+
+@pytest.mark.asyncio
 async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
     plugin.config = validate_config(None)
@@ -215,7 +253,7 @@ async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> No
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="把昵称修改为 Airi-QQ扩展测试",
+        prompt="把昵称修改为测试机器人",
         func_tool=ToolSet(tools),
     )
 
@@ -236,7 +274,7 @@ async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="把我的备注修改为 QQ扩展测试",
+        prompt="把我的备注修改为测试备注",
         func_tool=ToolSet(tools),
     )
 
@@ -258,7 +296,7 @@ async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() 
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="把 Milika 的群昵称改为 QQ扩展测试",
+        prompt="把测试成员的群昵称改为测试群昵称",
         func_tool=ToolSet(tools),
     )
 
@@ -280,7 +318,7 @@ async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="把 Milika 移除群聊",
+        prompt="把测试成员移除群聊",
         func_tool=ToolSet(tools),
     )
 
@@ -320,9 +358,9 @@ async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="改回Airi",
+        prompt="改回测试机器人",
         contexts=[
-            {"role": "user", "content": "把昵称修改为 Airi-QQ扩展测试"},
+            {"role": "user", "content": "把昵称修改为测试机器人"},
             {"role": "assistant", "content": "修改成功。"},
             {"role": "user", "content": "重试"},
             {"role": "assistant", "content": "已重试。"},
@@ -366,7 +404,7 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="把当前群名称修改为 QQ扩展确认测试",
+        prompt="把当前群名称修改为示例测试群",
         func_tool=ToolSet(tools),
     )
 
@@ -388,7 +426,7 @@ async def test_private_admin_leave_group_prompt_ignores_stale_request_context() 
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
-        prompt="退出群965582257",
+        prompt="退出群30001",
         contexts=[
             {
                 "role": "user",

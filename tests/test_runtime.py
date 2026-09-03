@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -182,6 +183,21 @@ def test_parameter_contract_rejects_unknown_and_missing() -> None:
             "qq_media.ocr",
             {"path": "C:\\image.png", "url": "https://example.com/image.png"},
         )
+    assert runtime.validate_parameters(
+        "qq_group_request.approve", {"request_id": "17"}
+    ) == {"request_id": 17}
+    with pytest.raises(QQToolError, match="不能与底层申请参数混用"):
+        runtime.validate_parameters(
+            "qq_group_request.approve",
+            {
+                "request_id": 17,
+                "group_id": 30001,
+                "flag": "request-flag",
+                "sub_type": "add",
+            },
+        )
+    with pytest.raises(QQToolError, match="必须提供 request_id"):
+        runtime.validate_parameters("qq_group_request.approve", {})
 
 
 def test_online_status_uses_napcat_codes_and_protocol_defaults() -> None:
@@ -630,6 +646,135 @@ async def test_cross_group_request_approve_and_reject_skip_confirmation(
     assert (
         "set_group_add_request",
         {"flag": "request-2", "sub_type": "add", "approve": False},
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_group_request_decision_resolves_notification_request_id(
+    tmp_path,
+) -> None:
+    runtime, client, storage = await make_runtime(
+        tmp_path,
+        {"permissions": {"allow_cross_group": True}},
+    )
+    request_id = await storage.add_event(
+        {
+            "created_at": int(time.time()),
+            "platform_id": "platform-a",
+            "post_type": "request",
+            "event_type": "group",
+            "sub_type": "add",
+            "actor_id": "20001",
+            "group_id": "30001",
+            "event_key": "group-add-request",
+            "data": {},
+            "flag": "stored-group-flag",
+            "comment_hash": "comment-hash",
+        }
+    )
+    assert request_id is not None
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_group_request",
+            "approve",
+            {"request_id": request_id},
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "set_group_add_request",
+        {"flag": "stored-group-flag", "sub_type": "add", "approve": True},
+    ) in client.calls
+    approved = await storage.list_requests("group", "approved")
+    assert [item["request_id"] for item in approved] == [request_id]
+
+
+@pytest.mark.asyncio
+async def test_group_invite_request_id_does_not_require_existing_membership(
+    tmp_path,
+) -> None:
+    runtime, client, storage = await make_runtime(
+        tmp_path,
+        {"permissions": {"allow_cross_group": True}},
+    )
+    request_id = await storage.add_event(
+        {
+            "created_at": int(time.time()),
+            "platform_id": "platform-a",
+            "post_type": "request",
+            "event_type": "group",
+            "sub_type": "invite",
+            "actor_id": "20001",
+            "group_id": "30002",
+            "event_key": "group-invite-request",
+            "data": {},
+            "flag": "stored-invite-flag",
+            "comment_hash": "comment-hash",
+        }
+    )
+    assert request_id is not None
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_group_request",
+            "reject",
+            {"request_id": request_id, "reason": "暂不加入"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "set_group_add_request",
+        {
+            "flag": "stored-invite-flag",
+            "sub_type": "invite",
+            "reason": "暂不加入",
+            "approve": False,
+        },
+    ) in client.calls
+    assert not any(action == "get_group_list" for action, _ in client.calls)
+    assert not any(action == "get_group_member_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_friend_request_decision_resolves_notification_request_id(
+    tmp_path,
+) -> None:
+    runtime, client, storage = await make_runtime(tmp_path)
+    request_id = await storage.add_event(
+        {
+            "created_at": int(time.time()),
+            "platform_id": "platform-a",
+            "post_type": "request",
+            "event_type": "friend",
+            "sub_type": "",
+            "actor_id": "20001",
+            "group_id": "",
+            "event_key": "friend-request",
+            "data": {},
+            "flag": "stored-friend-flag",
+            "comment_hash": "comment-hash",
+        }
+    )
+    assert request_id is not None
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_friend_request",
+            "approve",
+            {"request_id": request_id, "remark": "测试好友"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "set_friend_add_request",
+        {"flag": "stored-friend-flag", "remark": "测试好友", "approve": True},
     ) in client.calls
 
 
