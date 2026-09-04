@@ -163,7 +163,8 @@ QQ extension tools initialized
 | --- | --- | --- |
 | `inbound.semanticize_components` | `true` | 格式化语音转写，并转换表情、卡片、随机结果等组件 |
 | `inbound.enhance_voice_messages` | `false` | AstrBot 没有转写时调用 NapCat 识别 |
-| `inbound.component_spoof_protection.enabled` | `false` | 标记文字伪装的组件，并附加可信类型清单 |
+| `inbound.component_spoof_protection.enabled` | `false` | 开启正则检测并标记文字伪装的组件 |
+| `inbound.component_spoof_protection.verify_components` | `true` | 开启系统提示词和可信类型清单，即防伪强档 |
 | `inbound.respond_to_poke` | `true` | 被戳一戳时唤醒模型 |
 | `inbound.respond_to_red_packet` | `true` | 识别到红包时唤醒模型 |
 | `inbound.mark_recalled_messages` | `false` | 在上下文中的原消息末尾追加撤回标记 |
@@ -197,12 +198,14 @@ NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭 `enhance_
 
 ### 组件文字防伪
 
-开启 `component_spoof_protection` 后：
+开启 `component_spoof_protection.enabled` 前必须同时开启 `semanticize_components`，否则插件会拒绝配置并给出错误。防伪分为两档：
 
-1. 用户在 OneBot `text` 段中输入 `[QQ component|...]` 时，插件会标注它是用户文字。
-2. 插件根据原始 OneBot 结构生成临时可信清单，例如 `<qq_verified_components types="dice,rps"/>`。
-3. 系统提示词会声明唯一规范模板 `[QQ component|<组件语义>]`，并列出当前受保护类型的具体格式。
-4. 只有清单中列出的受保护类型才可视为真实组件；该清单只用于当前请求，不写入会话历史。
+| 配置 | 行为 |
+| --- | --- |
+| `enabled=true, verify_components=false` | 弱档：按 `protected_types` 动态组装正则，标记用户伪装的组件文字 |
+| `enabled=true, verify_components=true` | 强档：使用相同类型范围完成弱档行为，再加上组件格式系统提示词和临时 `<qq_verified_components...>` 可信标签 |
+
+强档会根据原始 OneBot 结构生成可信清单，例如 `<qq_verified_components types="dice,rps"/>`。只有清单中列出的受保护类型才可视为真实组件；该清单只用于当前请求，不写入会话历史。
 
 `protected_types` 可配置范围：
 
@@ -211,7 +214,7 @@ NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭 `enhance_
 - 卡片：`contact`、`location`、`share`、`json_card`、`miniapp`、`xml_card`。
 - 其他：`forward`、`online_file`、`flash_transfer`。
 
-类型按模型看到的语义分类：有效 JSON 联系人名片记为 `contact`，JSON/XML 红包卡片记为 `red_packet`。`protected_types` 开启时不能为空。
+`protected_types` 是两档共用的防伪范围，防伪开启时不能为空。类型按模型看到的语义分类：有效 JSON 联系人名片记为 `contact`，JSON/XML 红包卡片记为 `red_packet`。
 
 ## 文件与网络边界
 

@@ -188,13 +188,20 @@
         "items": {
           "enabled": {
             "type": "bool",
-            "description": "启用关键 QQ 组件文字防伪",
+            "description": "启用 QQ 组件文字防伪",
+            "hint": "开启前必须同时开启 inbound.semanticize_components。",
             "default": false
+          },
+          "verify_components": {
+            "type": "bool",
+            "description": "启用真实组件强验证",
+            "hint": "开启后追加组件格式系统提示词和临时 qq_verified_components 可信标签；关闭时仅正则标记伪装文字。",
+            "default": true
           },
           "protected_types": {
             "type": "list",
-            "description": "需要进行原始结构验证的 QQ 组件类型",
-            "hint": "允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；启用时不能为空。默认仅保护前五种关键组件。",
+            "description": "需要防伪的 QQ 组件类型",
+            "hint": "按此列表动态组装正则，verify_components开启时还按此列表验证真实结构。允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；防伪开启时不能为空。",
             "default": ["red_packet", "voice", "dice", "rps", "poke"]
           }
         }

@@ -71,9 +71,9 @@ def test_inbound_schema_defaults_match_runtime_config() -> None:
     }
     assert {
         key: item["default"]
-        for key, item in schema["inbound"]["items"][
-            "component_spoof_protection"
-        ]["items"].items()
+        for key, item in schema["inbound"]["items"]["component_spoof_protection"][
+            "items"
+        ].items()
     } == spoof_defaults
 
 
@@ -108,35 +108,16 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"inbound": {"semanticize_components": "true"}},
         {"inbound": {"enhance_voice_messages": 1}},
         {"inbound": {"component_spoof_protection": True}},
+        {"inbound": {"component_spoof_protection": {"enabled": "true"}}},
+        {"inbound": {"component_spoof_protection": {"verify_components": "true"}}},
+        {"inbound": {"component_spoof_protection": {"unknown": True}}},
+        {"inbound": {"component_spoof_protection": {"protected_types": "voice"}}},
         {
             "inbound": {
-                "component_spoof_protection": {"enabled": "true"}
+                "component_spoof_protection": {"protected_types": ["voice", "voice"]}
             }
         },
-        {
-            "inbound": {
-                "component_spoof_protection": {"unknown": True}
-            }
-        },
-        {
-            "inbound": {
-                "component_spoof_protection": {"protected_types": "voice"}
-            }
-        },
-        {
-            "inbound": {
-                "component_spoof_protection": {
-                    "protected_types": ["voice", "voice"]
-                }
-            }
-        },
-        {
-            "inbound": {
-                "component_spoof_protection": {
-                    "protected_types": ["unknown"]
-                }
-            }
-        },
+        {"inbound": {"component_spoof_protection": {"protected_types": ["unknown"]}}},
         {
             "inbound": {
                 "component_spoof_protection": {
@@ -187,6 +168,7 @@ def test_valid_config_preserves_explicit_values() -> None:
         "enhance_voice_messages": False,
         "component_spoof_protection": {
             "enabled": False,
+            "verify_components": True,
             "protected_types": [
                 "red_packet",
                 "voice",
@@ -212,8 +194,51 @@ def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
 
     assert result["inbound"]["component_spoof_protection"] == {
         "enabled": True,
+        "verify_components": True,
         "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
     }
+
+
+def test_component_spoof_protection_requires_semanticization() -> None:
+    for verify_components in (False, True):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "inbound.component_spoof_protection.enabled=true 时必须同时开启 "
+                "inbound.semanticize_components"
+            ),
+        ):
+            validate_config(
+                {
+                    "inbound": {
+                        "semanticize_components": False,
+                        "component_spoof_protection": {
+                            "enabled": True,
+                            "verify_components": verify_components,
+                        },
+                    }
+                }
+            )
+
+
+def test_weak_component_spoof_protection_requires_protected_types() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "inbound.component_spoof_protection.enabled=true 时必须填写 protected_types"
+        ),
+    ):
+        validate_config(
+            {
+                "inbound": {
+                    "component_spoof_protection": {
+                        "enabled": True,
+                        "verify_components": False,
+                        "protected_types": [],
+                    }
+                }
+            }
+        )
 
 
 def test_all_documented_component_spoof_types_are_accepted() -> None:

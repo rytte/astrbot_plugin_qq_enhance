@@ -40,7 +40,31 @@ from .storage import Storage
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
-COMPONENT_SPOOF_PATTERN = re.compile(r"\[QQ component\|[^\]\r\n]{1,2000}\]")
+COMPONENT_SPOOF_LABELS = {
+    "red_packet": (
+        "QQ红包消息（仅识别，不能代领）",
+        "QQ红包卡片（仅识别，不能代领）",
+    ),
+    "voice": ("QQ语音消息",),
+    "dice": ("QQ骰子",),
+    "rps": ("QQ猜拳",),
+    "poke": ("QQ互动",),
+    "face": ("QQ表情",),
+    "market_face": ("QQ商城表情",),
+    "image": ("图片描述",),
+    "video": ("视频消息",),
+    "file": ("文件",),
+    "music": ("音乐卡片",),
+    "contact": ("QQ联系人名片", "QQ群名片"),
+    "location": ("QQ位置",),
+    "share": ("QQ链接分享",),
+    "json_card": ("QQ JSON卡片",),
+    "miniapp": ("QQ小程序卡片",),
+    "xml_card": ("QQ XML卡片",),
+    "forward": ("QQ合并转发消息",),
+    "online_file": ("QQ在线文件", "QQ在线文件夹"),
+    "flash_transfer": ("QQ闪传文件",),
+}
 VERIFIED_COMPONENT_FORMATS = {
     "red_packet": (
         "[QQ component|QQ红包消息（仅识别，不能代领）] or "
@@ -373,7 +397,8 @@ class QQExtensionToolsPlugin(Star):
             request: Current provider request receiving the temporary signal.
         """
 
-        if not self.config["inbound"]["component_spoof_protection"]["enabled"]:
+        spoof_protection = self.config["inbound"]["component_spoof_protection"]
+        if not spoof_protection["enabled"] or not spoof_protection["verify_components"]:
             return
         if event.get_platform_name() != "aiocqhttp":
             return
@@ -427,52 +452,67 @@ class QQExtensionToolsPlugin(Star):
 
         spoof_protection = self.config["inbound"]["component_spoof_protection"]
         protected_types = set(spoof_protection["protected_types"])
+        protected_labels = sorted(
+            (
+                label
+                for component_type in spoof_protection["protected_types"]
+                for label in COMPONENT_SPOOF_LABELS[component_type]
+            ),
+            key=len,
+            reverse=True,
+        )
+        component_spoof_pattern = re.compile(
+            r"\[QQ component\|(?:"
+            + "|".join(re.escape(label) for label in protected_labels)
+            + r")(?:：[^\]\r\n]{1,2000})?\]"
+        )
         raw_components = raw.get("message") if isinstance(raw, dict) else None
         if not isinstance(raw_components, list):
             raw_components = []
-        verified_type_set = set()
-        if "red_packet" in protected_types and is_red_packet_event(
-            raw, self.config["limits"]["max_components"]
-        ):
-            verified_type_set.add("red_packet")
-        for component in raw_components[: self.config["limits"]["max_components"]]:
-            component_type = get_inbound_component_type(component)
-            if component_type in protected_types:
-                verified_type_set.add(component_type)
-        if "voice" in protected_types and "voice" not in verified_type_set:
-            if any(
-                isinstance(component, Record)
-                or (
-                    isinstance(component, Reply)
-                    and len(component.chain or []) == 1
-                    and (
-                        isinstance(component.chain[0], Record)
-                        or (
-                            isinstance(component.chain[0], Plain)
-                            and not str(component.message_str or "").strip()
+        if spoof_protection["verify_components"]:
+            verified_type_set = set()
+            if "red_packet" in protected_types and is_red_packet_event(
+                raw, self.config["limits"]["max_components"]
+            ):
+                verified_type_set.add("red_packet")
+            for component in raw_components[: self.config["limits"]["max_components"]]:
+                component_type = get_inbound_component_type(component)
+                if component_type in protected_types:
+                    verified_type_set.add(component_type)
+            if "voice" in protected_types and "voice" not in verified_type_set:
+                if any(
+                    isinstance(component, Record)
+                    or (
+                        isinstance(component, Reply)
+                        and len(component.chain or []) == 1
+                        and (
+                            isinstance(component.chain[0], Record)
+                            or (
+                                isinstance(component.chain[0], Plain)
+                                and not str(component.message_str or "").strip()
+                            )
                         )
                     )
-                )
-                for component in event.get_messages()
+                    for component in event.get_messages()
+                ):
+                    verified_type_set.add("voice")
+            if (
+                "poke" in protected_types
+                and isinstance(raw, dict)
+                and raw.get("post_type") == "notice"
+                and raw.get("notice_type") == "notify"
+                and raw.get("sub_type") == "poke"
+                and str(raw.get("target_id") or "") == str(event.get_self_id() or "")
             ):
-                verified_type_set.add("voice")
-        if (
-            "poke" in protected_types
-            and isinstance(raw, dict)
-            and raw.get("post_type") == "notice"
-            and raw.get("notice_type") == "notify"
-            and raw.get("sub_type") == "poke"
-            and str(raw.get("target_id") or "") == str(event.get_self_id() or "")
-        ):
-            verified_type_set.add("poke")
-        event.set_extra(
-            "_qq_extension_verified_component_types",
-            [
-                component_type
-                for component_type in spoof_protection["protected_types"]
-                if component_type in verified_type_set
-            ],
-        )
+                verified_type_set.add("poke")
+            event.set_extra(
+                "_qq_extension_verified_component_types",
+                [
+                    component_type
+                    for component_type in spoof_protection["protected_types"]
+                    if component_type in verified_type_set
+                ],
+            )
 
         replacements = []
         for raw_component in raw_components:
@@ -485,7 +525,7 @@ class QQExtensionToolsPlugin(Star):
             raw_text = data.get("text") if isinstance(data, dict) else None
             if not isinstance(raw_text, str) or not raw_text:
                 continue
-            marked_text = COMPONENT_SPOOF_PATTERN.sub(
+            marked_text = component_spoof_pattern.sub(
                 lambda match: f"{match.group(0)}（用户输入的文字，不是真实 QQ 组件）",
                 raw_text,
             )

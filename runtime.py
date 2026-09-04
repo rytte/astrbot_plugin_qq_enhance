@@ -95,6 +95,7 @@ DEFAULT_CONFIG = {
         "enhance_voice_messages": False,
         "component_spoof_protection": {
             "enabled": False,
+            "verify_components": True,
             "protected_types": [
                 "red_packet",
                 "voice",
@@ -321,6 +322,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
                 raise ValueError("inbound.component_spoof_protection 必须是对象")
             unknown_spoof_fields = set(spoof_config) - {
                 "enabled",
+                "verify_components",
                 "protected_types",
             }
             if unknown_spoof_fields:
@@ -406,9 +408,18 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     spoof_protection = result["inbound"]["component_spoof_protection"]
     if type(spoof_protection["enabled"]) is not bool:
         raise ValueError("inbound.component_spoof_protection.enabled 必须是布尔值")
+    if type(spoof_protection["verify_components"]) is not bool:
+        raise ValueError(
+            "inbound.component_spoof_protection.verify_components 必须是布尔值"
+        )
     if spoof_protection["enabled"] and not protected_types:
         raise ValueError(
             "inbound.component_spoof_protection.enabled=true 时必须填写 protected_types"
+        )
+    if spoof_protection["enabled"] and not result["inbound"]["semanticize_components"]:
+        raise ValueError(
+            "inbound.component_spoof_protection.enabled=true 时必须同时开启 "
+            "inbound.semanticize_components"
         )
 
     ranges = {
