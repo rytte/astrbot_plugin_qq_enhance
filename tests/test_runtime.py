@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from astrbot.core.message.components import File
-from astrbot_plugin_qq_extension_tools.catalog import OPERATION_MAP
-from astrbot_plugin_qq_extension_tools.runtime import (
+from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP
+from astrbot_plugin_qq_enhance.runtime import (
     QQRuntime,
     QQToolError,
     validate_config,
 )
-from astrbot_plugin_qq_extension_tools.storage import Storage
+from astrbot_plugin_qq_enhance.storage import Storage
 
 
 class FakeClient:
@@ -146,11 +146,11 @@ async def make_runtime(tmp_path, config: dict | None = None):
     await storage.initialize()
     with (
         patch(
-            "astrbot_plugin_qq_extension_tools.runtime.get_astrbot_temp_path",
+            "astrbot_plugin_qq_enhance.runtime.get_astrbot_temp_path",
             return_value=str(tmp_path / "astrbot-temp"),
         ),
         patch(
-            "astrbot_plugin_qq_extension_tools.runtime.get_astrbot_plugin_data_path",
+            "astrbot_plugin_qq_enhance.runtime.get_astrbot_plugin_data_path",
             return_value=str(tmp_path / "plugin-data"),
         ),
     ):
@@ -1334,11 +1334,11 @@ async def test_qq_music_search_uses_exact_metadata(tmp_path) -> None:
     session = FakeSession()
     with (
         patch(
-            "astrbot_plugin_qq_extension_tools.runtime.aiohttp.TCPConnector",
+            "astrbot_plugin_qq_enhance.runtime.aiohttp.TCPConnector",
             return_value=object(),
         ),
         patch(
-            "astrbot_plugin_qq_extension_tools.runtime.aiohttp.ClientSession",
+            "astrbot_plugin_qq_enhance.runtime.aiohttp.ClientSession",
             return_value=session,
         ),
     ):

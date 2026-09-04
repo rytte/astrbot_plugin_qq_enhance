@@ -24,7 +24,6 @@ const permissionLabels = {
 const disabledReasonLabels = {
   pack_not_enabled: "分类未启用",
   disabled_by_config: "配置已禁用",
-  disabled_by_rule: "权限规则已禁用",
 };
 const auditResultLabels = {
   ok: "成功",

@@ -1,6 +1,6 @@
-# QQ 扩展工具集
+# QQ 能力增强
 
-`astrbot_plugin_qq_extension_tools` 是面向 AstrBot 与 NapCat OneBot v11 的 QQ 模型工具和入站消息语义化插件。它将约 75 个明确支持的 QQ 操作合并为 26 个资源型工具，在每次模型请求前按平台、会话、调用者权限和请求内容动态裁剪，并将 AstrBot 默认忽略的 QQ 组件转换为受限的模型可读文本。
+`astrbot_plugin_qq_enhance` 是面向 AstrBot 与 NapCat OneBot v11 的 QQ 模型工具和入站消息语义化插件。它将约 75 个明确支持的 QQ 操作合并为 26 个资源型工具，在每次模型请求前按平台、会话、调用者权限和请求内容动态裁剪，并将 AstrBot 默认忽略的 QQ 组件转换为受限的模型可读文本。
 
 插件不提供万能 `call_action`，不允许模型自行确认危险操作，也不读取旧版 QQ 工具插件的配置。
 
@@ -15,19 +15,19 @@
 
 ## 安装
 
-将整个 `astrbot_plugin_qq_extension_tools` 目录放入 AstrBot 的 `data/plugins/`，然后在 WebUI 中重载插件或重启 AstrBot。不要只复制 `main.py`，契约、配置 Schema 和运行时模块都必须保留。
+将整个 `astrbot_plugin_qq_enhance` 目录放入 AstrBot 的 `data/plugins/`，然后在 WebUI 中重载插件或重启 AstrBot。不要只复制 `main.py`，契约、配置 Schema 和运行时模块都必须保留。
 
 安装后先检查日志中是否出现：
 
 ```text
-QQ extension tools initialized
+QQ Enhance initialized
 ```
 
 模型第一次调用工具时，插件会通过 `get_version_info` 验证当前平台确实是受支持版本的 NapCat。
 
 ## 状态与诊断页面
 
-重载插件后，在 AstrBot WebUI 的插件详情中打开“QQ 扩展状态与诊断”。页面只读展示：
+重载插件后，在 AstrBot WebUI 的插件详情中打开“QQ 能力增强状态与诊断”。页面只读展示：
 
 - aiocqhttp/NapCat 的连接、账号、版本和兼容性状态。
 - 当前有效配置摘要，以及已启用的模型工具和插件操作数量。

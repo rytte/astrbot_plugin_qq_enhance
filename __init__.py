@@ -1,1 +1,1 @@
-"""QQ extension tools plugin package."""
+"""QQ Enhance plugin package."""

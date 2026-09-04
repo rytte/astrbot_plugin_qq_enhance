@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from astrbot_plugin_qq_extension_tools.storage import Storage
+from astrbot_plugin_qq_enhance.storage import Storage
 
 
 @pytest.mark.asyncio

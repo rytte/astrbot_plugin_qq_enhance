@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from astrbot_plugin_qq_extension_tools.main import _format_audit_rows
+from astrbot_plugin_qq_enhance.main import _format_audit_rows
 
 
 def test_format_audit_rows_is_human_readable() -> None:

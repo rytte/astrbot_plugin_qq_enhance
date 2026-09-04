@@ -1,9 +1,9 @@
-name: astrbot_plugin_qq_extension_tools
-display_name: QQ 扩展工具集
+name: astrbot_plugin_qq_enhance
+display_name: QQ 能力增强
 desc: 面向 NapCat OneBot v11 的安全 QQ 模型工具与入站消息语义化插件。
 version: 0.1.0
 author: rytte
-repo: ""
+repo: "https://github.com/rytte/astrbot_plugin_qq_enhance"
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.27,<5"

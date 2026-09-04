@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrbot.core.provider.entities import ProviderRequest
-from astrbot_plugin_qq_extension_tools.main import QQExtensionToolsPlugin
-from astrbot_plugin_qq_extension_tools.runtime import validate_config
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 class RecallEvent:
@@ -56,7 +56,7 @@ class RecallEvent:
         return self.extras.get(key, default)
 
 
-def make_plugin(history: list[dict]) -> tuple[QQExtensionToolsPlugin, SimpleNamespace]:
+def make_plugin(history: list[dict]) -> tuple[QQEnhancePlugin, SimpleNamespace]:
     """Create a plugin with an in-memory conversation manager.
 
     Args:
@@ -74,7 +74,7 @@ def make_plugin(history: list[dict]) -> tuple[QQExtensionToolsPlugin, SimpleName
         get_conversation=AsyncMock(return_value=conversation),
         update_conversation=AsyncMock(),
     )
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.context = SimpleNamespace(conversation_manager=manager)
     plugin.config = validate_config({"inbound": {"mark_recalled_messages": True}})
     plugin.recall_messages = {}
@@ -342,7 +342,9 @@ async def test_expired_or_disabled_mapping_is_ignored() -> None:
     assert plugin.recall_messages == {}
     plugin.context.conversation_manager.update_conversation.assert_not_awaited()
 
-    plugin.config = validate_config(None)
+    plugin.config = validate_config(
+        {"inbound": {"mark_recalled_messages": False}}
+    )
     await plugin.track_context_message(message_event, request)
     assert plugin.recall_messages == {}
 

@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from astrbot_plugin_qq_extension_tools.catalog import OPERATIONS, TOOL_OPERATIONS
-from astrbot_plugin_qq_extension_tools.main import (
+from astrbot_plugin_qq_enhance.catalog import OPERATIONS, TOOL_OPERATIONS
+from astrbot_plugin_qq_enhance.main import (
     PLUGIN_NAME,
-    QQExtensionToolsPlugin,
+    QQEnhancePlugin,
 )
-from astrbot_plugin_qq_extension_tools.runtime import validate_config
+from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 class PageClient:
@@ -76,12 +76,12 @@ def test_plugin_registers_read_only_diagnostics_api(tmp_path) -> None:
 
     with (
         patch(
-            "astrbot_plugin_qq_extension_tools.main.get_astrbot_plugin_data_path",
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
             return_value=str(tmp_path),
         ),
-        patch("astrbot_plugin_qq_extension_tools.main.QQRuntime"),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime"),
     ):
-        plugin = QQExtensionToolsPlugin(context)
+        plugin = QQEnhancePlugin(context)
 
     context.register_web_api.assert_called_once()
     route, handler, methods, description = context.register_web_api.call_args.args
@@ -93,7 +93,7 @@ def test_plugin_registers_read_only_diagnostics_api(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_diagnostics_page_api_returns_sanitized_read_only_state() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.context = SimpleNamespace(
         platform_manager=SimpleNamespace(

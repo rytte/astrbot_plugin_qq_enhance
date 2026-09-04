@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrbot.core.platform.message_type import MessageType
-from astrbot_plugin_qq_extension_tools.main import QQExtensionToolsPlugin
-from astrbot_plugin_qq_extension_tools.runtime import validate_config
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 class RequestEvent:
@@ -32,7 +32,7 @@ class RequestEvent:
 
 @pytest.mark.asyncio
 async def test_capture_schedules_model_notification_for_new_request() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
             "request_notifications": {
@@ -77,7 +77,7 @@ async def test_capture_schedules_model_notification_for_new_request() -> None:
 
 @pytest.mark.asyncio
 async def test_capture_does_not_notify_for_duplicate_or_other_platform() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
             "platform": {"platform_id": "platform-a"},
@@ -140,7 +140,7 @@ async def test_model_notification_uses_admin_persona_without_tools() -> None:
         ),
         send_message=AsyncMock(return_value=True),
     )
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.context = context
     plugin.config = validate_config(
         {
@@ -194,7 +194,7 @@ async def test_model_failure_falls_back_to_fixed_bot_notification() -> None:
         conversation_manager=conversation_manager,
         send_message=AsyncMock(return_value=True),
     )
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.context = context
     plugin.config = validate_config(
         {

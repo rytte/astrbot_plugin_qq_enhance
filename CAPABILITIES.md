@@ -1,8 +1,8 @@
-# NapCat 与 QQ 扩展工具插件能力矩阵
+# NapCat 与 QQ 能力增强插件能力矩阵
 
 > 生成日期：2026-09-03
 >
-> 对比基线：插件契约指定的 NapCat 4.18.19、本机 `NapCat.Shell/napcat.mjs` 实际动作处理器，以及当前 `astrbot_plugin_qq_extension_tools` 源码。
+> 对比基线：插件契约指定的 NapCat 4.18.19、本机 `NapCat.Shell/napcat.mjs` 实际动作处理器，以及当前 `astrbot_plugin_qq_enhance` 源码。
 
 ## 统计
 

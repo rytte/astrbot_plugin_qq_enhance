@@ -9,9 +9,9 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import File
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
-from astrbot_plugin_qq_extension_tools.catalog import TOOL_OPERATIONS
-from astrbot_plugin_qq_extension_tools.main import QQExtensionToolsPlugin
-from astrbot_plugin_qq_extension_tools.runtime import QQRuntime, validate_config
+from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
 
 
 class SelectionEvent:
@@ -77,7 +77,7 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
 
 @pytest.mark.asyncio
 async def test_initialize_uses_registered_tool_manager_api() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     manager = FunctionToolManager()
     for tool_name in TOOL_OPERATIONS:
         manager.func_list.append(
@@ -149,7 +149,7 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
 
 @pytest.mark.asyncio
 async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -177,7 +177,7 @@ async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None
 
 @pytest.mark.asyncio
 async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_private": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -197,7 +197,7 @@ async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -
 
 @pytest.mark.asyncio
 async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -217,7 +217,7 @@ async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None
 
 @pytest.mark.asyncio
 async def test_private_admin_balanced_exposes_friend_request_without_keyword() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -237,7 +237,7 @@ async def test_private_admin_balanced_exposes_friend_request_without_keyword() -
 
 @pytest.mark.asyncio
 async def test_private_admin_group_request_prompt_exposes_group_request_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -257,7 +257,7 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
 
 @pytest.mark.asyncio
 async def test_request_notification_follow_up_exposes_group_request_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -286,7 +286,7 @@ async def test_request_notification_follow_up_exposes_group_request_tool() -> No
 
 @pytest.mark.asyncio
 async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -307,7 +307,7 @@ async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> No
 
 @pytest.mark.asyncio
 async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -327,7 +327,7 @@ async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -347,7 +347,7 @@ async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() 
 
 @pytest.mark.asyncio
 async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -367,7 +367,7 @@ async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -
 
 @pytest.mark.asyncio
 async def test_private_file_attachment_exposes_private_files_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -387,7 +387,7 @@ async def test_private_file_attachment_exposes_private_files_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -413,7 +413,7 @@ async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
 
 @pytest.mark.asyncio
 async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -433,7 +433,7 @@ async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_group_name_prompt_exposes_group_manage_tool() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -453,7 +453,7 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_private_admin_leave_group_prompt_ignores_stale_request_context() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
@@ -480,7 +480,7 @@ async def test_private_admin_leave_group_prompt_ignores_stale_request_context() 
 
 @pytest.mark.asyncio
 async def test_group_poke_follow_up_uses_previous_user_context() -> None:
-    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config

@@ -1,7 +1,7 @@
 {
   "pages": {
     "diagnostics": {
-      "title": "QQ 扩展状态与诊断",
+      "title": "QQ 能力增强状态与诊断",
       "description": "只读查看 NapCat 状态、插件能力、有效配置和安全审计。"
     }
   }

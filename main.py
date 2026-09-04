@@ -45,7 +45,7 @@ from .storage import Storage
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
-PLUGIN_NAME = "astrbot_plugin_qq_extension_tools"
+PLUGIN_NAME = "astrbot_plugin_qq_enhance"
 COMPONENT_SPOOF_LABELS = {
     "red_packet": (
         "QQ红包消息（仅识别，不能代领）",
@@ -203,11 +203,11 @@ if _persisted_config_path.is_file():
             _persisted_config_path.read_text(encoding="utf-8-sig")
         )
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("QQ 扩展工具配置文件无法读取或不是有效 JSON") from exc
+        raise RuntimeError("QQ 能力增强配置文件无法读取或不是有效 JSON") from exc
     validate_config(_persisted_config)
 
 
-class QQExtensionToolsPlugin(Star):
+class QQEnhancePlugin(Star):
     """Expose bounded QQ tools and inbound semantics to AstrBot models."""
 
     def __init__(
@@ -216,9 +216,9 @@ class QQExtensionToolsPlugin(Star):
         super().__init__(context)
         self.config = validate_config(dict(config or {}))
         data_dir = (
-            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_extension_tools"
+            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         )
-        self.storage = Storage(data_dir / "qq_extension_tools.sqlite3")
+        self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
@@ -431,7 +431,7 @@ class QQExtensionToolsPlugin(Star):
                 "additionalProperties": False,
             }
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
-        logger.info("QQ extension tools initialized")
+        logger.info("QQ Enhance initialized")
 
     async def page_diagnostics(self):
         """Return read-only status data for the authenticated plugin Page.
@@ -558,8 +558,6 @@ class QQExtensionToolsPlugin(Star):
                 reason = "pack_not_enabled"
             elif spec.operation_id in self.config["toolsets"]["disabled_operations"]:
                 reason = "disabled_by_config"
-            elif spec.operation_id in self.config["permissions"]["per_operation_rules"]:
-                reason = "disabled_by_rule"
             capabilities.append(
                 {
                     "category": spec.category,
@@ -711,7 +709,7 @@ class QQExtensionToolsPlugin(Star):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("QQ extension tools cleanup failed")
+                logger.exception("QQ Enhance cleanup failed")
             await asyncio.sleep(self.config["files"]["cleanup_interval_seconds"])
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -797,7 +795,7 @@ class QQExtensionToolsPlugin(Star):
                 else verified_components_prompt
             )
         event_verified_types = event.get_extra(
-            "_qq_extension_verified_component_types", []
+            "_qq_enhance_verified_component_types", []
         )
         if not isinstance(event_verified_types, (list, tuple, set, frozenset)):
             event_verified_types = []
@@ -882,7 +880,7 @@ class QQExtensionToolsPlugin(Star):
             ):
                 verified_type_set.add("poke")
             event.set_extra(
-                "_qq_extension_verified_component_types",
+                "_qq_enhance_verified_component_types",
                 [
                     component_type
                     for component_type in spoof_protection["protected_types"]
@@ -1190,7 +1188,7 @@ class QQExtensionToolsPlugin(Star):
             "marked": False,
             "marker": "",
         }
-        event.set_extra("_qq_extension_recall_key", key)
+        event.set_extra("_qq_enhance_recall_key", key)
 
     async def _append_recall_marker(self, entry: dict) -> bool:
         """Append a verified recall marker to one persisted user message.
@@ -1364,7 +1362,7 @@ class QQExtensionToolsPlugin(Star):
             event: Original message event whose response was just sent.
         """
 
-        key = event.get_extra("_qq_extension_recall_key")
+        key = event.get_extra("_qq_enhance_recall_key")
         if not isinstance(key, tuple):
             return
         self._cleanup_recall_messages()
@@ -1385,7 +1383,7 @@ class QQExtensionToolsPlugin(Star):
             _response: Final model response, unused by recall tracking.
         """
 
-        key = event.get_extra("_qq_extension_recall_key")
+        key = event.get_extra("_qq_enhance_recall_key")
         if not isinstance(key, tuple):
             return
         self._cleanup_recall_messages()
@@ -1928,7 +1926,7 @@ class QQExtensionToolsPlugin(Star):
                     text = _format_audit_rows(rows)
         else:
             text = (
-                "QQ 扩展工具命令：\n"
+                "QQ 能力增强命令：\n"
                 "/qq confirm <id>\n/qq cancel <id>\n"
                 "/qq pending\n/qq audit [1-100]"
             )
@@ -2292,4 +2290,4 @@ class QQExtensionToolsPlugin(Star):
             with suppress(asyncio.CancelledError):
                 await self.cleanup_task
         self.recall_messages.clear()
-        logger.info("QQ extension tools terminated")
+        logger.info("QQ Enhance terminated")

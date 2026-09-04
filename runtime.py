@@ -48,7 +48,6 @@ DEFAULT_CONFIG = {
         "allow_group_owner": True,
         "allow_cross_group": False,
         "allow_cross_private": False,
-        "per_operation_rules": {},
     },
     "confirmation": {
         "ttl_seconds": 60,
@@ -92,9 +91,9 @@ DEFAULT_CONFIG = {
     },
     "inbound": {
         "semanticize_components": True,
-        "enhance_voice_messages": False,
+        "enhance_voice_messages": True,
         "component_spoof_protection": {
-            "enabled": False,
+            "enabled": True,
             "verify_components": True,
             "protected_types": [
                 "red_packet",
@@ -106,7 +105,7 @@ DEFAULT_CONFIG = {
         },
         "respond_to_poke": True,
         "respond_to_red_packet": True,
-        "mark_recalled_messages": False,
+        "mark_recalled_messages": True,
         "max_semantic_chars": 2000,
     },
     "audit": {"retention_days": 90},
@@ -455,17 +454,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     if result["request_notifications"]["enabled"] and not admin_user_ids:
         raise ValueError("request_notifications.enabled=true 时必须填写 admin_user_ids")
 
-    rules = result["permissions"]["per_operation_rules"]
-    if not isinstance(rules, dict):
-        raise ValueError("permissions.per_operation_rules 必须是对象")
-    for operation_id, rule in rules.items():
-        if operation_id not in OPERATION_MAP:
-            raise ValueError(f"per_operation_rules 包含未知操作: {operation_id}")
-        if not isinstance(rule, dict) or set(rule) != {"disabled"}:
-            raise ValueError(f"{operation_id} 只允许配置 disabled=true")
-        if rule["disabled"] is not True:
-            raise ValueError(f"{operation_id}.disabled 只能是 true")
-
     resolved_roots = []
     for raw_path in result["files"]["allowed_roots"]:
         path = Path(raw_path)
@@ -504,9 +492,9 @@ class QQRuntime:
         self.context = context
         self.config = config
         self.storage = storage
-        self.temp_dir = Path(get_astrbot_temp_path()) / "qq_extension_tools"
+        self.temp_dir = Path(get_astrbot_temp_path()) / "qq_enhance"
         self.data_dir = (
-            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_extension_tools"
+            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         )
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -528,7 +516,7 @@ class QQRuntime:
             return False
         if operation_id in self.config["toolsets"]["disabled_operations"]:
             return False
-        return operation_id not in self.config["permissions"]["per_operation_rules"]
+        return True
 
     def enabled_tools(self) -> set[str]:
         """Return tools with at least one enabled operation.
@@ -937,7 +925,7 @@ class QQRuntime:
         """
 
         if event.get_platform_name() != "aiocqhttp":
-            raise QQToolError("unsupported_platform", "QQ 扩展工具仅支持 aiocqhttp")
+            raise QQToolError("unsupported_platform", "QQ 能力增强仅支持 aiocqhttp")
         configured_id = self.config["platform"]["platform_id"]
         if configured_id and event.get_platform_id() != configured_id:
             raise QQToolError("unsupported_platform", "当前 aiocqhttp 实例未被插件授权")

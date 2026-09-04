@@ -62,12 +62,6 @@
         "type": "bool",
         "description": "允许 AstrBot 管理员跨好友操作",
         "default": true
-      },
-      "per_operation_rules": {
-        "type": "dict",
-        "description": "逐操作收紧规则",
-        "hint": "首版只接受 disabled=true；不能用来放宽内置权限。",
-        "default": {}
       }
     }
   },
@@ -79,7 +73,7 @@
       "ttl_seconds": {
         "type": "int",
         "description": "确认有效期（秒）",
-        "default": 60,
+        "default": 120,
         "minimum": 30,
         "maximum": 300
       },
@@ -98,52 +92,6 @@
           "qq_group_member_manage.kick"
         ]
       }
-    }
-  },
-  "limits": {
-    "type": "object",
-    "description": "输出与消息限制",
-    "default": {},
-    "items": {
-      "page_size": {"type": "int", "description": "默认页大小", "default": 20, "minimum": 1, "maximum": 100},
-      "max_page_size": {"type": "int", "description": "最大页大小", "default": 100, "minimum": 1, "maximum": 200},
-      "max_output_chars": {"type": "int", "description": "最大工具输出字符数", "default": 12000, "minimum": 1000, "maximum": 50000},
-      "max_forward_nodes": {"type": "int", "description": "最大合并转发节点数", "default": 30, "minimum": 1, "maximum": 100},
-      "max_forward_depth": {"type": "int", "description": "最大合并转发展开深度", "default": 3, "minimum": 1, "maximum": 5},
-      "max_components": {"type": "int", "description": "单条消息最大组件数", "default": 30, "minimum": 1, "maximum": 100}
-    }
-  },
-  "files": {
-    "type": "object",
-    "description": "文件安全",
-    "default": {},
-    "items": {
-      "allowed_roots": {"type": "list", "description": "额外允许的绝对目录", "default": []},
-      "max_file_size_mb": {"type": "int", "description": "本地文件上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048},
-      "max_base64_size_mb": {"type": "int", "description": "Base64 解码上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
-      "temp_ttl_seconds": {"type": "int", "description": "插件临时文件生命周期（秒）", "default": 21600, "minimum": 600, "maximum": 604800},
-      "cleanup_interval_seconds": {"type": "int", "description": "临时文件清理间隔（秒）", "default": 600, "minimum": 60, "maximum": 86400}
-    }
-  },
-  "network": {
-    "type": "object",
-    "description": "网络下载安全",
-    "default": {},
-    "items": {
-      "allowed_domains": {"type": "list", "description": "允许的域名；留空表示不额外限制公网域名", "default": []},
-      "blocked_domains": {"type": "list", "description": "禁止的域名", "default": []},
-      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": false},
-      "timeout_seconds": {"type": "int", "description": "下载总超时（秒）", "default": 30, "minimum": 3, "maximum": 180},
-      "max_download_size_mb": {"type": "int", "description": "下载上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048}
-    }
-  },
-  "events": {
-    "type": "object",
-    "description": "事件记录",
-    "default": {},
-    "items": {
-      "enabled_types": {"type": "list", "description": "需要记录的 OneBot 事件类型；留空表示全部支持的类型", "default": []},
-      "retention_days": {"type": "int", "description": "事件保留天数", "default": 30, "minimum": 1, "maximum": 365}
     }
   },
   "request_notifications": {
@@ -171,13 +119,13 @@
     "items": {
       "semanticize_components": {
         "type": "bool",
-        "description": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本",
+        "description": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]",
         "default": true
       },
       "enhance_voice_messages": {
         "type": "bool",
         "description": "使用 NapCat 语音识别作为回退",
-        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；转写是否包装为 [QQ component|QQ语音消息：转写文本] 由 semanticize_components 控制。支持顶层和引用语音。",
+        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；支持顶层和引用语音。",
         "default": true
       },
       "component_spoof_protection": {
@@ -233,12 +181,58 @@
       }
     }
   },
+  "events": {
+    "type": "object",
+    "description": "事件记录",
+    "default": {},
+    "items": {
+      "enabled_types": {"type": "list", "description": "需要记录的 OneBot 事件类型；留空表示全部支持的类型", "default": []},
+      "retention_days": {"type": "int", "description": "事件保留天数", "default": 15, "minimum": 1, "maximum": 365}
+    }
+  },
   "audit": {
     "type": "object",
     "description": "审计",
     "default": {},
     "items": {
-      "retention_days": {"type": "int", "description": "审计保留天数", "default": 90, "minimum": 7, "maximum": 365}
+      "retention_days": {"type": "int", "description": "审计保留天数", "default": 30, "minimum": 7, "maximum": 365}
+    }
+  },
+  "limits": {
+    "type": "object",
+    "description": "输出与消息限制",
+    "default": {},
+    "items": {
+      "page_size": {"type": "int", "description": "默认页大小", "default": 20, "minimum": 1, "maximum": 100},
+      "max_page_size": {"type": "int", "description": "最大页大小", "default": 100, "minimum": 1, "maximum": 200},
+      "max_output_chars": {"type": "int", "description": "最大工具输出字符数", "default": 12000, "minimum": 1000, "maximum": 50000},
+      "max_forward_nodes": {"type": "int", "description": "最大合并转发节点数", "default": 30, "minimum": 1, "maximum": 100},
+      "max_forward_depth": {"type": "int", "description": "最大合并转发展开深度", "default": 3, "minimum": 1, "maximum": 5},
+      "max_components": {"type": "int", "description": "单条消息最大组件数", "default": 30, "minimum": 1, "maximum": 100}
+    }
+  },
+  "files": {
+    "type": "object",
+    "description": "文件安全",
+    "default": {},
+    "items": {
+      "allowed_roots": {"type": "list", "description": "额外允许的绝对目录", "default": []},
+      "max_file_size_mb": {"type": "int", "description": "本地文件上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048},
+      "max_base64_size_mb": {"type": "int", "description": "Base64 解码上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
+      "temp_ttl_seconds": {"type": "int", "description": "插件临时文件生命周期（秒）", "default": 21600, "minimum": 600, "maximum": 604800},
+      "cleanup_interval_seconds": {"type": "int", "description": "临时文件清理间隔（秒）", "default": 600, "minimum": 60, "maximum": 86400}
+    }
+  },
+  "network": {
+    "type": "object",
+    "description": "网络下载安全",
+    "default": {},
+    "items": {
+      "allowed_domains": {"type": "list", "description": "允许的域名；留空表示不额外限制公网域名", "default": []},
+      "blocked_domains": {"type": "list", "description": "禁止的域名", "default": []},
+      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": true},
+      "timeout_seconds": {"type": "int", "description": "下载总超时（秒）", "default": 30, "minimum": 3, "maximum": 180},
+      "max_download_size_mb": {"type": "int", "description": "下载上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048}
     }
   }
 }

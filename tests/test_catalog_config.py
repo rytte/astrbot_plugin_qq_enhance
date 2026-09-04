@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from astrbot_plugin_qq_extension_tools.catalog import (
+from astrbot_plugin_qq_enhance.catalog import (
     NAPCAT_MAX_VERSION,
     NAPCAT_MIN_VERSION,
     OPERATION_MAP,
@@ -13,7 +13,7 @@ from astrbot_plugin_qq_extension_tools.catalog import (
     OPERATIONS,
     TOOL_OPERATIONS,
 )
-from astrbot_plugin_qq_extension_tools.runtime import (
+from astrbot_plugin_qq_enhance.runtime import (
     PROTECTED_COMPONENT_TYPES,
     validate_config,
 )
@@ -133,11 +133,6 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"inbound": {"mark_recalled_messages": 1}},
         {"inbound": {"max_semantic_chars": 255}},
         {"limits": {"page_size": 0}},
-        {
-            "permissions": {
-                "per_operation_rules": {"qq_status.login": {"disabled": False}}
-            }
-        },
     ],
 )
 def test_invalid_config_fails_fast(config: dict) -> None:
@@ -166,9 +161,9 @@ def test_valid_config_preserves_explicit_values() -> None:
     }
     assert result["inbound"] == {
         "semanticize_components": True,
-        "enhance_voice_messages": False,
+        "enhance_voice_messages": True,
         "component_spoof_protection": {
-            "enabled": False,
+            "enabled": True,
             "verify_components": True,
             "protected_types": [
                 "red_packet",
@@ -180,7 +175,7 @@ def test_valid_config_preserves_explicit_values() -> None:
         },
         "respond_to_poke": True,
         "respond_to_red_packet": True,
-        "mark_recalled_messages": False,
+        "mark_recalled_messages": True,
         "max_semantic_chars": 2000,
     }
 
