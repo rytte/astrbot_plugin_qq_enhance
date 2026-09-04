@@ -92,6 +92,7 @@ DEFAULT_CONFIG = {
     },
     "inbound": {
         "semanticize_components": True,
+        "enhance_voice_messages": False,
         "respond_to_poke": True,
         "respond_to_red_packet": True,
         "mark_recalled_messages": False,
@@ -326,6 +327,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "allow_private_network"),
         ("request_notifications", "enabled"),
         ("inbound", "semanticize_components"),
+        ("inbound", "enhance_voice_messages"),
         ("inbound", "respond_to_poke"),
         ("inbound", "respond_to_red_packet"),
         ("inbound", "mark_recalled_messages"),
@@ -1025,6 +1027,18 @@ class QQRuntime:
             "flac",
         }:
             raise QQToolError("invalid_parameters", "out_format 枚举值无效")
+        if operation_id in {"qq_media.get_record", "qq_media.convert_record"}:
+            file_ref = normalized["file"]
+            if not isinstance(file_ref, str) or not file_ref.strip():
+                raise QQToolError("invalid_parameters", "file 必须是非空字符串")
+            file_ref = file_ref.strip()
+            normalized["file"] = file_ref
+            if Path(file_ref).is_absolute() or WINDOWS_ABSOLUTE_PATH.match(file_ref):
+                raise QQToolError(
+                    "invalid_parameters",
+                    "file 必须是 OneBot/NapCat 原始媒体标识，不能使用 AstrBot "
+                    "本地临时路径",
+                )
         if any(key in rule.allowed for key in MEDIA_SOURCE_KEYS):
             supplied = [
                 key
@@ -1958,6 +1972,7 @@ class QQRuntime:
             "get_group_member_info",
             "get_group_list",
             "get_friend_list",
+            "fetch_ptt_text",
         }
         send_actions = {
             "send_group_msg",

@@ -369,8 +369,6 @@ def _describe_component(component: Any) -> str:
             return f"[图片描述：{summary}]"
         return ""
 
-    if component_type == "record":
-        return "[语音消息]"
     if component_type == "video":
         return "[视频消息]"
     if component_type == "file":

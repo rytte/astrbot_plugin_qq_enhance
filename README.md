@@ -119,7 +119,11 @@ QQ extension tools initialized
 
 ## 入站组件语义化
 
-插件默认将 NapCat 上报但 AstrBot 不会写入 `message_str` 的 QQ 组件转换为模型可读的受限文本，例如 `[QQ表情：微笑]`、`[QQ商城表情：拜托拜托]`、`[QQ位置：北京；纬度 39.9042，经度 116.4074]` 和 `[QQ互动：用户 10001 戳了你]`。支持标准表情、商城表情摘要、语音/视频/文件提示、音乐、戳一戳、骰子、猜拳、联系人、位置、分享、JSON/XML/小程序卡片、合并转发、在线文件和闪传组件。
+插件默认将 NapCat 上报但 AstrBot 不会写入 `message_str` 的 QQ 组件转换为模型可读的受限文本，例如 `[QQ表情：微笑]`、`[QQ商城表情：拜托拜托]`、`[QQ位置：北京；纬度 39.9042，经度 116.4074]` 和 `[QQ互动：用户 10001 戳了你]`。支持标准表情、商城表情摘要、视频/文件提示、音乐、戳一戳、骰子、猜拳、联系人、位置、分享、JSON/XML/小程序卡片、合并转发、在线文件和闪传组件。
+
+`inbound.enhance_voice_messages` 默认关闭。开启后，对于原始 OneBot 消息中仅含一个顶层 `record` 的 QQ 语音，插件会把已有的 AstrBot ASR 结果格式化为 `[QQ 语音消息：转写文本]`；若 AstrBot 未产生转写、消息链仍保留 `Record`，则调用 NapCat `fetch_ptt_text` 作为回退。引用消息的 `Reply.chain` 中恰好包含一个未转写的 `Record` 时，插件也会使用 `Reply.id` 识别被引用的原语音，并以相同格式写回引用链。NapCat 明确返回转写结果尚未就绪时，插件会间隔一秒重试，最多调用三次；成功只记录不含转写正文的 INFO 日志。最终失败、超时、返回空结果或消息 ID 无效时，插件不会修改原始 `Record`。关闭时插件不会参与语音识别或格式化。语音不再由 `semanticize_components` 生成占位文本。
+
+`qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 参数必须使用 OneBot/NapCat 消息段提供的原始媒体标识。AstrBot 在预处理阶段生成的本地临时路径不属于 NapCat 媒体标识，插件会直接拒绝，避免把临时 WAV 路径错误地提交给 NapCat。
 
 标准表情优先使用 NapCat `face.data.raw.faceText`；该字段缺失时，使用插件内置的 NapCat 4.18.19 `sysface` 名称表。映射中仍不存在的 ID 会明确标记为名称未知，并要求模型不要根据编号猜测含义。JSON、XML 和小程序卡片只提取标题、提示、说明、摘要、内容、名称、标签和去掉查询参数的链接，不会把任意字段或完整载荷送入模型。对于结构符合 QQ 联系人卡片协议的群名片和个人名片，插件会额外校验 `mqqapi://card/show_pslcard` 的 `card_type` 与纯数字 `uin`，并分别提供群号或 QQ 号。
 
@@ -153,7 +157,7 @@ WebUI 配置按以下分组组织：
 - `network`：域名、私网、超时和下载大小。
 - `events`：OneBot 请求/通知事件记录范围和保留期。
 - `request_notifications`：好友申请、入群申请和群邀请的模型通知开关及管理员 QQ 列表。
-- `inbound`：组件语义化、戳一戳/红包响应、上下文撤回标记和单条语义文本长度上限。
+- `inbound`：语音消息增强、组件语义化、戳一戳/红包响应、上下文撤回标记和单条语义文本长度上限。
 - `audit`：审计保留期。
 
 申请通知配置示例：

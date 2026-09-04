@@ -16,6 +16,7 @@
     "delete_group_folder",
     "delete_msg",
     "friend_poke",
+    "fetch_ptt_text",
     "get_essence_msg_list",
     "get_forward_msg",
     "get_friend_list",

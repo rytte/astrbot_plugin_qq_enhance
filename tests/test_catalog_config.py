@@ -90,6 +90,8 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"permissions": {"cross_group_allowlist": ["30001"]}},
         {"permissions": {"cross_private_allowlist": ["10001"]}},
         {"inbound": {"semanticize_components": "true"}},
+        {"inbound": {"enhance_voice_messages": 1}},
+        {"inbound": {"prefer_napcat_stt": True}},
         {"inbound": {"respond_to_poke": 1}},
         {"inbound": {"respond_to_red_packet": "true"}},
         {"inbound": {"mark_recalled_messages": 1}},
@@ -128,6 +130,7 @@ def test_valid_config_preserves_explicit_values() -> None:
     }
     assert result["inbound"] == {
         "semanticize_components": True,
+        "enhance_voice_messages": False,
         "respond_to_poke": True,
         "respond_to_red_packet": True,
         "mark_recalled_messages": False,

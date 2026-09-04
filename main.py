@@ -10,7 +10,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import File
+from astrbot.api.message_components import File, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.core.platform.message_session import MessageSession
@@ -28,9 +28,8 @@ from .catalog import (
     TOOL_OPERATIONS,
 )
 from .inbound import describe_inbound_event, is_red_packet_event
-from .runtime import QQRuntime, validate_config
+from .runtime import QQRuntime, QQToolError, validate_config
 from .storage import Storage
-
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
@@ -195,7 +194,7 @@ class QQExtensionToolsPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def enrich_inbound_qq_components(self, event: AstrMessageEvent) -> None:
-        """Append bounded semantics for NapCat components ignored by AstrBot.
+        """Enhance QQ voice and append bounded semantics after preprocessing.
 
         Args:
             event: Current message or notice event.
@@ -208,6 +207,7 @@ class QQExtensionToolsPlugin(Star):
             return
         inbound = self.config["inbound"]
         raw = getattr(event.message_obj, "raw_message", None)
+        await self._enhance_inbound_qq_voice(event, raw)
         semantics = describe_inbound_event(
             raw,
             str(event.get_self_id() or ""),
@@ -234,6 +234,135 @@ class QQExtensionToolsPlugin(Star):
         if targeted_poke or red_packet:
             event.is_wake = True
             event.is_at_or_wake_command = True
+
+    async def _enhance_inbound_qq_voice(
+        self, event: AstrMessageEvent, raw: object
+    ) -> None:
+        """Format AstrBot voice text or use NapCat as the final fallback.
+
+        Args:
+            event: Current QQ message event.
+            raw: Original OneBot event retained by AstrBot.
+        """
+
+        if not self.config["inbound"]["enhance_voice_messages"]:
+            return
+        if not isinstance(raw, dict) or raw.get("post_type") not in {None, "message"}:
+            return
+        raw_components = raw.get("message")
+        if not isinstance(raw_components, list):
+            return
+        message_chain = event.get_messages()
+        is_referenced_voice = False
+        target_chain = message_chain
+        message_id = raw.get("message_id")
+        if (
+            len(raw_components) == 1
+            and isinstance(raw_components[0], dict)
+            and raw_components[0].get("type") == "record"
+            and len(message_chain) == 1
+        ):
+            component = message_chain[0]
+        else:
+            replies = [
+                component for component in message_chain if isinstance(component, Reply)
+            ]
+            if len(replies) != 1:
+                return
+            reply = replies[0]
+            if (
+                not reply.chain
+                or len(reply.chain) != 1
+                or not isinstance(reply.chain[0], Record)
+            ):
+                return
+            component = reply.chain[0]
+            target_chain = reply.chain
+            message_id = reply.id
+            is_referenced_voice = True
+        if isinstance(component, Plain):
+            text = component.text.strip()
+            if not text:
+                return
+            formatted = f"[QQ 语音消息：{text}]"
+            message_chain[0] = Plain(formatted)
+            event.message_str = formatted
+            event.message_obj.message_str = formatted
+            return
+        if not isinstance(component, Record):
+            return
+        if (
+            not isinstance(message_id, (str, int))
+            or isinstance(message_id, bool)
+            or not str(message_id).lstrip("-").isdecimal()
+            or int(message_id) == 0
+        ):
+            logger.warning(
+                "NapCat fallback speech-to-text skipped because the QQ %s message "
+                "ID is invalid",
+                "referenced" if is_referenced_voice else "inbound",
+            )
+            return
+        try:
+            await self.runtime.verify_platform(event)
+            for attempt in range(3):
+                try:
+                    result = await self.runtime.call_action(
+                        event,
+                        "fetch_ptt_text",
+                        {"message_id": message_id},
+                        skip_contract=True,
+                    )
+                    break
+                except QQToolError as exc:
+                    result_not_ready = (
+                        exc.code == "protocol_rejected"
+                        and "获取语音转文字结果失败" in exc.message
+                    )
+                    if result_not_ready and attempt < 2:
+                        logger.info(
+                            "NapCat speech-to-text result is not ready for the %s QQ "
+                            "voice message; retrying in 1 second (%d/2)",
+                            "referenced" if is_referenced_voice else "inbound",
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(1)
+                        continue
+                    raise
+        except QQToolError as exc:
+            logger.warning(
+                "NapCat fallback speech-to-text failed; keeping the original "
+                "%svoice component: "
+                "code=%s, message=%s",
+                "referenced " if is_referenced_voice else "",
+                exc.code,
+                exc.message,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "NapCat fallback speech-to-text failed unexpectedly; keeping the "
+                "original %svoice component",
+                "referenced " if is_referenced_voice else "",
+            )
+            return
+        text = result.get("text") if isinstance(result, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            logger.warning(
+                "NapCat fallback speech-to-text returned an invalid or empty result; "
+                "keeping the original %svoice component",
+                "referenced " if is_referenced_voice else "",
+            )
+            return
+        formatted = f"[QQ 语音消息：{text.strip()}]"
+        target_chain[0] = Plain(formatted)
+        logger.info(
+            "NapCat fallback speech-to-text succeeded for the %s QQ voice message",
+            "referenced" if is_referenced_voice else "inbound",
+        )
+        if not is_referenced_voice:
+            event.message_str = formatted
+            event.message_obj.message_str = formatted
 
     def _cleanup_recall_messages(self) -> None:
         """Remove expired entries from the short-lived recall index."""

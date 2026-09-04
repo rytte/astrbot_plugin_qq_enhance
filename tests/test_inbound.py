@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
+from astrbot.core.message.components import Plain, Record, Reply
 from astrbot_plugin_qq_extension_tools.inbound import (
     describe_inbound_event,
     is_red_packet_event,
 )
 from astrbot_plugin_qq_extension_tools.main import QQExtensionToolsPlugin
-from astrbot_plugin_qq_extension_tools.runtime import validate_config
+from astrbot_plugin_qq_extension_tools.runtime import QQToolError, validate_config
 
 
 def describe(raw_event: dict, *, self_id: str = "20002", max_chars: int = 2000) -> str:
@@ -112,6 +114,17 @@ def test_market_face_image_and_common_components_are_described() -> None:
     assert "[QQ群名片：30003]" in result
     assert "[QQ骰子：结果 4]" in result
     assert "[QQ合并转发消息]" in result
+
+
+def test_record_is_not_described_by_component_semanticization() -> None:
+    result = describe(
+        {
+            "post_type": "message",
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        }
+    )
+
+    assert result == ""
 
 
 def test_rps_result_uses_ntqq_gesture_mapping() -> None:
@@ -330,13 +343,19 @@ def test_output_and_component_count_are_bounded() -> None:
 class FakeEvent:
     """Minimal AstrBot event used to exercise the plugin handler."""
 
-    def __init__(self, raw_message: dict, message_str: str = "") -> None:
+    def __init__(
+        self,
+        raw_message: dict,
+        message_str: str = "",
+        messages: list | None = None,
+    ) -> None:
         self.message_str = message_str
         self.is_wake = False
         self.is_at_or_wake_command = False
         self.message_obj = SimpleNamespace(
             raw_message=raw_message,
             message_str=message_str,
+            message=messages or [],
         )
 
     def get_platform_name(self) -> str:
@@ -347,6 +366,351 @@ class FakeEvent:
 
     def get_self_id(self) -> str:
         return "20002"
+
+    def get_messages(self) -> list:
+        return self.message_obj.message
+
+
+@pytest.mark.asyncio
+async def test_plugin_formats_existing_astrbot_stt_result_without_napcat() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(),
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        message_str="AstrBot 转写",
+        messages=[Plain("AstrBot 转写")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [Plain("[QQ 语音消息：AstrBot 转写]")]
+    assert event.message_str == "[QQ 语音消息：AstrBot 转写]"
+    assert event.message_obj.message_str == event.message_str
+    plugin.runtime.verify_platform.assert_not_awaited()
+    plugin.runtime.call_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plugin_leaves_astrbot_stt_result_unchanged_when_disabled() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        message_str="AstrBot 转写",
+        messages=[Plain("AstrBot 转写")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [Plain("AstrBot 转写")]
+    assert event.message_str == "AstrBot 转写"
+
+
+@pytest.mark.asyncio
+async def test_plugin_uses_napcat_stt_when_astrbot_leaves_record() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(return_value={"text": "测试语音"}),
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[Record(file="voice.amr")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [Plain("[QQ 语音消息：测试语音]")]
+    assert event.message_str == "[QQ 语音消息：测试语音]"
+    assert event.message_obj.message_str == event.message_str
+    plugin.runtime.verify_platform.assert_awaited_once_with(event)
+    plugin.runtime.call_action.assert_awaited_once_with(
+        event,
+        "fetch_ptt_text",
+        {"message_id": 123},
+        skip_contract=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_retries_when_napcat_stt_result_is_not_ready() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    not_ready = QQToolError(
+        "protocol_rejected",
+        "QQ action fetch_ptt_text 失败：获取语音转文字结果失败",
+    )
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(side_effect=[not_ready, not_ready, {"text": "稍后成功"}]),
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[Record(file="voice.amr")],
+    )
+
+    with (
+        patch(
+            "astrbot_plugin_qq_extension_tools.main.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep,
+        patch("astrbot_plugin_qq_extension_tools.main.logger.info") as log_info,
+    ):
+        await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [Plain("[QQ 语音消息：稍后成功]")]
+    assert plugin.runtime.call_action.await_count == 3
+    assert sleep.await_args_list == [call(1), call(1)]
+    assert log_info.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_plugin_uses_napcat_stt_for_record_in_reply() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(return_value={"text": "引用语音"}),
+    )
+    reply = Reply(
+        id="456",
+        chain=[Record(file="quoted-voice.amr")],
+        message_str="",
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [
+                {"type": "reply", "data": {"id": "456"}},
+                {"type": "text", "data": {"text": "这段说了什么？"}},
+            ],
+        },
+        message_str="这段说了什么？",
+        messages=[reply, Plain("这段说了什么？")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert reply.chain == [Plain("[QQ 语音消息：引用语音]")]
+    assert reply.message_str == ""
+    assert event.message_str == "这段说了什么？"
+    assert event.message_obj.message_str == event.message_str
+    plugin.runtime.verify_platform.assert_awaited_once_with(event)
+    plugin.runtime.call_action.assert_awaited_once_with(
+        event,
+        "fetch_ptt_text",
+        {"message_id": "456"},
+        skip_contract=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_keeps_record_in_reply_when_napcat_stt_fails() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(return_value={"text": ""}),
+    )
+    record = Record(file="quoted-voice.amr")
+    reply = Reply(id=456, chain=[record], message_str="")
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "reply", "data": {"id": "456"}}],
+        },
+        messages=[reply],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert reply.chain == [record]
+    assert event.message_str == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        Reply(id="invalid", chain=[Record(file="quoted-voice.amr")]),
+        Reply(
+            id=456,
+            chain=[Record(file="quoted-voice.amr"), Plain("other content")],
+        ),
+    ],
+)
+async def test_plugin_skips_reply_voice_that_cannot_be_mapped_safely(
+    reply: Reply,
+) -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(),
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "reply", "data": {"id": str(reply.id)}}],
+        },
+        messages=[reply],
+    )
+
+    original_chain = list(reply.chain or [])
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert reply.chain == original_chain
+    plugin.runtime.verify_platform.assert_not_awaited()
+    plugin.runtime.call_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [None, {}, {"text": ""}, {"text": 123}])
+async def test_plugin_keeps_record_for_invalid_napcat_result(
+    result: object,
+) -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(return_value=result),
+    )
+    record = Record(file="voice.amr")
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": "123",
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[record],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [record]
+    assert event.message_str == ""
+
+
+@pytest.mark.asyncio
+async def test_plugin_keeps_record_when_napcat_stt_fails() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(
+            side_effect=QQToolError("protocol_rejected", "recognition failed")
+        ),
+    )
+    record = Record(file="voice.amr")
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[record],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [record]
+    assert event.message_str == ""
+    assert plugin.runtime.call_action.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_stops_after_three_not_ready_stt_failures() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(
+            side_effect=QQToolError(
+                "protocol_rejected",
+                "QQ action fetch_ptt_text 失败：获取语音转文字结果失败",
+            )
+        ),
+    )
+    record = Record(file="voice.amr")
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[record],
+    )
+
+    with patch(
+        "astrbot_plugin_qq_extension_tools.main.asyncio.sleep",
+        new=AsyncMock(),
+    ) as sleep:
+        await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [record]
+    assert plugin.runtime.call_action.await_count == 3
+    assert sleep.await_args_list == [call(1), call(1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_message", "messages"),
+    [
+        (
+            {"post_type": "message", "message": [{"type": "record"}]},
+            [Record(file="voice.amr")],
+        ),
+        (
+            {
+                "post_type": "message",
+                "message_id": 123,
+                "message": [{"type": "record"}, {"type": "record"}],
+            },
+            [Record(file="voice-1.amr"), Record(file="voice-2.amr")],
+        ),
+    ],
+)
+async def test_plugin_skips_voice_that_cannot_be_mapped_safely(
+    raw_message: dict,
+    messages: list,
+) -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(),
+    )
+    event = FakeEvent(raw_message, messages=messages)
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == messages
+    plugin.runtime.verify_platform.assert_not_awaited()
+    plugin.runtime.call_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio

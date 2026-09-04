@@ -44,6 +44,8 @@ class FakeClient:
             return [{"user_id": 10001}, {"user_id": 20001}]
         if action == "get_login_info":
             return {"user_id": 99999, "nickname": "bot"}
+        if action == "fetch_ptt_text":
+            return {"text": "hello"}
         if action == "get_msg":
             if params["message_id"] == 125:
                 return {
@@ -156,6 +158,22 @@ async def make_runtime(tmp_path, config: dict | None = None):
     return runtime, client, storage
 
 
+@pytest.mark.asyncio
+async def test_fetch_ptt_text_is_allowed_as_an_internal_action(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    event = FakeEvent()
+
+    result = await runtime.call_action(
+        event,
+        "fetch_ptt_text",
+        {"message_id": 123},
+        skip_contract=True,
+    )
+
+    assert result == {"text": "hello"}
+    assert ("fetch_ptt_text", {"message_id": 123}) in client.calls
+
+
 def test_parameter_contract_rejects_unknown_and_missing() -> None:
     runtime = object.__new__(QQRuntime)
     runtime.config = validate_config(None)
@@ -183,6 +201,20 @@ def test_parameter_contract_rejects_unknown_and_missing() -> None:
             "qq_media.ocr",
             {"path": "C:\\image.png", "url": "https://example.com/image.png"},
         )
+    with pytest.raises(QQToolError, match="不能使用 AstrBot 本地临时路径"):
+        runtime.validate_parameters(
+            "qq_media.get_record",
+            {
+                "file": (
+                    "C:\\Users\\tester\\.astrbot\\data\\temp\\media_audio.wav"
+                ),
+                "out_format": "wav",
+            },
+        )
+    assert runtime.validate_parameters(
+        "qq_media.get_record",
+        {"file": "encoded-record-id", "out_format": "wav"},
+    ) == {"file": "encoded-record-id", "out_format": "wav"}
     assert runtime.validate_parameters(
         "qq_group_request.approve", {"request_id": "17"}
     ) == {"request_id": 17}
