@@ -186,6 +186,12 @@
         "hint": "NapCat 4.18.19 的 walletElement 识别要求网络适配器开启 debug。",
         "default": true
       },
+      "mark_recalled_messages": {
+        "type": "bool",
+        "description": "在模型上下文中的 QQ 消息末尾标记该消息已被撤回",
+        "hint": "支持私聊和群聊；只更新已有上下文，不会因撤回事件唤醒模型或主动回复。",
+        "default": false
+      },
       "max_semantic_chars": {
         "type": "int",
         "description": "单条消息追加的组件语义文本上限",

@@ -92,6 +92,7 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"inbound": {"semanticize_components": "true"}},
         {"inbound": {"respond_to_poke": 1}},
         {"inbound": {"respond_to_red_packet": "true"}},
+        {"inbound": {"mark_recalled_messages": 1}},
         {"inbound": {"max_semantic_chars": 255}},
         {"limits": {"page_size": 0}},
         {
@@ -129,6 +130,7 @@ def test_valid_config_preserves_explicit_values() -> None:
         "semanticize_components": True,
         "respond_to_poke": True,
         "respond_to_red_packet": True,
+        "mark_recalled_messages": False,
         "max_semantic_chars": 2000,
     }
 

@@ -94,6 +94,7 @@ DEFAULT_CONFIG = {
         "semanticize_components": True,
         "respond_to_poke": True,
         "respond_to_red_packet": True,
+        "mark_recalled_messages": False,
         "max_semantic_chars": 2000,
     },
     "audit": {"retention_days": 90},
@@ -327,6 +328,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("inbound", "semanticize_components"),
         ("inbound", "respond_to_poke"),
         ("inbound", "respond_to_red_packet"),
+        ("inbound", "mark_recalled_messages"),
     )
     for group, key in bool_fields:
         if type(result[group][key]) is not bool:

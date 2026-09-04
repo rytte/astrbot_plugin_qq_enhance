@@ -171,8 +171,7 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
                 "nickname": "示例测试群",
                 "tag": "群名片",
                 "jumpUrl": (
-                    "mqqapi://card/show_pslcard?uin=30001&card_type=group"
-                    "&source=qrcode"
+                    "mqqapi://card/show_pslcard?uin=30001&card_type=group&source=qrcode"
                 ),
             }
         },
@@ -185,9 +184,7 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
                 "contact": "20001",
                 "nickname": "示例用户",
                 "tag": "QQ号",
-                "jumpUrl": (
-                    "mqqapi://card/show_pslcard?uin=20001&card_type=person"
-                ),
+                "jumpUrl": ("mqqapi://card/show_pslcard?uin=20001&card_type=person"),
             }
         },
     }

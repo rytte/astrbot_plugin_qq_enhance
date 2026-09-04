@@ -92,6 +92,7 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     plugin.cleanup_task = None
     plugin.notification_tasks = set()
     plugin.notification_locks = {}
+    plugin.recall_messages = {}
 
     await plugin.initialize()
 
@@ -110,14 +111,10 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     assert "调用成功仅表示 NapCat 已接受发送请求" in params_description
     assert "最终回复不得重复其中的正文或卡片" in params_description
     request_tool = manager.get_func("qq_group_request")
-    request_description = request_tool.parameters["properties"]["params"][
-        "description"
-    ]
+    request_description = request_tool.parameters["properties"]["params"]["description"]
     assert "通知中的 request_id" in request_description
     forward_tool = manager.get_func("qq_send_forward")
-    forward_description = forward_tool.parameters["properties"]["params"][
-        "description"
-    ]
+    forward_description = forward_tool.parameters["properties"]["params"]["description"]
     assert '{"message_id":正整数}' in forward_description
     assert "不得使用 type、data、name、uin 或 content 包装" in forward_description
     await plugin.terminate()
@@ -214,9 +211,7 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
 @pytest.mark.asyncio
 async def test_request_notification_follow_up_exposes_group_request_tool() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config(
-        {"permissions": {"allow_cross_group": True}}
-    )
+    plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     tools = [
@@ -286,9 +281,7 @@ async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
 @pytest.mark.asyncio
 async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config(
-        {"permissions": {"allow_cross_group": True}}
-    )
+    plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     tools = [
@@ -308,9 +301,7 @@ async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() 
 @pytest.mark.asyncio
 async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config(
-        {"permissions": {"allow_cross_group": True}}
-    )
+    plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     tools = [
@@ -416,9 +407,7 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
 @pytest.mark.asyncio
 async def test_private_admin_leave_group_prompt_ignores_stale_request_context() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config(
-        {"permissions": {"allow_cross_group": True}}
-    )
+    plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     tools = [

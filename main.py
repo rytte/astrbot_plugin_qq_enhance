@@ -32,6 +32,10 @@ from .runtime import QQRuntime, validate_config
 from .storage import Storage
 
 
+RECALL_TRACK_TTL_SECONDS = 180
+RECALL_TRACK_MAX_ENTRIES = 1000
+
+
 def _format_audit_rows(rows: list[dict]) -> str:
     """Format metadata-only audit rows for QQ chat output.
 
@@ -130,6 +134,7 @@ class QQExtensionToolsPlugin(Star):
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
+        self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
 
     async def initialize(self) -> None:
         """Initialize persistence, tool schemas, and lifecycle cleanup."""
@@ -229,6 +234,342 @@ class QQExtensionToolsPlugin(Star):
         if targeted_poke or red_packet:
             event.is_wake = True
             event.is_at_or_wake_command = True
+
+    def _cleanup_recall_messages(self) -> None:
+        """Remove expired entries from the short-lived recall index."""
+
+        now = time.monotonic()
+        expired_keys = [
+            key
+            for key, value in self.recall_messages.items()
+            if value["expires_at"] <= now
+        ]
+        for key in expired_keys:
+            del self.recall_messages[key]
+
+    @filter.on_llm_request(priority=-1000)
+    async def track_context_message(
+        self, event: AstrMessageEvent, request: ProviderRequest
+    ) -> None:
+        """Track an inbound QQ message that is about to enter model context.
+
+        Args:
+            event: Current inbound message event.
+            request: Provider request containing the persisted conversation.
+        """
+
+        if not self.config["inbound"]["mark_recalled_messages"]:
+            return
+        if event.get_platform_name() != "aiocqhttp" or request.conversation is None:
+            return
+        configured_platform_id = self.config["platform"]["platform_id"]
+        if configured_platform_id and event.get_platform_id() != configured_platform_id:
+            return
+        raw = getattr(event.message_obj, "raw_message", None)
+        if not isinstance(raw, dict) or raw.get("post_type") != "message":
+            return
+        message_id = raw.get("message_id")
+        if (
+            not isinstance(message_id, (str, int))
+            or isinstance(message_id, bool)
+            or not str(message_id).lstrip("-").isdecimal()
+        ):
+            return
+        message_type = str(raw.get("message_type") or "")
+        if message_type == "group":
+            scope_kind = "group"
+            scope_id = str(raw.get("group_id") or event.get_group_id() or "")
+        elif message_type == "private":
+            scope_kind = "private"
+            scope_id = str(raw.get("user_id") or event.get_sender_id() or "")
+        else:
+            return
+        prompt = request.prompt
+        sender_id = str(raw.get("user_id") or event.get_sender_id() or "")
+        if not scope_id or not sender_id or not isinstance(prompt, str) or not prompt:
+            return
+        try:
+            history = json.loads(request.conversation.history or "[]")
+        except (TypeError, json.JSONDecodeError):
+            logger.warning(
+                "Cannot track QQ message recall because conversation history is invalid: umo=%s",
+                event.unified_msg_origin,
+            )
+            return
+        if not isinstance(history, list):
+            logger.warning(
+                "Cannot track QQ message recall because conversation history is not a list: umo=%s",
+                event.unified_msg_origin,
+            )
+            return
+
+        self._cleanup_recall_messages()
+        while len(self.recall_messages) >= RECALL_TRACK_MAX_ENTRIES:
+            del self.recall_messages[next(iter(self.recall_messages))]
+
+        sent_at = raw.get("time")
+        if (
+            not isinstance(sent_at, (str, int))
+            or isinstance(sent_at, bool)
+            or not str(sent_at).isdecimal()
+        ):
+            sent_at = None
+        else:
+            sent_at = int(sent_at)
+        key = (
+            str(event.get_platform_id()),
+            scope_kind,
+            scope_id,
+            str(message_id),
+        )
+        self.recall_messages.pop(key, None)
+        self.recall_messages[key] = {
+            "unified_msg_origin": event.unified_msg_origin,
+            "conversation_id": request.conversation.cid,
+            "history_length": len(history),
+            "prompt": prompt,
+            "sender_id": sender_id,
+            "sent_at": sent_at,
+            "expires_at": time.monotonic() + RECALL_TRACK_TTL_SECONDS,
+            "recalled": False,
+            "marked": False,
+            "marker": "",
+        }
+        event.set_extra("_qq_extension_recall_key", key)
+
+    async def _append_recall_marker(self, entry: dict) -> bool:
+        """Append a verified recall marker to one persisted user message.
+
+        Args:
+            entry: Short-lived message mapping created before the LLM request.
+
+        Returns:
+            Whether the target history item is already marked or was updated.
+        """
+
+        try:
+            conversation = await self.context.conversation_manager.get_conversation(
+                entry["unified_msg_origin"], entry["conversation_id"]
+            )
+            if conversation is None:
+                return False
+            history = json.loads(conversation.history or "[]")
+            if not isinstance(history, list):
+                raise ValueError("conversation history is not a list")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "Cannot mark recalled QQ message because conversation history is invalid: umo=%s",
+                entry["unified_msg_origin"],
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "Failed to load conversation while marking recalled QQ message: umo=%s",
+                entry["unified_msg_origin"],
+            )
+            return False
+
+        marker = entry["marker"]
+        prompt = entry["prompt"]
+        matches = []
+        marked_matches = []
+        for index, item in enumerate(history):
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                if content == f"{prompt}\n{marker}":
+                    marked_matches.append(index)
+                elif content == prompt:
+                    matches.append((index, item, "content"))
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") not in {
+                        "text",
+                        "input_text",
+                    }:
+                        continue
+                    text = part.get("text")
+                    if text == f"{prompt}\n{marker}":
+                        marked_matches.append(index)
+                        break
+                    if text == prompt:
+                        matches.append((index, part, "text"))
+                        break
+        history_length = entry["history_length"]
+        if any(index >= history_length for index in marked_matches):
+            return True
+        preferred = [match for match in matches if match[0] >= history_length]
+        if len(preferred) == 1:
+            _, target, field = preferred[0]
+        elif not preferred and len(matches) == 1:
+            # History trimming may shift the new message before its original index.
+            _, target, field = matches[0]
+        else:
+            return False
+        target[field] = f"{target[field]}\n{marker}"
+        try:
+            await self.context.conversation_manager.update_conversation(
+                entry["unified_msg_origin"],
+                entry["conversation_id"],
+                history=history,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update conversation for recalled QQ message: umo=%s",
+                entry["unified_msg_origin"],
+            )
+            return False
+        logger.info(
+            "Recalled QQ message marked in conversation history: umo=%s",
+            entry["unified_msg_origin"],
+        )
+        return True
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def mark_recalled_message(self, event: AstrMessageEvent) -> None:
+        """Apply friend and group recall notices to tracked conversation messages.
+
+        Args:
+            event: Current OneBot notice event.
+        """
+
+        if not self.config["inbound"]["mark_recalled_messages"]:
+            return
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        configured_platform_id = self.config["platform"]["platform_id"]
+        if configured_platform_id and event.get_platform_id() != configured_platform_id:
+            return
+        raw = getattr(event.message_obj, "raw_message", None)
+        if not isinstance(raw, dict) or raw.get("post_type") != "notice":
+            return
+        notice_type = str(raw.get("notice_type") or "")
+        if notice_type == "group_recall":
+            scope_kind = "group"
+            scope_id = str(raw.get("group_id") or "")
+        elif notice_type == "friend_recall":
+            scope_kind = "private"
+            scope_id = str(raw.get("user_id") or "")
+        else:
+            return
+        message_id = raw.get("message_id")
+        if (
+            not scope_id
+            or not isinstance(message_id, (str, int))
+            or isinstance(message_id, bool)
+            or not str(message_id).lstrip("-").isdecimal()
+        ):
+            return
+
+        self._cleanup_recall_messages()
+        key = (
+            str(event.get_platform_id()),
+            scope_kind,
+            scope_id,
+            str(message_id),
+        )
+        entry = self.recall_messages.get(key)
+        if entry is None or entry["marked"]:
+            return
+        if (
+            scope_kind == "group"
+            and str(raw.get("user_id") or "") != entry["sender_id"]
+        ):
+            return
+        entry["recalled"] = True
+        recalled_at = raw.get("time")
+        if (
+            isinstance(recalled_at, (str, int))
+            and not isinstance(recalled_at, bool)
+            and str(recalled_at).isdecimal()
+            and entry["sent_at"] is not None
+        ):
+            elapsed = int(recalled_at) - entry["sent_at"]
+        else:
+            elapsed = -1
+        if 0 <= elapsed <= RECALL_TRACK_TTL_SECONDS:
+            minutes, seconds = divmod(elapsed, 60)
+            if minutes and seconds:
+                duration = f"{minutes} 分 {seconds} 秒"
+            elif minutes:
+                duration = f"{minutes} 分钟"
+            else:
+                duration = f"{seconds} 秒"
+            entry["marker"] = f"[该 QQ 消息已在发送后 {duration}被撤回]"
+        else:
+            entry["marker"] = "[该 QQ 消息已被撤回]"
+        entry["marked"] = await self._append_recall_marker(entry)
+
+    @filter.after_message_sent()
+    async def finish_pending_recall(self, event: AstrMessageEvent) -> None:
+        """Retry a recall that arrived before the current turn was persisted.
+
+        Args:
+            event: Original message event whose response was just sent.
+        """
+
+        key = event.get_extra("_qq_extension_recall_key")
+        if not isinstance(key, tuple):
+            return
+        self._cleanup_recall_messages()
+        entry = self.recall_messages.get(key)
+        if entry is None or not entry["recalled"] or entry["marked"]:
+            return
+        entry["marked"] = await self._append_recall_marker(entry)
+
+    @filter.on_agent_done(priority=-1000)
+    async def mark_pending_recall_before_history_save(
+        self, event: AstrMessageEvent, run_context, _response
+    ) -> None:
+        """Attach an early recall marker before AstrBot persists agent history.
+
+        Args:
+            event: Original message event for the completed agent run.
+            run_context: Agent context containing messages that will be persisted.
+            _response: Final model response, unused by recall tracking.
+        """
+
+        key = event.get_extra("_qq_extension_recall_key")
+        if not isinstance(key, tuple):
+            return
+        self._cleanup_recall_messages()
+        entry = self.recall_messages.get(key)
+        if entry is None or not entry["recalled"] or entry["marked"]:
+            return
+        for message in reversed(getattr(run_context, "messages", [])):
+            if getattr(message, "role", None) != "user":
+                continue
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                if content == f"{entry['prompt']}\n{entry['marker']}":
+                    entry["marked"] = True
+                    return
+                if content == entry["prompt"]:
+                    message.content = f"{content}\n{entry['marker']}"
+                    entry["marked"] = True
+                    return
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        part_type = part.get("type")
+                        text = part.get("text")
+                    else:
+                        part_type = getattr(part, "type", None)
+                        text = getattr(part, "text", None)
+                    if part_type not in {"text", "input_text"}:
+                        continue
+                    if text == f"{entry['prompt']}\n{entry['marker']}":
+                        entry["marked"] = True
+                        return
+                    if text != entry["prompt"]:
+                        continue
+                    if isinstance(part, dict):
+                        part["text"] = f"{text}\n{entry['marker']}"
+                    else:
+                        part.text = f"{text}\n{entry['marker']}"
+                    entry["marked"] = True
+                    return
 
     @filter.on_llm_request()
     async def select_tools(
@@ -1092,4 +1433,5 @@ class QQExtensionToolsPlugin(Star):
             self.cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.cleanup_task
+        self.recall_messages.clear()
         logger.info("QQ extension tools terminated")
