@@ -177,8 +177,27 @@
       "enhance_voice_messages": {
         "type": "bool",
         "description": "增强 QQ 语音消息感知",
-        "hint": "开启后，将 AstrBot ASR 结果格式化为 [QQ 语音消息：转写文本]；AstrBot 未产生转写时，使用 NapCat 语音识别作为顶层或引用语音的回退。",
+        "hint": "开启后，将 AstrBot ASR 结果格式化为 [QQ component|QQ语音消息：转写文本]；AstrBot 未产生转写时，使用 NapCat 语音识别作为顶层或引用语音的回退。",
         "default": false
+      },
+      "component_spoof_protection": {
+        "type": "object",
+        "description": "QQ 组件文字防伪",
+        "hint": "仅依据原始 OneBot 组件确认真实性；用户输入的保留格式 [QQ component|...] 会被明确标注。",
+        "default": {},
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用关键 QQ 组件文字防伪",
+            "default": false
+          },
+          "protected_types": {
+            "type": "list",
+            "description": "需要进行原始结构验证的 QQ 组件类型",
+            "hint": "允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；启用时不能为空。默认仅保护前五种关键组件。",
+            "default": ["red_packet", "voice", "dice", "rps", "poke"]
+          }
+        }
       },
       "respond_to_poke": {
         "type": "bool",

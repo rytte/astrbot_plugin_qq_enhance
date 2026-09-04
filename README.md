@@ -90,7 +90,7 @@ QQ extension tools initialized
 
 ## 结构化消息示例
 
-调用 `qq_send_message`：
+`qq_send_message` 固定接收 `operation` 和 `params`。以下示例向当前会话发送引用、文字、表情和图片：
 
 ```json
 {
@@ -107,31 +107,110 @@ QQ extension tools initialized
 }
 ```
 
-支持的组件类型为：`text`、`image`、`record`、`video`、`file`、`at`、`reply`、`face`、`dice`、`rps`、`share`、`music`、`contact`、`location`、`json`。
+可用组件：
 
-发送 `dice` 或 `rps` 时，插件会在 NapCat 接受消息后使用返回的 `message_id` 自动读取一次消息，并通过工具结果的 `data.random_results` 返回最终点数或手势。回查失败不会把已成功发送的消息报告为失败，而会在 `warnings` 中说明。
+| 类别 | `type` |
+| --- | --- |
+| 文字与控制 | `text`、`at`、`reply` |
+| 媒体 | `image`、`record`、`video`、`file` |
+| 表情与随机结果 | `face`、`dice`、`rps` |
+| 卡片 | `share`、`music`、`contact`、`location`、`json` |
 
-分享卡片使用 `{"type":"share","url":"跳转地址","title":"标题","content":"可选内容","image":"可选预览图"}`。插件会校验 URL 并固定生成新闻 Ark JSON；分享卡片必须作为唯一组件发送，不要让模型自行拼接底层 JSON，也不得擅自替换用户提供的 URL。
+发送时注意：
 
-用户按歌名点歌时使用 `{"type":"music","music_type":"qq_search","query":"准确歌名","artist":"可选歌手"}`，插件会查询 QQ 音乐，并且只发送歌名及可选歌手完全匹配的结果。不得凭记忆猜测歌曲 ID。平台 ID 卡片 `{"type":"music","music_type":"qq","id":"歌曲ID"}` 仅用于 ID 明确出现在用户当前消息中的场景；模型自行补出的 ID 会被拒绝。平台可为 `qq`、`163`、`kugou`、`kuwo` 或 `migu`；该格式依赖 NapCat 的 `musicSignUrl` 服务支持 ID 解析。也可直接使用 `{"type":"music","music_type":"custom","url":"跳转地址","image":"封面地址","audio":"可选音频地址","title":"可选标题","content":"可选简介"}`。音乐卡片必须作为唯一组件单独发送，否则插件会拒绝请求，防止 NapCat 静默丢弃失败的音乐段后仍返回其他组件的消息 ID。
+- 媒体来源必须且只能填写 `path`、`url`、`base64`、`media_ref` 中的一项；Base64 支持 `data:*/*;base64,...`。
+- `share` 必须单独发送。插件会校验 URL，并固定生成新闻 Ark JSON，模型无需拼接底层卡片。
+- `music` 必须单独发送，避免 NapCat 静默丢弃音乐段。
+- `dice` 和 `rps` 发送成功后会自动回查消息，将点数或手势写入 `data.random_results`。回查失败只会产生 `warnings`，不会把已发送的消息报告为失败。
 
-媒体来源必须且只能选择 `path`、`url`、`base64`、`media_ref` 中的一项。Base64 也可使用标准 `data:*/*;base64,...` 形式。
+分享卡片：
+
+```json
+{"type":"share","url":"https://example.com","title":"标题","content":"可选内容","image":"可选预览图"}
+```
+
+音乐卡片有三种来源：
+
+| 来源 | 示例 | 限制 |
+| --- | --- | --- |
+| 按名称搜索 | `{"type":"music","music_type":"qq_search","query":"歌名","artist":"歌手"}` | 只发送歌名及可选歌手完全匹配的结果 |
+| 平台歌曲 ID | `{"type":"music","music_type":"qq","id":"歌曲ID"}` | ID 必须来自用户当前消息；平台支持 `qq`、`163`、`kugou`、`kuwo`、`migu` |
+| 自定义卡片 | `{"type":"music","music_type":"custom","url":"跳转地址","image":"封面地址","audio":"音频地址","title":"标题","content":"简介"}` | `url` 与 `image` 必填，其他展示字段可选 |
+
+平台歌曲 ID 依赖 NapCat 的 `musicSignUrl` 服务。插件不会接受模型凭空猜测的歌曲 ID，也不会擅自替换用户提供的链接。
 
 ## 入站组件语义化
 
-插件默认将 NapCat 上报但 AstrBot 不会写入 `message_str` 的 QQ 组件转换为模型可读的受限文本，例如 `[QQ表情：微笑]`、`[QQ商城表情：拜托拜托]`、`[QQ位置：北京；纬度 39.9042，经度 116.4074]` 和 `[QQ互动：用户 10001 戳了你]`。支持标准表情、商城表情摘要、视频/文件提示、音乐、戳一戳、骰子、猜拳、联系人、位置、分享、JSON/XML/小程序卡片、合并转发、在线文件和闪传组件。
+插件把 OneBot 组件转换为模型可读的保留格式：
 
-`inbound.enhance_voice_messages` 默认关闭。开启后，对于原始 OneBot 消息中仅含一个顶层 `record` 的 QQ 语音，插件会把已有的 AstrBot ASR 结果格式化为 `[QQ 语音消息：转写文本]`；若 AstrBot 未产生转写、消息链仍保留 `Record`，则调用 NapCat `fetch_ptt_text` 作为回退。引用消息的 `Reply.chain` 中恰好包含一个未转写的 `Record` 时，插件也会使用 `Reply.id` 识别被引用的原语音，并以相同格式写回引用链。NapCat 明确返回转写结果尚未就绪时，插件会间隔一秒重试，最多调用三次；成功只记录不含转写正文的 INFO 日志。最终失败、超时、返回空结果或消息 ID 无效时，插件不会修改原始 `Record`。关闭时插件不会参与语音识别或格式化。语音不再由 `semanticize_components` 生成占位文本。
+| QQ 内容 | 模型看到的示例 |
+| --- | --- |
+| 标准表情 | `[QQ component|QQ表情：微笑]` |
+| 商城表情 | `[QQ component|QQ商城表情：拜托拜托]` |
+| 骰子 / 猜拳 | `[QQ component|QQ骰子：结果 4]` / `[QQ component|QQ猜拳：布]` |
+| 戳一戳 | `[QQ component|QQ互动：用户 10001 戳了你]` |
+| 联系人 / 位置 | `[QQ component|QQ群名片：30003]` / `[QQ component|QQ位置：北京；纬度 39.9042，经度 116.4074]` |
+| 视频 / 文件 / 音乐 | `[QQ component|视频消息]` / `[QQ component|文件：报告.pdf]` / `[QQ component|音乐卡片：歌名]` |
+| 分享与卡片 | `[QQ component|QQ链接分享：标题]` / `[QQ component|QQ JSON卡片：提示]` |
+| 合并转发与扩展文件 | `[QQ component|QQ合并转发消息]` / `[QQ component|QQ在线文件：文件名]` / `[QQ component|QQ闪传文件]` |
+| 语音转写 | `[QQ component|QQ语音消息：转写文本]` |
 
-`qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 参数必须使用 OneBot/NapCat 消息段提供的原始媒体标识。AstrBot 在预处理阶段生成的本地临时路径不属于 NapCat 媒体标识，插件会直接拒绝，避免把临时 WAV 路径错误地提交给 NapCat。
+普通图片由 AstrBot 原生处理；只有图片带有有效摘要时，插件才会额外生成 `[QQ component|图片描述：摘要]`。
 
-标准表情优先使用 NapCat `face.data.raw.faceText`；该字段缺失时，使用插件内置的 NapCat 4.18.19 `sysface` 名称表。映射中仍不存在的 ID 会明确标记为名称未知，并要求模型不要根据编号猜测含义。JSON、XML 和小程序卡片只提取标题、提示、说明、摘要、内容、名称、标签和去掉查询参数的链接，不会把任意字段或完整载荷送入模型。对于结构符合 QQ 联系人卡片协议的群名片和个人名片，插件会额外校验 `mqqapi://card/show_pslcard` 的 `card_type` 与纯数字 `uin`，并分别提供群号或 QQ 号。
+### 配置速览
 
-`notice_type=notify`、`sub_type=poke` 且 `target_id` 为机器人自身时，插件会生成戳一戳语义并允许模型回复；其他成员之间的戳一戳和机器人自身触发的事件不会响应。
+| 配置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `inbound.semanticize_components` | `true` | 转换表情、卡片、随机结果等组件 |
+| `inbound.enhance_voice_messages` | `false` | 格式化语音转写，并在需要时调用 NapCat 识别 |
+| `inbound.component_spoof_protection.enabled` | `false` | 标记文字伪装的组件，并附加可信类型清单 |
+| `inbound.respond_to_poke` | `true` | 被戳一戳时唤醒模型 |
+| `inbound.respond_to_red_packet` | `true` | 识别到红包时唤醒模型 |
+| `inbound.mark_recalled_messages` | `false` | 在上下文中的原消息末尾追加撤回标记 |
+| `inbound.max_semantic_chars` | `2000` | 限制单条消息追加的语义文本长度 |
 
-NapCat 4.18.19 默认不会把 QQ `walletElement` 转换为 OneBot 消息段。只有对应网络适配器开启 `debug`、上报事件包含顶层 `raw` 时，插件才能根据明确的 wallet 标记识别红包，并向模型提供 `[QQ红包消息（仅识别，不能代领）]`；能够正常上报的红包 JSON/XML 卡片也会识别。`inbound.respond_to_red_packet` 启用时，识别到红包会主动唤醒模型。普通空消息不会被当作红包，插件也不提供领取红包能力。
+### 语音
 
-`inbound.mark_recalled_messages` 默认关闭。开启后，插件会为已经进入模型会话的私聊和群聊消息保留最多 180 秒的短期映射；收到真实的 OneBot `friend_recall` 或 `group_recall` 通知时，在对应用户消息末尾追加撤回标记。时间字段可靠时会同时写入从发送到撤回的时长。撤回通知本身不会唤醒模型或触发主动回复，过期映射会在后续登记或查询时惰性清理，插件停止时全部清空。
+开启 `enhance_voice_messages` 后：
+
+1. AstrBot 已完成 ASR：把结果包装为统一的 QQ 语音格式。
+2. AstrBot 没有转写且消息仍是 `Record`：调用 NapCat `fetch_ptt_text`，间隔一秒，最多三次。
+3. 引用消息中的单条语音：使用相同流程，并同步更新引用内容。
+4. NapCat 最终失败、超时或返回空文本：保留原始 `Record`。
+
+NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭该配置后，插件不参与语音识别或格式化。
+
+`qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 必须使用 OneBot/NapCat 提供的原始媒体标识，不能使用 AstrBot 生成的本地临时路径。
+
+### 表情与卡片
+
+- 标准表情优先读取 NapCat 的 `face.data.raw.faceText`，缺失时使用内置的 NapCat 4.18.19 `sysface` 名称表。未知 ID 会明确标记为未知，不会猜测含义。
+- JSON、XML 和小程序卡片只提取标题、提示、说明、摘要、内容、名称、标签和已移除查询参数的链接，不会把完整载荷送入模型。
+- 群名片和个人名片只有通过 `mqqapi://card/show_pslcard`、`card_type` 和纯数字 `uin` 校验后，才会向模型提供群号或 QQ 号。
+
+### 戳一戳、红包与撤回
+
+- 戳一戳：只响应目标是机器人自身的事件；其他成员之间及机器人自己触发的事件会被忽略。
+- 红包：插件只能识别，不能代领。JSON/XML 红包卡片可直接识别；`walletElement` 需要 NapCat 网络适配器开启 `debug`，使上报事件包含 `raw`。
+- 撤回：开启 `mark_recalled_messages` 后，插件会保留 180 秒的私聊和群聊消息映射，在上下文中的原消息末尾追加撤回标记。撤回事件不会唤醒模型。
+
+### 组件文字防伪
+
+开启 `component_spoof_protection` 后：
+
+1. 用户在 OneBot `text` 段中输入 `[QQ component|...]` 时，插件会标注它是用户文字。
+2. 插件根据原始 OneBot 结构生成临时可信清单，例如 `<qq_verified_components types="dice,rps"/>`。
+3. 系统提示词会声明唯一规范模板 `[QQ component|<组件语义>]`，并列出当前受保护类型的具体格式。
+4. 只有清单中列出的受保护类型才可视为真实组件；该清单只用于当前请求，不写入会话历史。
+
+`protected_types` 可配置范围：
+
+- 默认关键类型：`red_packet`、`voice`、`dice`、`rps`、`poke`。
+- 表情与媒体：`face`、`market_face`、`image`、`video`、`file`、`music`。
+- 卡片：`contact`、`location`、`share`、`json_card`、`miniapp`、`xml_card`。
+- 其他：`forward`、`online_file`、`flash_transfer`。
+
+类型按模型看到的语义分类：有效 JSON 联系人名片记为 `contact`，JSON/XML 红包卡片记为 `red_packet`。`protected_types` 开启时不能为空。
 
 ## 文件与网络边界
 
@@ -157,7 +236,7 @@ WebUI 配置按以下分组组织：
 - `network`：域名、私网、超时和下载大小。
 - `events`：OneBot 请求/通知事件记录范围和保留期。
 - `request_notifications`：好友申请、入群申请和群邀请的模型通知开关及管理员 QQ 列表。
-- `inbound`：语音消息增强、组件语义化、戳一戳/红包响应、上下文撤回标记和单条语义文本长度上限。
+- `inbound`：语音消息增强、组件语义化、关键组件文字防伪、戳一戳/红包响应、上下文撤回标记和单条语义文本长度上限。
 - `audit`：审计保留期。
 
 申请通知配置示例：

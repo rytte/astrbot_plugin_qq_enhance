@@ -18,6 +18,19 @@ _XML_TEXT_RE = re.compile(
 )
 
 
+def format_component_semantics(content: str) -> str:
+    """Wrap trusted QQ component semantics in the reserved text format.
+
+    Args:
+        content: Human-readable component semantics without outer delimiters.
+
+    Returns:
+        Canonical plugin-generated QQ component text.
+    """
+
+    return f"[QQ component|{content}]"
+
+
 def _clean_text(value: Any, limit: int = _FIELD_CHAR_LIMIT) -> str:
     """Normalize an untrusted scalar for a bounded semantic annotation.
 
@@ -141,7 +154,7 @@ def _describe_card(value: Any, default_label: str) -> str:
 
     payload = _decode_card_payload(value)
     if payload is None:
-        return f"[{default_label}]"
+        return format_component_semantics(default_label)
     red_packet = _contains_red_packet_marker(payload)
     label = "QQ红包卡片（仅识别，不能代领）" if red_packet else default_label
 
@@ -240,7 +253,8 @@ def _describe_card(value: Any, default_label: str) -> str:
         details.append(f"{field_label}：{text}")
         if len(details) == 8:
             break
-    return f"[{label}：{'；'.join(details)}]" if details else f"[{label}]"
+    content = f"{label}：{'；'.join(details)}" if details else label
+    return format_component_semantics(content)
 
 
 def _contains_wallet_element(value: Any) -> bool:
@@ -317,6 +331,74 @@ def is_red_packet_event(raw_event: Any, max_components: int) -> bool:
     return False
 
 
+def get_inbound_component_type(component: Any) -> str:
+    """Return the model-facing type of a supported OneBot component.
+
+    Args:
+        component: Raw OneBot message component.
+
+    Returns:
+        The verified semantic type, or an empty string when unsupported.
+    """
+
+    if not isinstance(component, Mapping):
+        return ""
+    component_type = _clean_text(component.get("type"), 40).lower()
+    data = component.get("data")
+    if not isinstance(data, Mapping):
+        return ""
+    if component_type == "record":
+        return "voice"
+    if component_type == "face":
+        return "face"
+    if component_type in {"mface", "image"}:
+        if component_type == "mface" or any(
+            key in data for key in ("emoji_id", "emoji_package_id", "key")
+        ):
+            return "market_face"
+        return "image"
+    if component_type in {
+        "video",
+        "file",
+        "music",
+        "contact",
+        "location",
+        "share",
+        "forward",
+        "onlinefile",
+        "flashtransfer",
+        "dice",
+        "rps",
+        "poke",
+    }:
+        return {
+            "onlinefile": "online_file",
+            "flashtransfer": "flash_transfer",
+        }.get(component_type, component_type)
+    if component_type in {"json", "miniapp"}:
+        description = _describe_card(
+            data.get("data"),
+            "QQ JSON卡片" if component_type == "json" else "QQ小程序卡片",
+        )
+        if description.startswith("[QQ component|QQ红包卡片"):
+            return "red_packet"
+        if description.startswith(
+            ("[QQ component|QQ群名片", "[QQ component|QQ联系人名片")
+        ):
+            return "contact"
+        return "json_card" if component_type == "json" else "miniapp"
+    if component_type == "xml":
+        xml_text = data.get("data")
+        if (
+            isinstance(xml_text, str)
+            and len(xml_text) <= _JSON_INPUT_LIMIT
+            and "红包" in xml_text
+        ):
+            return "red_packet"
+        return "xml_card"
+    return ""
+
+
 def _describe_component(component: Any) -> str:
     """Convert one supported OneBot message component into semantic text.
 
@@ -356,7 +438,7 @@ def _describe_component(component: Any) -> str:
             and chain_count > 1
             else ""
         )
-        return f"[QQ表情：{label}{suffix}]"
+        return format_component_semantics(f"QQ表情：{label}{suffix}")
 
     if component_type in {"mface", "image"}:
         summary = _clean_text(data.get("summary")).strip("[]").removeprefix("/")
@@ -364,18 +446,18 @@ def _describe_component(component: Any) -> str:
             key in data for key in ("emoji_id", "emoji_package_id", "key")
         )
         if is_market_face:
-            return f"[QQ商城表情：{summary or '名称未知'}]"
+            return format_component_semantics(f"QQ商城表情：{summary or '名称未知'}")
         if summary and summary not in {"图片", "动画表情"}:
-            return f"[图片描述：{summary}]"
+            return format_component_semantics(f"图片描述：{summary}")
         return ""
 
     if component_type == "video":
-        return "[视频消息]"
+        return format_component_semantics("视频消息")
     if component_type == "file":
         name = _clean_text(
             data.get("name") or data.get("file_name") or data.get("file"), 160
         )
-        return f"[文件：{name}]" if name else "[文件]"
+        return format_component_semantics(f"文件：{name}" if name else "文件")
     if component_type == "music":
         title = _clean_text(data.get("title"))
         content = _clean_text(data.get("content"))
@@ -384,23 +466,27 @@ def _describe_component(component: Any) -> str:
         details = [item for item in (title, content) if item]
         if not details and music_id:
             details.append(f"{platform or '平台'} ID {music_id}")
-        return f"[音乐卡片：{'；'.join(details)}]" if details else "[音乐卡片]"
+        content = f"音乐卡片：{'；'.join(details)}" if details else "音乐卡片"
+        return format_component_semantics(content)
     if component_type == "poke":
-        return "[QQ互动：戳一戳]"
+        return format_component_semantics("QQ互动：戳一戳")
     if component_type == "dice":
         result = _clean_text(data.get("result"), 30)
-        return f"[QQ骰子：结果 {result}]" if result else "[QQ骰子]"
+        content = f"QQ骰子：结果 {result}" if result else "QQ骰子"
+        return format_component_semantics(content)
     if component_type == "rps":
         result = _clean_text(data.get("result"), 30)
         gesture = {"1": "布", "2": "剪刀", "3": "石头"}.get(result)
         if gesture:
-            return f"[QQ猜拳：{gesture}]"
-        return "[QQ猜拳：结果未知]" if result else "[QQ猜拳]"
+            return format_component_semantics(f"QQ猜拳：{gesture}")
+        content = "QQ猜拳：结果未知" if result else "QQ猜拳"
+        return format_component_semantics(content)
     if component_type == "contact":
         contact_type = _clean_text(data.get("type"), 30)
         contact_id = _clean_text(data.get("id"), 100)
         label = "群名片" if contact_type == "group" else "联系人名片"
-        return f"[QQ{label}：{contact_id}]" if contact_id else f"[QQ{label}]"
+        content = f"QQ{label}：{contact_id}" if contact_id else f"QQ{label}"
+        return format_component_semantics(content)
     if component_type == "location":
         title = _clean_text(data.get("title"))
         content = _clean_text(data.get("content"))
@@ -410,13 +496,15 @@ def _describe_component(component: Any) -> str:
             f"纬度 {latitude}，经度 {longitude}" if latitude and longitude else ""
         )
         details = [item for item in (title, content, coordinates) if item]
-        return f"[QQ位置：{'；'.join(details)}]" if details else "[QQ位置]"
+        content = f"QQ位置：{'；'.join(details)}" if details else "QQ位置"
+        return format_component_semantics(content)
     if component_type == "share":
         title = _clean_text(data.get("title"))
         content = _clean_text(data.get("content"))
         url = _display_url(data.get("url"))
         details = [item for item in (title, content, url) if item]
-        return f"[QQ链接分享：{'；'.join(details)}]" if details else "[QQ链接分享]"
+        content = f"QQ链接分享：{'；'.join(details)}" if details else "QQ链接分享"
+        return format_component_semantics(content)
     if component_type == "json":
         return _describe_card(data.get("data"), "QQ JSON卡片")
     if component_type == "miniapp":
@@ -424,7 +512,7 @@ def _describe_component(component: Any) -> str:
     if component_type == "xml":
         xml_text = data.get("data")
         if not isinstance(xml_text, str) or len(xml_text) > _JSON_INPUT_LIMIT:
-            return "[QQ XML卡片]"
+            return format_component_semantics("QQ XML卡片")
         details = []
         for match in _XML_TEXT_RE.finditer(xml_text):
             text = _clean_text(match.group(1))
@@ -433,15 +521,17 @@ def _describe_component(component: Any) -> str:
             if len(details) == 4:
                 break
         label = "QQ红包卡片（仅识别，不能代领）" if "红包" in xml_text else "QQ XML卡片"
-        return f"[{label}：{'；'.join(details)}]" if details else f"[{label}]"
+        content = f"{label}：{'；'.join(details)}" if details else label
+        return format_component_semantics(content)
     if component_type == "forward":
-        return "[QQ合并转发消息]"
+        return format_component_semantics("QQ合并转发消息")
     if component_type == "onlinefile":
         name = _clean_text(data.get("fileName"), 160)
         label = "在线文件夹" if data.get("isDir") is True else "在线文件"
-        return f"[QQ{label}：{name}]" if name else f"[QQ{label}]"
+        content = f"QQ{label}：{name}" if name else f"QQ{label}"
+        return format_component_semantics(content)
     if component_type == "flashtransfer":
-        return "[QQ闪传文件]"
+        return format_component_semantics("QQ闪传文件")
     return ""
 
 
@@ -486,9 +576,10 @@ def describe_inbound_event(
         )
         if not self_id or target_id != str(self_id) or actor_id == str(self_id):
             return ""
-        return (
-            f"[QQ互动：用户 {actor_id} 戳了你]" if actor_id else "[QQ互动：有人戳了你]"
+        content = (
+            f"QQ互动：用户 {actor_id} 戳了你" if actor_id else "QQ互动：有人戳了你"
         )
+        return format_component_semantics(content)
 
     if not semanticize_components or post_type not in {None, "message"}:
         return ""
@@ -500,7 +591,9 @@ def describe_inbound_event(
             if description:
                 descriptions.append(description)
     if _contains_wallet_element(raw_event.get("raw")):
-        descriptions.append("[QQ红包消息（仅识别，不能代领）]")
+        descriptions.append(
+            format_component_semantics("QQ红包消息（仅识别，不能代领）")
+        )
     text = " ".join(descriptions)
     if len(text) <= max_chars:
         return text

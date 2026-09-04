@@ -711,6 +711,10 @@ OPERATION_PARAMETERS = {
         "target",
         "components",
         hint=(
+            "完整调用参数必须是 "
+            '{"operation":"send","params":{"target":{"type":"current"},'
+            '"components":[{"type":"rps"}]}}。operation 和 params 必须同级，'
+            "target 和 components 必须位于 params 内。"
             'target 优先使用 {"type":"current"}；跨会话使用 '
             '{"type":"group","id":正整数} 或 {"type":"private","id":正整数}。'
             "组件字段必须直接放在对象中，"

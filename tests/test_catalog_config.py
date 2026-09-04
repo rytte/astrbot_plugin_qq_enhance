@@ -13,7 +13,10 @@ from astrbot_plugin_qq_extension_tools.catalog import (
     OPERATIONS,
     TOOL_OPERATIONS,
 )
-from astrbot_plugin_qq_extension_tools.runtime import validate_config
+from astrbot_plugin_qq_extension_tools.runtime import (
+    PROTECTED_COMPONENT_TYPES,
+    validate_config,
+)
 
 
 def test_catalog_is_complete_and_matches_contract() -> None:
@@ -56,9 +59,22 @@ def test_inbound_schema_defaults_match_runtime_config() -> None:
     schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-    assert {
+    schema_defaults = {
         key: item["default"] for key, item in schema["inbound"]["items"].items()
-    } == defaults
+    }
+    spoof_defaults = defaults["component_spoof_protection"]
+    assert schema_defaults.pop("component_spoof_protection") == {}
+    assert schema_defaults == {
+        key: value
+        for key, value in defaults.items()
+        if key != "component_spoof_protection"
+    }
+    assert {
+        key: item["default"]
+        for key, item in schema["inbound"]["items"][
+            "component_spoof_protection"
+        ]["items"].items()
+    } == spoof_defaults
 
 
 def test_request_notification_schema_defaults_match_runtime_config() -> None:
@@ -91,6 +107,44 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"permissions": {"cross_private_allowlist": ["10001"]}},
         {"inbound": {"semanticize_components": "true"}},
         {"inbound": {"enhance_voice_messages": 1}},
+        {"inbound": {"component_spoof_protection": True}},
+        {
+            "inbound": {
+                "component_spoof_protection": {"enabled": "true"}
+            }
+        },
+        {
+            "inbound": {
+                "component_spoof_protection": {"unknown": True}
+            }
+        },
+        {
+            "inbound": {
+                "component_spoof_protection": {"protected_types": "voice"}
+            }
+        },
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "protected_types": ["voice", "voice"]
+                }
+            }
+        },
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "protected_types": ["unknown"]
+                }
+            }
+        },
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "enabled": True,
+                    "protected_types": [],
+                }
+            }
+        },
         {"inbound": {"prefer_napcat_stt": True}},
         {"inbound": {"respond_to_poke": 1}},
         {"inbound": {"respond_to_red_packet": "true"}},
@@ -131,6 +185,16 @@ def test_valid_config_preserves_explicit_values() -> None:
     assert result["inbound"] == {
         "semanticize_components": True,
         "enhance_voice_messages": False,
+        "component_spoof_protection": {
+            "enabled": False,
+            "protected_types": [
+                "red_packet",
+                "voice",
+                "dice",
+                "rps",
+                "poke",
+            ],
+        },
         "respond_to_poke": True,
         "respond_to_red_packet": True,
         "mark_recalled_messages": False,
@@ -139,3 +203,33 @@ def test_valid_config_preserves_explicit_values() -> None:
 
     disabled = validate_config({"confirmation": {"operations": []}})
     assert disabled["confirmation"]["operations"] == []
+
+
+def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
+    result = validate_config(
+        {"inbound": {"component_spoof_protection": {"enabled": True}}}
+    )
+
+    assert result["inbound"]["component_spoof_protection"] == {
+        "enabled": True,
+        "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
+    }
+
+
+def test_all_documented_component_spoof_types_are_accepted() -> None:
+    protected_types = sorted(PROTECTED_COMPONENT_TYPES)
+
+    result = validate_config(
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "enabled": True,
+                    "protected_types": protected_types,
+                }
+            }
+        }
+    )
+
+    assert result["inbound"]["component_spoof_protection"]["protected_types"] == (
+        protected_types
+    )

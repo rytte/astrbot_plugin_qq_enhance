@@ -99,7 +99,23 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     plugin.storage.initialize.assert_awaited_once()
     assert all(manager.get_func(tool_name) is not None for tool_name in TOOL_OPERATIONS)
     send_tool = manager.get_func("qq_send_message")
-    params_description = send_tool.parameters["properties"]["params"]["description"]
+    params_schema = send_tool.parameters["properties"]["params"]
+    params_description = params_schema["description"]
+    assert params_schema["required"] == ["target", "components"]
+    assert params_schema["additionalProperties"] is False
+    assert params_schema["properties"]["target"]["required"] == ["type"]
+    assert params_schema["properties"]["target"]["additionalProperties"] is False
+    assert params_schema["properties"]["components"]["minItems"] == 1
+    assert params_schema["properties"]["components"]["maxItems"] == 30
+    assert params_schema["properties"]["components"]["items"]["required"] == [
+        "type"
+    ]
+    assert (
+        '{"operation":"send","params":{"target":{"type":"current"},'
+        '"components":[{"type":"rps"}]}}' in params_description
+    )
+    assert "operation 和 params 必须同级" in params_description
+    assert "target 和 components 必须位于 params 内" in params_description
     assert "不得使用 data 包装" in params_description
     assert '"type":"share"' in params_description
     assert "不要自行拼接分享卡片 JSON" in params_description

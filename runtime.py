@@ -93,6 +93,16 @@ DEFAULT_CONFIG = {
     "inbound": {
         "semanticize_components": True,
         "enhance_voice_messages": False,
+        "component_spoof_protection": {
+            "enabled": False,
+            "protected_types": [
+                "red_packet",
+                "voice",
+                "dice",
+                "rps",
+                "poke",
+            ],
+        },
         "respond_to_poke": True,
         "respond_to_red_packet": True,
         "mark_recalled_messages": False,
@@ -102,6 +112,30 @@ DEFAULT_CONFIG = {
 }
 
 CONFIG_KEYS = {key: set(value) for key, value in DEFAULT_CONFIG.items()}
+PROTECTED_COMPONENT_TYPES = frozenset(
+    {
+        "red_packet",
+        "voice",
+        "dice",
+        "rps",
+        "poke",
+        "face",
+        "market_face",
+        "image",
+        "video",
+        "file",
+        "music",
+        "contact",
+        "location",
+        "share",
+        "json_card",
+        "miniapp",
+        "xml_card",
+        "forward",
+        "online_file",
+        "flash_transfer",
+    }
+)
 PACKS = {item.category for item in OPERATIONS}
 STATUS_CODES = {
     "online": 10,
@@ -280,7 +314,22 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         unknown = set(raw_group) - CONFIG_KEYS[group]
         if unknown:
             raise ValueError(f"未知配置字段 {group}: {', '.join(sorted(unknown))}")
-        result[group].update(deepcopy(raw_group))
+        copied_group = deepcopy(raw_group)
+        if group == "inbound" and "component_spoof_protection" in copied_group:
+            spoof_config = copied_group.pop("component_spoof_protection")
+            if not isinstance(spoof_config, dict):
+                raise ValueError("inbound.component_spoof_protection 必须是对象")
+            unknown_spoof_fields = set(spoof_config) - {
+                "enabled",
+                "protected_types",
+            }
+            if unknown_spoof_fields:
+                raise ValueError(
+                    "未知配置字段 inbound.component_spoof_protection: "
+                    + ", ".join(sorted(unknown_spoof_fields))
+                )
+            result[group]["component_spoof_protection"].update(spoof_config)
+        result[group].update(copied_group)
 
     if not isinstance(result["platform"]["platform_id"], str):
         raise ValueError("platform.platform_id 必须是字符串")
@@ -305,6 +354,24 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(f"{group}.{key} 必须是字符串列表")
         if len(value) != len(set(value)):
             raise ValueError(f"{group}.{key} 不允许重复项")
+
+    protected_types = result["inbound"]["component_spoof_protection"]["protected_types"]
+    if not isinstance(protected_types, list) or any(
+        not isinstance(item, str) for item in protected_types
+    ):
+        raise ValueError(
+            "inbound.component_spoof_protection.protected_types 必须是字符串列表"
+        )
+    if len(protected_types) != len(set(protected_types)):
+        raise ValueError(
+            "inbound.component_spoof_protection.protected_types 不允许重复项"
+        )
+    unknown_protected_types = set(protected_types) - PROTECTED_COMPONENT_TYPES
+    if unknown_protected_types:
+        raise ValueError(
+            "inbound.component_spoof_protection.protected_types 包含未知类型: "
+            + ", ".join(sorted(unknown_protected_types))
+        )
 
     unknown_packs = set(result["toolsets"]["enabled_packs"]) - PACKS
     if unknown_packs:
@@ -335,6 +402,14 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     for group, key in bool_fields:
         if type(result[group][key]) is not bool:
             raise ValueError(f"{group}.{key} 必须是布尔值")
+
+    spoof_protection = result["inbound"]["component_spoof_protection"]
+    if type(spoof_protection["enabled"]) is not bool:
+        raise ValueError("inbound.component_spoof_protection.enabled 必须是布尔值")
+    if spoof_protection["enabled"] and not protected_types:
+        raise ValueError(
+            "inbound.component_spoof_protection.enabled=true 时必须填写 protected_types"
+        )
 
     ranges = {
         ("confirmation", "ttl_seconds"): (30, 300),
