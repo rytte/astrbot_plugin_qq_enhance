@@ -530,7 +530,7 @@ async def test_group_file_operations_allow_member_bot_role(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cross_group_requires_private_admin_switch_and_existing_target(
+async def test_cross_group_requires_admin_switch_and_existing_target(
     tmp_path,
 ) -> None:
     event = FakeEvent(admin=True)
@@ -555,10 +555,21 @@ async def test_cross_group_requires_private_admin_switch_and_existing_target(
         OPERATION_MAP["qq_group_info.detail"],
         {"group_id": 30001},
     ) == ("group", "30001", True)
+    assert await runtime.authorize(
+        FakeEvent(group_id="30002", admin=True),
+        OPERATION_MAP["qq_group_info.detail"],
+        {"group_id": 30001},
+    ) == ("group", "30001", True)
+    with pytest.raises(QQToolError, match="跨群操作"):
+        await runtime.authorize(
+            FakeEvent(group_id="30002", admin=False),
+            OPERATION_MAP["qq_group_info.detail"],
+            {"group_id": 30001},
+        )
 
 
 @pytest.mark.asyncio
-async def test_cross_private_requires_private_admin_switch_and_existing_target(
+async def test_cross_private_requires_admin_switch_and_existing_target(
     tmp_path,
 ) -> None:
     event = FakeEvent(admin=True)
@@ -576,12 +587,62 @@ async def test_cross_private_requires_private_admin_switch_and_existing_target(
         "20001",
         True,
     )
+    assert await runtime.authorize(
+        FakeEvent(group_id="30001", admin=True), spec, {"user_id": 20001}
+    ) == ("private", "20001", True)
+    with pytest.raises(QQToolError, match="跨好友操作"):
+        await runtime.authorize(
+            FakeEvent(group_id="30001", admin=False), spec, {"user_id": 20001}
+        )
     with pytest.raises(QQToolError, match="目标用户不在机器人好友列表中"):
         await runtime.authorize(event, spec, {"user_id": 30003})
 
 
 @pytest.mark.asyncio
-async def test_stranger_info_allows_only_admin_private_cross_target(tmp_path) -> None:
+async def test_group_astrbot_admin_can_send_cross_private_message(tmp_path) -> None:
+    disabled, _, _ = await make_runtime(tmp_path / "disabled")
+    denied = json.loads(
+        await disabled.execute(
+            FakeEvent(group_id="30001", admin=True),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "private", "id": 20001},
+                "components": [{"type": "text", "text": "hello"}],
+            },
+        )
+    )
+    assert denied["error"]["code"] == "permission_denied"
+
+    runtime, client, _ = await make_runtime(
+        tmp_path / "enabled",
+        {"permissions": {"allow_cross_private": True}},
+    )
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001", admin=True),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "private", "id": 20001},
+                "components": [{"type": "text", "text": "hello"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert (
+        "send_private_msg",
+        {
+            "user_id": 20001,
+            "message": [{"type": "text", "data": {"text": "hello"}}],
+        },
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_stranger_info_group_source_uses_cross_private_switch(tmp_path) -> None:
     runtime, client, _ = await make_runtime(tmp_path)
     spec = OPERATION_MAP["qq_user_info.stranger"]
 
@@ -592,12 +653,20 @@ async def test_stranger_info_allows_only_admin_private_cross_target(tmp_path) ->
     )
     assert not any(action == "get_friend_list" for action, _ in client.calls)
 
-    with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
+    with pytest.raises(QQToolError, match="仅允许 AstrBot 管理员"):
         await runtime.authorize(FakeEvent(admin=False), spec, {"user_id": 30003})
-    with pytest.raises(QQToolError, match="仅允许管理员在私聊中"):
+    with pytest.raises(QQToolError, match="从群聊查询时需开启跨好友操作"):
         await runtime.authorize(
             FakeEvent(group_id="30001", admin=True), spec, {"user_id": 30003}
         )
+
+    enabled, _, _ = await make_runtime(
+        tmp_path / "enabled",
+        {"permissions": {"allow_cross_private": True}},
+    )
+    assert await enabled.authorize(
+        FakeEvent(group_id="30001", admin=True), spec, {"user_id": 30003}
+    ) == ("private", "30003", True)
 
 
 @pytest.mark.asyncio
@@ -640,6 +709,30 @@ async def test_group_request_list_allows_admin_private_without_group_id(
         )
     )
     assert denied["error"]["code"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_group_request_list_group_source_uses_cross_group_switch(
+    tmp_path,
+) -> None:
+    spec = OPERATION_MAP["qq_group_request.list"]
+    runtime, _, _ = await make_runtime(tmp_path)
+    with pytest.raises(QQToolError, match="从群聊跨群查询时需开启跨群操作"):
+        await runtime.authorize(
+            FakeEvent(group_id="30002", admin=True),
+            spec,
+            {"group_id": 30001},
+        )
+
+    enabled, _, _ = await make_runtime(
+        tmp_path / "enabled",
+        {"permissions": {"allow_cross_group": True}},
+    )
+    assert await enabled.authorize(
+        FakeEvent(group_id="30002", admin=True),
+        spec,
+        {"group_id": 30001},
+    ) == ("group", "30001", True)
 
 
 @pytest.mark.asyncio

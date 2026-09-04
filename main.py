@@ -317,9 +317,99 @@ class QQExtensionToolsPlugin(Star):
                                                 "location",
                                                 "json",
                                             ],
-                                        }
+                                        },
+                                        "text": {
+                                            "type": "string",
+                                            "description": "text 组件的消息正文，type=text 时必填。",
+                                        },
+                                        "path": {
+                                            "type": "string",
+                                            "description": "媒体组件的本地绝对路径。",
+                                        },
+                                        "url": {
+                                            "type": "string",
+                                            "description": "媒体、分享或音乐组件的 URL。",
+                                        },
+                                        "base64": {
+                                            "type": "string",
+                                            "description": "媒体组件的 Base64 数据。",
+                                        },
+                                        "media_ref": {
+                                            "type": "string",
+                                            "description": "qq_media 返回的媒体引用。",
+                                        },
+                                        "summary": {
+                                            "type": "string",
+                                            "description": "图片摘要。",
+                                        },
+                                        "sub_type": {
+                                            "description": "图片子类型。",
+                                        },
+                                        "name": {
+                                            "type": "string",
+                                            "description": "文件名。",
+                                        },
+                                        "id": {
+                                            "type": "string",
+                                            "description": "At、引用、表情、联系人或平台音乐的 ID；对应类型必填。",
+                                        },
+                                        "title": {
+                                            "type": "string",
+                                            "description": "分享、音乐或位置标题。",
+                                        },
+                                        "content": {
+                                            "type": "string",
+                                            "description": "分享、音乐或位置的补充内容。",
+                                        },
+                                        "image": {
+                                            "type": "string",
+                                            "description": "分享或音乐卡片的预览图 URL。",
+                                        },
+                                        "music_type": {
+                                            "type": "string",
+                                            "enum": [
+                                                "qq_search",
+                                                "qq",
+                                                "163",
+                                                "kugou",
+                                                "kuwo",
+                                                "migu",
+                                                "custom",
+                                            ],
+                                            "description": "music 组件来源，type=music 时必填。",
+                                        },
+                                        "audio": {
+                                            "type": "string",
+                                            "description": "自定义音乐的音频 URL。",
+                                        },
+                                        "query": {
+                                            "type": "string",
+                                            "description": "qq_search 音乐的准确歌名。",
+                                        },
+                                        "artist": {
+                                            "type": "string",
+                                            "description": "qq_search 音乐的可选歌手。",
+                                        },
+                                        "contact_type": {
+                                            "type": "string",
+                                            "enum": ["qq", "group"],
+                                            "description": "contact 组件的联系人类型。",
+                                        },
+                                        "lat": {
+                                            "type": "number",
+                                            "description": "location 组件纬度。",
+                                        },
+                                        "lon": {
+                                            "type": "number",
+                                            "description": "location 组件经度。",
+                                        },
+                                        "data": {
+                                            "type": "string",
+                                            "description": "json 组件的 JSON 字符串，其他组件不得使用。",
+                                        },
                                     },
                                     "required": ["type"],
+                                    "additionalProperties": False,
                                 },
                             },
                         },
@@ -1390,7 +1480,10 @@ class QQExtensionToolsPlugin(Star):
                     ):
                         continue
                 if current_group and spec.target_kind == "private":
-                    continue
+                    if not (
+                        is_admin and self.config["permissions"]["allow_cross_private"]
+                    ):
+                        continue
                 if not current_group and spec.target_kind == "group":
                     if not (
                         is_admin

@@ -68,6 +68,13 @@ class GroupOwnerSelectionEvent(SelectionEvent):
     message_obj = SimpleNamespace(raw_message={"sender": {"role": "owner"}})
 
 
+class GroupAstrBotAdminSelectionEvent(SelectionEvent):
+    message_str = "查询好友20001的消息历史"
+
+    def is_admin(self) -> bool:
+        return True
+
+
 @pytest.mark.asyncio
 async def test_initialize_uses_registered_tool_manager_api() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
@@ -110,6 +117,10 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     assert params_schema["properties"]["components"]["items"]["required"] == [
         "type"
     ]
+    component_schema = params_schema["properties"]["components"]["items"]
+    assert component_schema["additionalProperties"] is False
+    assert "text" in component_schema["properties"]
+    assert "id" in component_schema["properties"]
     assert (
         '{"operation":"send","params":{"target":{"type":"current"},'
         '"components":[{"type":"rps"}]}}' in params_description
@@ -162,6 +173,26 @@ async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None
     assert "qq_friend_manage" not in remaining
     assert len(remaining & set(TOOL_OPERATIONS)) <= 15
     assert len(tools) == len(TOOL_OPERATIONS) + 1
+
+
+@pytest.mark.asyncio
+async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config({"permissions": {"allow_cross_private": True}})
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="查询好友20001的消息历史",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(GroupAstrBotAdminSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_friend_history") is not None
 
 
 @pytest.mark.asyncio

@@ -1216,21 +1216,23 @@ class QQRuntime:
             cross_session = not current_group or target_id != current_group
             if cross_session:
                 if spec.operation_id == "qq_group_request.list":
-                    if not is_admin or not is_private:
-                        raise QQToolError(
-                            "permission_denied",
-                            "全部群申请查询仅允许管理员在私聊中发起",
-                        )
-                else:
-                    allowed = (
-                        is_admin
-                        and is_private
-                        and self.config["permissions"]["allow_cross_group"]
+                    allowed = is_admin and (
+                        is_private or self.config["permissions"]["allow_cross_group"]
                     )
                     if not allowed:
                         raise QQToolError(
                             "permission_denied",
-                            "跨群操作仅允许管理员在私聊中开启后发起",
+                            "全部群申请查询仅允许 AstrBot 管理员发起；"
+                            "从群聊跨群查询时需开启跨群操作",
+                        )
+                else:
+                    allowed = (
+                        is_admin and self.config["permissions"]["allow_cross_group"]
+                    )
+                    if not allowed:
+                        raise QQToolError(
+                            "permission_denied",
+                            "跨群操作仅允许开启该权限的 AstrBot 管理员发起",
                         )
                     group_invite_decision = (
                         spec.operation_id in GROUP_REQUEST_DECISION_OPERATIONS
@@ -1246,21 +1248,23 @@ class QQRuntime:
             cross_session = not is_private or target_id != caller_id
             if cross_session:
                 if spec.operation_id == "qq_user_info.stranger":
-                    if not is_admin or not is_private:
-                        raise QQToolError(
-                            "permission_denied",
-                            "非好友公开资料查询仅允许管理员在私聊中发起",
-                        )
-                else:
-                    allowed = (
-                        is_admin
-                        and is_private
-                        and self.config["permissions"]["allow_cross_private"]
+                    allowed = is_admin and (
+                        is_private or self.config["permissions"]["allow_cross_private"]
                     )
                     if not allowed:
                         raise QQToolError(
                             "permission_denied",
-                            "跨好友操作仅允许管理员在私聊中开启后发起",
+                            "非好友公开资料查询仅允许 AstrBot 管理员发起；"
+                            "从群聊查询时需开启跨好友操作",
+                        )
+                else:
+                    allowed = (
+                        is_admin and self.config["permissions"]["allow_cross_private"]
+                    )
+                    if not allowed:
+                        raise QQToolError(
+                            "permission_denied",
+                            "跨好友操作仅允许开启该权限的 AstrBot 管理员发起",
                         )
                     if not await self.target_exists(event, "private", target_id):
                         raise QQToolError(

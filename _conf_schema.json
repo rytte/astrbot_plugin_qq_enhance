@@ -55,13 +55,13 @@
       },
       "allow_cross_group": {
         "type": "bool",
-        "description": "允许 AstrBot 管理员在私聊中跨群操作",
-        "default": false
+        "description": "允许 AstrBot 管理员跨群操作",
+        "default": true
       },
       "allow_cross_private": {
         "type": "bool",
-        "description": "允许 AstrBot 管理员在私聊中跨好友操作",
-        "default": false
+        "description": "允许 AstrBot 管理员跨好友操作",
+        "default": true
       },
       "per_operation_rules": {
         "type": "dict",
@@ -178,7 +178,7 @@
         "type": "bool",
         "description": "使用 NapCat 语音识别作为回退",
         "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；转写是否包装为 [QQ component|QQ语音消息：转写文本] 由 semanticize_components 控制。支持顶层和引用语音。",
-        "default": false
+        "default": true
       },
       "component_spoof_protection": {
         "type": "object",
@@ -190,7 +190,7 @@
             "type": "bool",
             "description": "启用 QQ 组件文字防伪",
             "hint": "开启前必须同时开启 inbound.semanticize_components。",
-            "default": false
+            "default": true
           },
           "verify_components": {
             "type": "bool",
@@ -222,7 +222,7 @@
         "type": "bool",
         "description": "在模型上下文中的 QQ 消息末尾标记该消息已被撤回",
         "hint": "支持私聊和群聊；只更新已有上下文，不会因撤回事件唤醒模型或主动回复。",
-        "default": false
+        "default": true
       },
       "max_semantic_chars": {
         "type": "int",
