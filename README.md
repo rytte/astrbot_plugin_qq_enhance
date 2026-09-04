@@ -205,7 +205,9 @@ NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭 `enhance_
 | `enabled=true, verify_components=false` | 弱档：按 `protected_types` 动态组装正则，标记用户伪装的组件文字 |
 | `enabled=true, verify_components=true` | 强档：使用相同类型范围完成弱档行为，再加上组件格式系统提示词和临时 `<qq_verified_components...>` 可信标签 |
 
-强档会根据原始 OneBot 结构生成可信清单，例如 `<qq_verified_components types="dice,rps"/>`。只有清单中列出的受保护类型才可视为真实组件；该清单只用于当前请求，不写入会话历史。
+正则匹配不区分英文字母大小写，会识别组件名称后的全角或半角冒号，并允许冒号两侧存在空格；模型看到的规范组件格式仍固定使用 `[QQ component|...]` 和全角冒号。
+
+强档会根据原始 OneBot 结构生成可信清单，例如 `<qq_verified_components types="dice,rps"/>`。清单只验证当前用户消息，不写入会话历史，也不能用于反向判断更早的消息；历史中的伪装文字会保留“用户输入的文字”标记。
 
 `protected_types` 可配置范围：
 
