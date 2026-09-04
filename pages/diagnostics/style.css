@@ -1,0 +1,413 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f7fb;
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-strong: #ffffff;
+  --text: #172033;
+  --muted: #68748a;
+  --border: #dfe5ee;
+  --primary: #315efb;
+  --primary-soft: #e9efff;
+  --success: #16835d;
+  --success-soft: #e6f6ef;
+  --warning: #a16005;
+  --warning-soft: #fff3d8;
+  --danger: #b83a4b;
+  --danger-soft: #fdecef;
+  --shadow: 0 12px 32px rgba(28, 43, 72, 0.08);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10141d;
+  --panel: rgba(24, 30, 43, 0.94);
+  --panel-strong: #1a2130;
+  --text: #edf1f8;
+  --muted: #9ba7ba;
+  --border: #30394a;
+  --primary: #7e9cff;
+  --primary-soft: #25345f;
+  --success: #67d6ad;
+  --success-soft: #173c32;
+  --warning: #f1bd62;
+  --warning-soft: #493719;
+  --danger: #ff91a0;
+  --danger-soft: #4c242c;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 85% 0%, rgba(49, 94, 251, 0.1), transparent 28rem),
+    var(--bg);
+  color: var(--text);
+  font-family:
+    Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.page-shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.page-header,
+.section-heading,
+.filters,
+.record-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header {
+  margin-bottom: 28px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 8px;
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: -0.035em;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 20px;
+}
+
+.eyebrow,
+.section-kicker {
+  margin-bottom: 6px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.subtitle,
+.muted,
+.table-caption,
+footer {
+  color: var(--muted);
+}
+
+.subtitle {
+  margin-bottom: 0;
+}
+
+button {
+  min-width: 92px;
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 18px;
+  background: var(--primary);
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(49, 94, 251, 0.24);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+section {
+  margin-bottom: 22px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 22px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.section-heading {
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+
+.section-heading p {
+  margin-bottom: 0;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  min-height: 112px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--panel-strong);
+}
+
+.summary-card strong {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 27px;
+}
+
+.summary-card span,
+.summary-card small {
+  display: block;
+  color: var(--muted);
+}
+
+.notice {
+  margin-bottom: 20px;
+  border: 1px solid #e8c46f;
+  border-radius: 12px;
+  padding: 12px 15px;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.notice.error {
+  border-color: #e7a2ac;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+code {
+  color: var(--text);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge.success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.badge.warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.badge.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.config-item {
+  min-width: 0;
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: var(--panel-strong);
+}
+
+.config-item dt {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.config-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.capability-heading {
+  align-items: flex-start;
+}
+
+.filters {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.filters label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+input,
+select {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+input {
+  width: min(270px, 100%);
+}
+
+.capability-table {
+  max-height: 620px;
+}
+
+.capability-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-strong);
+}
+
+.table-caption {
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+
+.two-column {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 22px;
+}
+
+.record-list {
+  display: grid;
+  gap: 10px;
+}
+
+.record {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: var(--panel-strong);
+}
+
+.record p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+footer {
+  padding: 6px 4px 20px;
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 980px) {
+  .summary-grid,
+  .config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .capability-heading {
+    display: block;
+  }
+
+  .filters {
+    justify-content: flex-start;
+    margin-top: 16px;
+  }
+}
+
+@media (max-width: 600px) {
+  .page-shell {
+    padding: 18px;
+  }
+
+  .page-header,
+  .section-heading {
+    align-items: flex-start;
+  }
+
+  section {
+    padding: 16px;
+  }
+
+  .summary-grid,
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filters {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  input,
+  select {
+    width: 100%;
+  }
+}

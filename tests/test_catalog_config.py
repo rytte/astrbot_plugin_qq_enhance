@@ -29,6 +29,7 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert set(OPERATION_PARAMETERS) == set(OPERATION_MAP)
     assert set(TOOL_OPERATIONS) == {item.tool for item in OPERATIONS}
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
+    assert all(item.display_name.strip() for item in OPERATIONS)
     assert len(TOOL_OPERATIONS) == 26
 
 

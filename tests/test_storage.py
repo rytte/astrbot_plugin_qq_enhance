@@ -73,6 +73,42 @@ async def test_expired_pending_cannot_be_claimed(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dashboard_pending_list_omits_action_parameters_and_expired_rows(
+    tmp_path,
+) -> None:
+    storage = Storage(tmp_path / "data.sqlite3")
+    await storage.initialize()
+    now = int(time.time())
+    for pending_id, expires_at in (
+        ("a1b2c3d4", now + 60),
+        ("deadbeef", now - 1),
+    ):
+        await storage.create_pending(
+            {
+                "pending_id": pending_id,
+                "caller_id": "10001",
+                "session_id": "session-a",
+                "platform_id": "platform-a",
+                "operation_id": "qq_friend_manage.delete",
+                "action": "delete_friend",
+                "params": {"action_params": {"user_id": 10001}},
+                "target_kind": "private",
+                "target_id": "10001",
+                "summary": "Delete one friend",
+                "created_at": now,
+                "expires_at": expires_at,
+            }
+        )
+
+    rows = await storage.list_live_pending()
+
+    assert [row["pending_id"] for row in rows] == ["a1b2c3d4"]
+    assert "action" not in rows[0]
+    assert "params_json" not in rows[0]
+    assert "session_id" not in rows[0]
+
+
+@pytest.mark.asyncio
 async def test_request_event_is_stored_once_and_returns_request_id(tmp_path) -> None:
     storage = Storage(tmp_path / "data.sqlite3")
     await storage.initialize()

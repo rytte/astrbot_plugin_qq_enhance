@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "diagnostics": {
+      "title": "QQ Extension Status",
+      "description": "View read-only NapCat status, capabilities, effective configuration, and security audits."
+    }
+  }
+}

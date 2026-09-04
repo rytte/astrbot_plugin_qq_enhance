@@ -293,6 +293,35 @@ class Storage:
 
         return await asyncio.to_thread(list_sync)
 
+    async def list_live_pending(self, limit: int = 20) -> list[dict[str, Any]]:
+        """List live confirmations for the authenticated dashboard page.
+
+        Args:
+            limit: Maximum result count.
+
+        Returns:
+            Pending confirmation metadata without raw action parameters.
+        """
+
+        now = int(time.time())
+
+        def list_sync() -> list[dict[str, Any]]:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    """
+                    SELECT pending_id, caller_id, platform_id, operation_id,
+                           target_kind, target_id, summary, created_at, expires_at
+                    FROM pending_actions
+                    WHERE status = 'pending' AND expires_at >= ?
+                    ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (now, limit),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+        return await asyncio.to_thread(list_sync)
+
     async def add_audit(self, record: dict[str, Any]) -> None:
         """Append a metadata-only audit record.
 

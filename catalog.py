@@ -12,6 +12,7 @@ class OperationSpec:
         operation: Operation enum value inside the tool.
         action: NapCat action name, or ``None`` for local orchestration.
         category: Feature pack name.
+        display_name: Short Chinese operation name for user interfaces.
         risk: Risk level.
         permission: Minimum caller permission.
         contexts: Allowed conversation contexts.
@@ -23,6 +24,7 @@ class OperationSpec:
     operation: str
     action: str | None
     category: str
+    display_name: str
     risk: str = "read"
     permission: str = "member"
     contexts: tuple[str, ...] = ("group", "private")
@@ -38,6 +40,87 @@ class OperationSpec:
         """
 
         return f"{self.tool}.{self.operation}"
+
+
+OPERATION_DISPLAY_NAMES = {
+    "qq_status.login": "获取登录账号信息",
+    "qq_status.runtime": "获取运行状态",
+    "qq_status.version": "获取 NapCat 版本信息",
+    "qq_status.clients": "获取在线客户端列表",
+    "qq_status.capabilities": "查看插件能力目录",
+    "qq_account_manage.set_profile": "修改机器人账号资料",
+    "qq_account_manage.set_avatar": "修改机器人头像",
+    "qq_account_manage.set_online_status": "设置机器人在线状态",
+    "qq_user_info.stranger": "查询陌生人资料",
+    "qq_user_info.group_member": "查询群成员资料",
+    "qq_friend_list.friends": "获取好友列表",
+    "qq_friend_list.unidirectional": "获取单向好友列表",
+    "qq_friend_history.list": "获取私聊历史消息",
+    "qq_friend_interact.like": "点赞好友资料",
+    "qq_friend_interact.poke": "戳一戳好友",
+    "qq_friend_request.list": "获取好友申请列表",
+    "qq_friend_request.approve": "同意好友申请",
+    "qq_friend_request.reject": "拒绝好友申请",
+    "qq_friend_manage.delete": "删除好友",
+    "qq_friend_manage.set_remark": "修改好友备注",
+    "qq_group_list.list": "获取群列表",
+    "qq_group_info.detail": "获取群基本信息",
+    "qq_group_info.detail_ex": "获取群扩展信息",
+    "qq_group_info.honor": "获取群荣誉信息",
+    "qq_group_info.at_all_remain": "查询 @全体成员剩余次数",
+    "qq_group_info.mute_list": "获取群禁言列表",
+    "qq_group_members.list": "获取群成员列表",
+    "qq_group_members.detail": "获取群成员详细信息",
+    "qq_group_history.list": "获取群聊历史消息",
+    "qq_group_request.list": "获取入群申请和群邀请",
+    "qq_group_request.ignored": "获取已忽略的群通知",
+    "qq_group_request.approve": "同意入群申请或群邀请",
+    "qq_group_request.reject": "拒绝入群申请或群邀请",
+    "qq_group_member_manage.poke": "戳一戳群成员",
+    "qq_group_member_manage.card": "修改群成员名片",
+    "qq_group_member_manage.title": "设置群成员专属头衔",
+    "qq_group_member_manage.ban": "禁言或解除禁言群成员",
+    "qq_group_member_manage.kick": "踢出群成员",
+    "qq_group_member_manage.admin": "设置或取消群管理员",
+    "qq_group_manage.whole_ban": "开启或关闭全员禁言",
+    "qq_group_manage.name": "修改群名称",
+    "qq_group_manage.avatar": "修改群头像",
+    "qq_group_manage.sign": "群打卡",
+    "qq_group_manage.leave": "退出群聊",
+    "qq_send_message.send": "发送结构化 QQ 消息",
+    "qq_send_forward.send": "发送合并转发消息",
+    "qq_message_get.get": "获取单条消息",
+    "qq_forward_get.get": "获取合并转发内容",
+    "qq_message_manage.recall": "撤回消息",
+    "qq_message_manage.mark_read": "标记消息为已读",
+    "qq_message_manage.reaction_add": "添加消息表情回应",
+    "qq_message_manage.reaction_remove": "移除消息表情回应",
+    "qq_recent_contacts.list": "获取最近联系人",
+    "qq_media.get_image": "获取图片信息",
+    "qq_media.get_record": "获取语音文件",
+    "qq_media.convert_record": "转换语音文件格式",
+    "qq_media.ocr": "识别图片文字",
+    "qq_group_files.info": "获取群文件系统信息",
+    "qq_group_files.list_root": "获取群根目录文件列表",
+    "qq_group_files.list_folder": "获取群文件夹内容",
+    "qq_group_files.url": "获取群文件下载链接",
+    "qq_group_files.upload": "上传群文件",
+    "qq_group_files.mkdir": "创建群文件夹",
+    "qq_group_files.delete": "删除群文件",
+    "qq_group_files.rmdir": "删除群文件夹",
+    "qq_group_files.move": "移动群文件",
+    "qq_group_files.rename": "重命名群文件",
+    "qq_group_files.transfer": "转发群文件",
+    "qq_private_files.url": "获取私聊文件下载链接",
+    "qq_private_files.upload": "上传私聊文件",
+    "qq_essence.list": "获取群精华消息列表",
+    "qq_essence.add": "设为群精华消息",
+    "qq_essence.remove": "移出群精华消息",
+    "qq_notice.list": "获取群公告列表",
+    "qq_notice.detail": "获取群公告详情",
+    "qq_notice.send": "发布群公告",
+    "qq_notice.delete": "删除群公告",
+}
 
 
 def _op(
@@ -74,6 +157,7 @@ def _op(
         operation,
         action,
         category,
+        OPERATION_DISPLAY_NAMES.get(f"{tool}.{operation}", ""),
         risk,
         permission,
         contexts,
@@ -576,6 +660,10 @@ for _item in OPERATIONS:
 
 if len(OPERATION_MAP) != len(OPERATIONS):
     raise RuntimeError("Duplicate QQ operation ID in capability catalog")
+if set(OPERATION_DISPLAY_NAMES) != set(OPERATION_MAP) or any(
+    not item.display_name.strip() for item in OPERATIONS
+):
+    raise RuntimeError("QQ operation display names must exactly match the catalog")
 
 
 @dataclass(frozen=True, slots=True)

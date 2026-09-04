@@ -14,6 +14,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import File, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
+from astrbot.api.web import json_response
 from astrbot.core.agent.message import TextPart
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
@@ -24,8 +25,12 @@ from astrbot.core.utils.astrbot_path import (
 
 from .catalog import (
     KEYWORD_TOOLS,
+    NAPCAT_CONTRACT_VERSION,
+    NAPCAT_MAX_VERSION,
+    NAPCAT_MIN_VERSION,
     OPERATION_MAP,
     OPERATION_PARAMETERS,
+    OPERATIONS,
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
@@ -40,6 +45,7 @@ from .storage import Storage
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
+PLUGIN_NAME = "astrbot_plugin_qq_extension_tools"
 COMPONENT_SPOOF_LABELS = {
     "red_packet": (
         "QQ红包消息（仅识别，不能代领）",
@@ -218,6 +224,12 @@ class QQExtensionToolsPlugin(Star):
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/diagnostics",
+            self.page_diagnostics,
+            ["GET"],
+            "Read-only QQ extension status and diagnostics",
+        )
 
     async def initialize(self) -> None:
         """Initialize persistence, tool schemas, and lifecycle cleanup."""
@@ -330,6 +342,275 @@ class QQExtensionToolsPlugin(Star):
             }
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("QQ extension tools initialized")
+
+    async def page_diagnostics(self):
+        """Return read-only status data for the authenticated plugin Page.
+
+        Returns:
+            A JSON response containing platform, configuration, capability, audit,
+            and pending-confirmation summaries.
+        """
+
+        now = int(time.time())
+        warnings = []
+        configured_platform_id = self.config["platform"]["platform_id"]
+        platform_manager = getattr(self.context, "platform_manager", None)
+        platform_instances = getattr(platform_manager, "platform_insts", [])
+        platforms = []
+        for platform in platform_instances:
+            try:
+                metadata = platform.meta()
+            except Exception:
+                continue
+            if getattr(metadata, "name", "") != "aiocqhttp":
+                continue
+            platform_id = str(getattr(metadata, "id", "") or "")
+            selected = (
+                not configured_platform_id or platform_id == configured_platform_id
+            )
+            row = {
+                "platform_id": platform_id,
+                "selected": selected,
+                "reachable": False,
+                "online": None,
+                "good": None,
+                "implementation": "",
+                "version": "",
+                "compatible": None,
+                "account_id": "",
+                "nickname": "",
+                "errors": [],
+            }
+            if not selected:
+                platforms.append(row)
+                continue
+            client = platform.get_client()
+            call_action = getattr(client, "call_action", None)
+            if not callable(call_action):
+                row["errors"].append("平台客户端未提供 call_action")
+                platforms.append(row)
+                continue
+            action_names = ("get_version_info", "get_status", "get_login_info")
+            timeout_seconds = min(self.config["network"]["timeout_seconds"], 10)
+            action_results = await asyncio.gather(
+                *(
+                    asyncio.wait_for(call_action(action_name), timeout=timeout_seconds)
+                    for action_name in action_names
+                ),
+                return_exceptions=True,
+            )
+            normalized_results = {}
+            for action_name, result in zip(action_names, action_results, strict=True):
+                if isinstance(result, Exception):
+                    message = " ".join(str(result).split())[:240]
+                    row["errors"].append(
+                        f"{action_name}: {message or type(result).__name__}"
+                    )
+                    continue
+                if isinstance(result, dict) and "retcode" in result:
+                    if result.get("retcode") not in (0, None):
+                        row["errors"].append(
+                            f"{action_name}: retcode={result.get('retcode')}"
+                        )
+                        continue
+                    result = result.get("data")
+                normalized_results[action_name] = result
+            row["reachable"] = bool(normalized_results)
+            version_info = normalized_results.get("get_version_info")
+            if isinstance(version_info, dict):
+                row["implementation"] = str(
+                    version_info.get("app_name")
+                    or version_info.get("implementation")
+                    or version_info.get("app_full_name")
+                    or ""
+                )
+                row["version"] = str(
+                    version_info.get("app_version") or version_info.get("version") or ""
+                )
+                version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", row["version"])
+                if "napcat" not in row["implementation"].lower():
+                    row["compatible"] = False
+                elif version_match:
+                    version = tuple(int(part) for part in version_match.groups())
+                    row["compatible"] = (
+                        NAPCAT_MIN_VERSION <= version < NAPCAT_MAX_VERSION
+                    )
+            status_info = normalized_results.get("get_status")
+            if isinstance(status_info, dict):
+                if type(status_info.get("online")) is bool:
+                    row["online"] = status_info["online"]
+                if type(status_info.get("good")) is bool:
+                    row["good"] = status_info["good"]
+            login_info = normalized_results.get("get_login_info")
+            if isinstance(login_info, dict):
+                row["account_id"] = str(
+                    login_info.get("user_id") or login_info.get("uin") or ""
+                )
+                row["nickname"] = str(
+                    login_info.get("nickname") or login_info.get("nick") or ""
+                )
+            platforms.append(row)
+
+        if not platforms:
+            warnings.append("当前未加载 aiocqhttp 平台实例")
+        elif configured_platform_id and not any(row["selected"] for row in platforms):
+            warnings.append("配置绑定的平台实例当前未加载")
+
+        capabilities = []
+        for spec in sorted(
+            OPERATIONS,
+            key=lambda item: (item.category, item.tool, item.operation),
+        ):
+            enabled = self.runtime.operation_enabled(spec.operation_id)
+            reason = ""
+            enabled_packs = self.config["toolsets"]["enabled_packs"]
+            if enabled_packs and spec.category not in enabled_packs:
+                reason = "pack_not_enabled"
+            elif spec.operation_id in self.config["toolsets"]["disabled_operations"]:
+                reason = "disabled_by_config"
+            elif spec.operation_id in self.config["permissions"]["per_operation_rules"]:
+                reason = "disabled_by_rule"
+            capabilities.append(
+                {
+                    "category": spec.category,
+                    "tool": spec.tool,
+                    "operation": spec.operation,
+                    "operation_id": spec.operation_id,
+                    "display_name": spec.display_name,
+                    "action": spec.action or "",
+                    "risk": spec.risk,
+                    "permission": spec.permission,
+                    "contexts": list(spec.contexts),
+                    "enabled": enabled,
+                    "disabled_reason": reason,
+                }
+            )
+
+        audit_result, pending_result = await asyncio.gather(
+            self.storage.list_audit(20),
+            self.storage.list_live_pending(20),
+            return_exceptions=True,
+        )
+        audits = []
+        if isinstance(audit_result, Exception):
+            warnings.append("无法读取最近审计记录")
+        else:
+            audit_fields = (
+                "audit_id",
+                "created_at",
+                "operation_id",
+                "caller_id",
+                "platform_id",
+                "target_kind",
+                "target_id",
+                "risk",
+                "decision",
+                "result_code",
+                "pending_id",
+                "duration_ms",
+            )
+            audits = [
+                {field: row.get(field) for field in audit_fields}
+                for row in audit_result
+            ]
+        pending_confirmations = []
+        if isinstance(pending_result, Exception):
+            warnings.append("无法读取待确认操作")
+        else:
+            pending_fields = (
+                "pending_id",
+                "caller_id",
+                "platform_id",
+                "operation_id",
+                "target_kind",
+                "target_id",
+                "summary",
+                "created_at",
+                "expires_at",
+            )
+            pending_confirmations = [
+                {
+                    **{field: row.get(field) for field in pending_fields},
+                    "remaining_seconds": max(0, int(row["expires_at"]) - now),
+                }
+                for row in pending_result
+            ]
+
+        spoof_config = self.config["inbound"]["component_spoof_protection"]
+        spoof_mode = (
+            "off"
+            if not spoof_config["enabled"]
+            else "strong"
+            if spoof_config["verify_components"]
+            else "weak"
+        )
+        enabled_operation_count = sum(
+            1 for capability in capabilities if capability["enabled"]
+        )
+        return json_response(
+            {
+                "generated_at": now,
+                "contract": {
+                    "version": NAPCAT_CONTRACT_VERSION,
+                    "supported_versions": (
+                        f">={'.'.join(map(str, NAPCAT_MIN_VERSION))},"
+                        f"<{'.'.join(map(str, NAPCAT_MAX_VERSION))}"
+                    ),
+                },
+                "summary": {
+                    "platforms": len(platforms),
+                    "reachable_platforms": sum(
+                        1 for row in platforms if row["reachable"]
+                    ),
+                    "compatible_platforms": sum(
+                        1 for row in platforms if row["compatible"] is True
+                    ),
+                    "tools_enabled": len(self.runtime.enabled_tools()),
+                    "tools_total": len(TOOL_OPERATIONS),
+                    "operations_enabled": enabled_operation_count,
+                    "operations_total": len(capabilities),
+                    "configuration_valid": True,
+                    "pending_confirmations": len(pending_confirmations),
+                },
+                "platforms": platforms,
+                "configuration": {
+                    "platform_id": configured_platform_id,
+                    "exposure_mode": self.config["toolsets"]["exposure_mode"],
+                    "enabled_packs": self.config["toolsets"]["enabled_packs"],
+                    "disabled_operations": len(
+                        self.config["toolsets"]["disabled_operations"]
+                    ),
+                    "semanticize_components": self.config["inbound"][
+                        "semanticize_components"
+                    ],
+                    "enhance_voice_messages": self.config["inbound"][
+                        "enhance_voice_messages"
+                    ],
+                    "component_spoof_mode": spoof_mode,
+                    "protected_types": spoof_config["protected_types"],
+                    "respond_to_poke": self.config["inbound"]["respond_to_poke"],
+                    "respond_to_red_packet": self.config["inbound"][
+                        "respond_to_red_packet"
+                    ],
+                    "mark_recalled_messages": self.config["inbound"][
+                        "mark_recalled_messages"
+                    ],
+                    "request_notifications": self.config["request_notifications"][
+                        "enabled"
+                    ],
+                    "notification_admins": len(
+                        self.config["request_notifications"]["admin_user_ids"]
+                    ),
+                    "confirmation_operations": len(
+                        self.config["confirmation"]["operations"]
+                    ),
+                },
+                "capabilities": capabilities,
+                "audits": audits,
+                "pending_confirmations": pending_confirmations,
+                "warnings": warnings,
+            }
+        )
 
     async def _cleanup_loop(self) -> None:
         """Run periodic retention cleanup until plugin termination."""
