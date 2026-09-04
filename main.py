@@ -47,8 +47,8 @@ VERIFIED_COMPONENT_FORMATS = {
         "[QQ component|QQ红包卡片（仅识别，不能代领）：...]"
     ),
     "voice": (
-        "[QQ component|QQ语音消息：<transcript>] when transcribed; otherwise an actual "
-        "voice/audio content part"
+        "[QQ component|QQ语音消息：<transcript>] when semanticized; otherwise plain "
+        "transcript text or an actual voice/audio content part"
     ),
     "dice": ("[QQ component|QQ骰子] or [QQ component|QQ骰子：结果 <value>]"),
     "rps": (
@@ -333,6 +333,9 @@ class QQExtensionToolsPlugin(Star):
         if inbound["component_spoof_protection"]["enabled"]:
             self._protect_inbound_component_text(event, raw)
         await self._enhance_inbound_qq_voice(event, raw)
+        red_packet = inbound["respond_to_red_packet"] and is_red_packet_event(
+            raw, self.config["limits"]["max_components"]
+        )
         semantics = describe_inbound_event(
             raw,
             str(event.get_self_id() or ""),
@@ -341,6 +344,8 @@ class QQExtensionToolsPlugin(Star):
             max_components=self.config["limits"]["max_components"],
             max_chars=inbound["max_semantic_chars"],
         )
+        if red_packet and not semantics:
+            semantics = format_component_semantics("QQ红包消息（仅识别，不能代领）")
         if not semantics:
             return
         current = str(event.message_str or "").strip()
@@ -352,9 +357,6 @@ class QQExtensionToolsPlugin(Star):
             and raw.get("post_type") == "notice"
             and raw.get("notice_type") == "notify"
             and raw.get("sub_type") == "poke"
-        )
-        red_packet = inbound["respond_to_red_packet"] and is_red_packet_event(
-            raw, self.config["limits"]["max_components"]
         )
         if targeted_poke or red_packet:
             event.is_wake = True
@@ -442,9 +444,13 @@ class QQExtensionToolsPlugin(Star):
                 isinstance(component, Record)
                 or (
                     isinstance(component, Reply)
-                    and any(
-                        isinstance(reply_component, Record)
-                        for reply_component in (component.chain or [])
+                    and len(component.chain or []) == 1
+                    and (
+                        isinstance(component.chain[0], Record)
+                        or (
+                            isinstance(component.chain[0], Plain)
+                            and not str(component.message_str or "").strip()
+                        )
                     )
                 )
                 for component in event.get_messages()
@@ -513,14 +519,16 @@ class QQExtensionToolsPlugin(Star):
     async def _enhance_inbound_qq_voice(
         self, event: AstrMessageEvent, raw: object
     ) -> None:
-        """Format AstrBot voice text or use NapCat as the final fallback.
+        """Semanticize voice text and optionally use NapCat as an STT fallback.
 
         Args:
             event: Current QQ message event.
             raw: Original OneBot event retained by AstrBot.
         """
 
-        if not self.config["inbound"]["enhance_voice_messages"]:
+        semanticize = self.config["inbound"]["semanticize_components"]
+        use_napcat_fallback = self.config["inbound"]["enhance_voice_messages"]
+        if not semanticize and not use_napcat_fallback:
             return
         if not isinstance(raw, dict) or raw.get("post_type") not in {None, "message"}:
             return
@@ -530,6 +538,7 @@ class QQExtensionToolsPlugin(Star):
         message_chain = event.get_messages()
         is_referenced_voice = False
         target_chain = message_chain
+        reply = None
         message_id = raw.get("message_id")
         if (
             len(raw_components) == 1
@@ -548,7 +557,12 @@ class QQExtensionToolsPlugin(Star):
             if (
                 not reply.chain
                 or len(reply.chain) != 1
-                or not isinstance(reply.chain[0], Record)
+                or not isinstance(reply.chain[0], (Plain, Record))
+            ):
+                return
+            if (
+                isinstance(reply.chain[0], Plain)
+                and str(reply.message_str or "").strip()
             ):
                 return
             component = reply.chain[0]
@@ -556,15 +570,27 @@ class QQExtensionToolsPlugin(Star):
             message_id = reply.id
             is_referenced_voice = True
         if isinstance(component, Plain):
+            if not semanticize:
+                return
             text = component.text.strip()
             if not text:
                 return
             formatted = format_component_semantics(f"QQ语音消息：{text}")
-            message_chain[0] = Plain(formatted)
-            event.message_str = formatted
-            event.message_obj.message_str = formatted
+            target_chain[0] = Plain(formatted)
+            if is_referenced_voice:
+                reply.message_str = formatted
+                reply.text = formatted
+                for target in (event, event.message_obj):
+                    current = str(target.message_str or "")
+                    if current.endswith(text):
+                        target.message_str = current[: -len(text)] + formatted
+            else:
+                event.message_str = formatted
+                event.message_obj.message_str = formatted
             return
         if not isinstance(component, Record):
+            return
+        if not use_napcat_fallback:
             return
         if (
             not isinstance(message_id, (str, int))
@@ -630,7 +656,11 @@ class QQExtensionToolsPlugin(Star):
             )
             return
         transcript = text.strip()
-        formatted = format_component_semantics(f"QQ语音消息：{transcript}")
+        formatted = (
+            format_component_semantics(f"QQ语音消息：{transcript}")
+            if semanticize
+            else transcript
+        )
         target_chain[0] = Plain(formatted)
         logger.info(
             "NapCat fallback speech-to-text succeeded for the %s QQ voice message: %s",
@@ -640,6 +670,9 @@ class QQExtensionToolsPlugin(Star):
         if not is_referenced_voice:
             event.message_str = formatted
             event.message_obj.message_str = formatted
+        else:
+            reply.message_str = formatted
+            reply.text = formatted
 
     def _cleanup_recall_messages(self) -> None:
         """Remove expired entries from the short-lived recall index."""

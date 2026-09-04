@@ -171,13 +171,13 @@
     "items": {
       "semanticize_components": {
         "type": "bool",
-        "description": "将 QQ 表情和结构化组件转换为模型可读文本",
+        "description": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本",
         "default": true
       },
       "enhance_voice_messages": {
         "type": "bool",
-        "description": "增强 QQ 语音消息感知",
-        "hint": "开启后，将 AstrBot ASR 结果格式化为 [QQ component|QQ语音消息：转写文本]；AstrBot 未产生转写时，使用 NapCat 语音识别作为顶层或引用语音的回退。",
+        "description": "使用 NapCat 语音识别作为回退",
+        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；转写是否包装为 [QQ component|QQ语音消息：转写文本] 由 semanticize_components 控制。支持顶层和引用语音。",
         "default": false
       },
       "component_spoof_protection": {

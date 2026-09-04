@@ -406,7 +406,7 @@ class FakeEvent:
 @pytest.mark.asyncio
 async def test_plugin_formats_existing_astrbot_stt_result_without_napcat() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config(None)
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(),
@@ -433,9 +433,20 @@ async def test_plugin_formats_existing_astrbot_stt_result_without_napcat() -> No
 
 
 @pytest.mark.asyncio
-async def test_plugin_leaves_astrbot_stt_result_unchanged_when_disabled() -> None:
+async def test_astrbot_stt_stays_plain_without_semanticization() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
-    plugin.config = validate_config(None)
+    plugin.config = validate_config(
+        {
+            "inbound": {
+                "semanticize_components": False,
+                "enhance_voice_messages": True,
+            }
+        }
+    )
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(),
+    )
     event = FakeEvent(
         {
             "post_type": "message",
@@ -450,6 +461,8 @@ async def test_plugin_leaves_astrbot_stt_result_unchanged_when_disabled() -> Non
 
     assert event.get_messages() == [Plain("AstrBot 转写")]
     assert event.message_str == "AstrBot 转写"
+    plugin.runtime.verify_platform.assert_not_awaited()
+    plugin.runtime.call_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -481,6 +494,63 @@ async def test_plugin_uses_napcat_stt_when_astrbot_leaves_record() -> None:
         {"message_id": 123},
         skip_contract=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_napcat_stt_stays_plain_when_semanticization_is_disabled() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {
+            "inbound": {
+                "semanticize_components": False,
+                "enhance_voice_messages": True,
+            }
+        }
+    )
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(return_value={"text": "测试语音"}),
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[Record(file="voice.amr")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [Plain("测试语音")]
+    assert event.message_str == "测试语音"
+    assert event.message_obj.message_str == "测试语音"
+
+
+@pytest.mark.asyncio
+async def test_semanticization_alone_does_not_call_napcat_for_a_record() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = SimpleNamespace(
+        verify_platform=AsyncMock(),
+        call_action=AsyncMock(),
+    )
+    record = Record(file="voice.amr")
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [{"type": "record", "data": {"file": "voice.amr"}}],
+        },
+        messages=[record],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.get_messages() == [record]
+    assert event.message_str == ""
+    plugin.runtime.verify_platform.assert_not_awaited()
+    plugin.runtime.call_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -553,7 +623,8 @@ async def test_plugin_uses_napcat_stt_for_record_in_reply() -> None:
     await plugin.enrich_inbound_qq_components(event)
 
     assert reply.chain == [Plain("[QQ component|QQ语音消息：引用语音]")]
-    assert reply.message_str == ""
+    assert reply.message_str == "[QQ component|QQ语音消息：引用语音]"
+    assert reply.text == reply.message_str
     assert event.message_str == "这段说了什么？"
     assert event.message_obj.message_str == event.message_str
     plugin.runtime.verify_platform.assert_awaited_once_with(event)
@@ -563,6 +634,38 @@ async def test_plugin_uses_napcat_stt_for_record_in_reply() -> None:
         {"message_id": "456"},
         skip_contract=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_plugin_semanticizes_existing_asr_text_in_reply() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(None)
+    reply = Reply(
+        id="456",
+        chain=[Plain("引用语音")],
+        message_str="",
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_id": 123,
+            "message": [
+                {"type": "reply", "data": {"id": "456"}},
+                {"type": "text", "data": {"text": "这段说了什么？"}},
+            ],
+        },
+        message_str="这段说了什么？引用语音",
+        messages=[reply, Plain("这段说了什么？")],
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    formatted = "[QQ component|QQ语音消息：引用语音]"
+    assert reply.chain == [Plain(formatted)]
+    assert reply.message_str == formatted
+    assert reply.text == formatted
+    assert event.message_str == f"这段说了什么？{formatted}"
+    assert event.message_obj.message_str == event.message_str
 
 
 @pytest.mark.asyncio
@@ -599,6 +702,7 @@ async def test_plugin_keeps_record_in_reply_when_napcat_stt_fails() -> None:
             id=456,
             chain=[Record(file="quoted-voice.amr"), Plain("other content")],
         ),
+        Reply(id=456, chain=[Plain("quoted text")], message_str="quoted text"),
     ],
 )
 async def test_plugin_skips_reply_voice_that_cannot_be_mapped_safely(
@@ -820,6 +924,63 @@ async def test_plugin_handler_explicitly_wakes_for_group_red_packet() -> None:
 
 
 @pytest.mark.asyncio
+async def test_red_packet_response_does_not_require_component_semanticization() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {"inbound": {"semanticize_components": False}}
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 30003,
+            "message": [],
+            "raw": {
+                "msgType": 10,
+                "elements": [{"elementType": 9, "walletElement": {}}],
+            },
+        }
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.message_str == "[QQ component|QQ红包消息（仅识别，不能代领）]"
+    assert event.is_wake is True
+    assert event.is_at_or_wake_command is True
+
+
+@pytest.mark.asyncio
+async def test_disabled_red_packet_response_does_not_force_minimum_semantics() -> None:
+    plugin = object.__new__(QQExtensionToolsPlugin)
+    plugin.config = validate_config(
+        {
+            "inbound": {
+                "semanticize_components": False,
+                "respond_to_red_packet": False,
+            }
+        }
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 30003,
+            "message": [],
+            "raw": {
+                "msgType": 10,
+                "elements": [{"elementType": 9, "walletElement": {}}],
+            },
+        }
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.message_str == ""
+    assert event.is_wake is False
+    assert event.is_at_or_wake_command is False
+
+
+@pytest.mark.asyncio
 async def test_plugin_handler_honors_platform_and_feature_config() -> None:
     plugin = object.__new__(QQExtensionToolsPlugin)
     plugin.config = validate_config(
@@ -988,6 +1149,13 @@ async def test_verified_types_do_not_trust_unmatched_component_like_text() -> No
             },
             [Reply(id="123", chain=[Record(file="quoted.amr")])],
         ),
+        (
+            {
+                "post_type": "message",
+                "message": [{"type": "reply", "data": {"id": "123"}}],
+            },
+            [Reply(id="123", chain=[Plain("引用转写")], message_str="")],
+        ),
     ],
 )
 async def test_voice_components_set_verified_signal_before_enhancement(
@@ -1152,7 +1320,7 @@ async def test_llm_request_gets_temporary_verified_component_signal(
         in request.system_prompt
     )
     assert (
-        "- voice: [QQ component|QQ语音消息：<transcript>] when transcribed"
+        "- voice: [QQ component|QQ语音消息：<transcript>] when semanticized"
         in request.system_prompt
     )
     assert (
@@ -1199,7 +1367,7 @@ async def test_verified_component_prompt_uses_configured_protection_scope() -> N
 
     assert "Protected component formats:" in request.system_prompt
     assert (
-        "- voice: [QQ component|QQ语音消息：<transcript>] when transcribed"
+        "- voice: [QQ component|QQ语音消息：<transcript>] when semanticized"
         in request.system_prompt
     )
     assert (

@@ -161,8 +161,8 @@ QQ extension tools initialized
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
-| `inbound.semanticize_components` | `true` | 转换表情、卡片、随机结果等组件 |
-| `inbound.enhance_voice_messages` | `false` | 格式化语音转写，并在需要时调用 NapCat 识别 |
+| `inbound.semanticize_components` | `true` | 格式化语音转写，并转换表情、卡片、随机结果等组件 |
+| `inbound.enhance_voice_messages` | `false` | AstrBot 没有转写时调用 NapCat 识别 |
 | `inbound.component_spoof_protection.enabled` | `false` | 标记文字伪装的组件，并附加可信类型清单 |
 | `inbound.respond_to_poke` | `true` | 被戳一戳时唤醒模型 |
 | `inbound.respond_to_red_packet` | `true` | 识别到红包时唤醒模型 |
@@ -171,14 +171,15 @@ QQ extension tools initialized
 
 ### 语音
 
-开启 `enhance_voice_messages` 后：
+语音格式和识别来源分别控制：
 
-1. AstrBot 已完成 ASR：把结果包装为统一的 QQ 语音格式。
-2. AstrBot 没有转写且消息仍是 `Record`：调用 NapCat `fetch_ptt_text`，间隔一秒，最多三次。
-3. 引用消息中的单条语音：使用相同流程，并同步更新引用内容。
-4. NapCat 最终失败、超时或返回空文本：保留原始 `Record`。
+1. `semanticize_components=true` 时，已有转写会包装为统一的 QQ 语音格式。
+2. `enhance_voice_messages=true` 且 AstrBot 没有转写时，调用 NapCat `fetch_ptt_text`，间隔一秒，最多三次。
+3. 两个开关都开启时，NapCat 的转写也会使用统一格式；只开启语音增强时，NapCat 转写保持普通文本。
+4. 引用消息中的单条语音使用相同流程，并同步更新引用内容。
+5. NapCat 最终失败、超时或返回空文本时保留原始 `Record`。
 
-NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭该配置后，插件不参与语音识别或格式化。
+NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭 `enhance_voice_messages` 后，插件不会调用 NapCat，但仍可通过 `semanticize_components` 格式化 AstrBot 已有的 ASR 结果。
 
 `qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 必须使用 OneBot/NapCat 提供的原始媒体标识，不能使用 AstrBot 生成的本地临时路径。
 
@@ -191,7 +192,7 @@ NapCat 识别成功时会在 INFO 日志中记录转写文本。关闭该配置�
 ### 戳一戳、红包与撤回
 
 - 戳一戳：只响应目标是机器人自身的事件；其他成员之间及机器人自己触发的事件会被忽略。
-- 红包：插件只能识别，不能代领。JSON/XML 红包卡片可直接识别；`walletElement` 需要 NapCat 网络适配器开启 `debug`，使上报事件包含 `raw`。
+- 红包：插件只能识别，不能代领。`respond_to_red_packet=true` 时，即使关闭 `semanticize_components`，也会补充最低限度的红包说明并唤醒模型。JSON/XML 红包卡片可直接识别；`walletElement` 需要 NapCat 网络适配器开启 `debug`，使上报事件包含 `raw`。
 - 撤回：开启 `mark_recalled_messages` 后，插件会保留 180 秒的私聊和群聊消息映射，在上下文中的原消息末尾追加撤回标记。撤回事件不会唤醒模型。
 
 ### 组件文字防伪
