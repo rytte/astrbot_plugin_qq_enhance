@@ -150,6 +150,10 @@ function renderConfiguration(config) {
     ["戳一戳响应", config.respond_to_poke ? "开启" : "关闭"],
     ["红包响应", config.respond_to_red_packet ? "开启" : "关闭"],
     ["撤回感知", config.mark_recalled_messages ? "开启" : "关闭"],
+    ["消息防抖", config.debounce_enabled ? "开启" : "关闭"],
+    ["首条等待窗口", `${config.debounce_initial_window_seconds ?? 0} 秒`],
+    ["后续等待窗口", `${config.debounce_followup_window_seconds ?? 0} 秒`],
+    ["累计等待上限", `${config.debounce_max_wait_seconds ?? 0} 秒`],
     ["申请通知", config.request_notifications ? `开启（${config.notification_admins} 位管理员）` : "关闭"],
     ["需要确认的操作", config.confirmation_operations],
   ];

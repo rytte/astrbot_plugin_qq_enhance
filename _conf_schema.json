@@ -112,6 +112,72 @@
       }
     }
   },
+  "debounce": {
+    "type": "object",
+    "description": "消息防抖",
+    "default": {},
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用消息防抖",
+        "hint": "首条消息按等待窗口配置进入模型；同一会话、同一用户继续输入时，取消尚未执行工具或进入流式发送的生成，将前条完整输入保存为独立历史消息。支持所有能进入 AstrBot 本地 Agent 的 QQ 输入。",
+        "default": true
+      },
+      "initial_window_seconds": {
+        "type": "float",
+        "description": "首条消息等待窗口（秒）",
+        "hint": "首条消息进入模型前的可选等待时间；0 表示立即进入。",
+        "default": 0.0,
+        "minimum": 0.0,
+        "maximum": 60.0
+      },
+      "followup_window_seconds": {
+        "type": "float",
+        "description": "后续消息等待窗口（秒）",
+        "hint": "已有请求收到后续消息时，取消旧请求前的可选等待时间；0 表示立即处理。",
+        "default": 0.0,
+        "minimum": 0.0,
+        "maximum": 60.0
+      },
+      "max_wait_seconds": {
+        "type": "float",
+        "description": "一轮防抖累计最大等待时间（秒）",
+        "hint": "只累计实际等待窗口，不计算模型、工具和网络耗时；0 表示不设累计上限。",
+        "default": 5.0,
+        "minimum": 0.0,
+        "maximum": 300.0
+      },
+      "max_messages": {
+        "type": "int",
+        "description": "一批连续输入的最大条数",
+        "hint": "达到限制后等待前批完成，再处理后续输入，不截断消息。",
+        "default": 8,
+        "minimum": 2,
+        "maximum": 100
+      },
+      "max_chars": {
+        "type": "int",
+        "description": "一批连续输入的文本字符预算",
+        "default": 3000,
+        "minimum": 1,
+        "maximum": 100000
+      },
+      "max_buffer_mb": {
+        "type": "int",
+        "description": "允许续接的输入快照预算（MiB）",
+        "hint": "包含图片、音频等编码后的内容；超过预算时保留前一请求，后续输入另行处理。",
+        "default": 32,
+        "minimum": 1,
+        "maximum": 256
+      },
+      "ignore_prefixes": {
+        "type": "list",
+        "description": "不参与防抖的消息前缀",
+        "hint": "空列表表示不按前缀排除；已经由命令或其他插件处理的消息仍沿用原流程。",
+        "default": ["/", "!"]
+      }
+    }
+  },
   "inbound": {
     "type": "object",
     "description": "入站消息语义化",

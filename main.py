@@ -15,7 +15,7 @@ from astrbot.api.message_components import File, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import json_response
-from astrbot.core.agent.message import TextPart
+from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
@@ -34,6 +34,7 @@ from .catalog import (
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
+from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer, mark_content
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -215,15 +216,14 @@ class QQEnhancePlugin(Star):
     ) -> None:
         super().__init__(context)
         self.config = validate_config(dict(config or {}))
-        data_dir = (
-            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
-        )
+        data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
+        self.debouncer = MessageDebouncer(self)
         context.register_web_api(
             f"/{PLUGIN_NAME}/diagnostics",
             self.page_diagnostics,
@@ -683,6 +683,16 @@ class QQEnhancePlugin(Star):
                     "mark_recalled_messages": self.config["inbound"][
                         "mark_recalled_messages"
                     ],
+                    "debounce_enabled": self.config["debounce"]["enabled"],
+                    "debounce_initial_window_seconds": self.config["debounce"][
+                        "initial_window_seconds"
+                    ],
+                    "debounce_followup_window_seconds": self.config["debounce"][
+                        "followup_window_seconds"
+                    ],
+                    "debounce_max_wait_seconds": self.config["debounce"][
+                        "max_wait_seconds"
+                    ],
                     "request_notifications": self.config["request_notifications"][
                         "enabled"
                     ],
@@ -711,6 +721,64 @@ class QQEnhancePlugin(Star):
             except Exception:
                 logger.exception("QQ Enhance cleanup failed")
             await asyncio.sleep(self.config["files"]["cleanup_interval_seconds"])
+
+    @filter.custom_filter(ArrivalFilter, priority=-20000)
+    async def debounce_inbound_message(self, event: AstrMessageEvent) -> None:
+        """Coordinate consecutive QQ inputs after normal plugin processing.
+
+        Args:
+            event: Enriched QQ message or targeted poke event.
+        """
+        await self.debouncer.capture(event)
+
+    @filter.on_llm_request(priority=-20000)
+    async def bind_debounce_request(
+        self, event: AstrMessageEvent, request: ProviderRequest
+    ) -> None:
+        """Retain the final request for independent input snapshots.
+
+        Args:
+            event: Current QQ event.
+            request: Fully decorated provider request.
+        """
+        self.debouncer.bind_request(event, request)
+
+    @filter.on_agent_begin(priority=-20000)
+    async def snapshot_debounce_input(
+        self, event: AstrMessageEvent, run_context
+    ) -> None:
+        """Snapshot the actual multimodal user message before generation.
+
+        Args:
+            event: Current QQ event.
+            run_context: Initialized AstrBot agent context.
+        """
+        self.debouncer.snapshot(event, run_context)
+
+    @filter.on_using_llm_tool(priority=20000)
+    async def protect_debounce_tool(
+        self, event: AstrMessageEvent, tool, tool_args
+    ) -> None:
+        """Prevent cancellation once tool execution starts.
+
+        Args:
+            event: Current QQ event.
+            tool: Tool about to execute.
+            tool_args: Tool arguments.
+        """
+        self.debouncer.protect(event)
+
+    @filter.on_llm_response(priority=20000)
+    async def protect_debounce_response(
+        self, event: AstrMessageEvent, response
+    ) -> None:
+        """Protect completed generation before history persistence and sending.
+
+        Args:
+            event: Current QQ event.
+            response: Completed model response.
+        """
+        self.debouncer.protect(event)
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def enrich_inbound_qq_components(self, event: AstrMessageEvent) -> None:
@@ -1139,7 +1207,13 @@ class QQEnhancePlugin(Star):
             return
         prompt = request.prompt
         sender_id = str(raw.get("user_id") or event.get_sender_id() or "")
-        if not scope_id or not sender_id or not isinstance(prompt, str) or not prompt:
+        debounced = event.get_extra(ARRIVAL_KEY)
+        if (
+            not scope_id
+            or not sender_id
+            or not isinstance(prompt, str)
+            or (not prompt and not (debounced and debounced.batch))
+        ):
             return
         try:
             history = json.loads(request.conversation.history or "[]")
@@ -1187,8 +1261,13 @@ class QQEnhancePlugin(Star):
             "recalled": False,
             "marked": False,
             "marker": "",
+            "debounced": bool(debounced and debounced.batch),
         }
         event.set_extra("_qq_enhance_recall_key", key)
+        if hasattr(self, "debouncer"):
+            pending = self.debouncer.early_recalls.pop(key, None)
+            if pending is not None and pending[0] > time.monotonic():
+                await self.mark_recalled_message(pending[1])
 
     async def _append_recall_marker(self, entry: dict) -> bool:
         """Append a verified recall marker to one persisted user message.
@@ -1222,7 +1301,48 @@ class QQEnhancePlugin(Star):
             )
             return False
 
+        if entry.get("debounced") and "message_content" not in entry:
+            return False
         marker = entry["marker"]
+        if "message_content" in entry:
+            original = entry["message_content"]
+            marked = mark_content(original, marker)
+            candidates = [
+                (index, item)
+                for index, item in enumerate(history)
+                if isinstance(item, dict)
+                and item.get("role") == "user"
+                and (item.get("content") == original or item.get("content") == marked)
+            ]
+            exact = [
+                item
+                for index, item in candidates
+                if index == entry.get("history_index")
+            ]
+            target = (
+                exact[0]
+                if exact
+                else (
+                    candidates[0][1]
+                    if len(candidates) == 1 and entry.get("history_persisted")
+                    else None
+                )
+            )
+            if target is None:
+                return False
+            if target["content"] == marked:
+                return True
+            target["content"] = marked
+            try:
+                await self.context.conversation_manager.update_conversation(
+                    entry["unified_msg_origin"],
+                    entry["conversation_id"],
+                    history=history,
+                )
+            except Exception:
+                logger.exception("Failed to mark a recalled QQ input in history")
+                return False
+            return True
         prompt = entry["prompt"]
         matches = []
         marked_matches = []
@@ -1323,7 +1443,18 @@ class QQEnhancePlugin(Star):
             str(message_id),
         )
         entry = self.recall_messages.get(key)
-        if entry is None or entry["marked"]:
+        if entry is None:
+            if self.config["debounce"]["enabled"] and hasattr(self, "debouncer"):
+                pending = self.debouncer.early_recalls
+                now = time.monotonic()
+                for old_key, (expires_at, _) in list(pending.items()):
+                    if expires_at <= now:
+                        pending.pop(old_key, None)
+                while len(pending) >= RECALL_TRACK_MAX_ENTRIES:
+                    pending.pop(next(iter(pending)))
+                pending[key] = (now + RECALL_TRACK_TTL_SECONDS, event)
+            return
+        if entry["marked"]:
             return
         if (
             scope_kind == "group"
@@ -1352,6 +1483,16 @@ class QQEnhancePlugin(Star):
             entry["marker"] = f"[该 QQ 消息已在发送后 {duration}被撤回]"
         else:
             entry["marker"] = "[该 QQ 消息已被撤回]"
+        if (
+            "message_content" in entry
+            and (message := entry.get("live_message")) is not None
+        ):
+            message.content = Message.model_validate(
+                {
+                    "role": "user",
+                    "content": mark_content(message.content, entry["marker"]),
+                }
+            ).content
         entry["marked"] = await self._append_recall_marker(entry)
 
     @filter.after_message_sent()
@@ -1383,12 +1524,29 @@ class QQEnhancePlugin(Star):
             _response: Final model response, unused by recall tracking.
         """
 
+        for entry in self.recall_messages.values():
+            message = entry.get("live_message")
+            if (
+                entry["recalled"]
+                and message is not None
+                and any(
+                    message is item for item in getattr(run_context, "messages", [])
+                )
+            ):
+                message.content = Message.model_validate(
+                    {
+                        "role": "user",
+                        "content": mark_content(message.content, entry["marker"]),
+                    }
+                ).content
         key = event.get_extra("_qq_enhance_recall_key")
         if not isinstance(key, tuple):
             return
         self._cleanup_recall_messages()
         entry = self.recall_messages.get(key)
         if entry is None or not entry["recalled"] or entry["marked"]:
+            return
+        if "message_content" in entry:
             return
         for message in reversed(getattr(run_context, "messages", [])):
             if getattr(message, "role", None) != "user":
@@ -1495,6 +1653,11 @@ class QQEnhancePlugin(Star):
                 break
 
         prompt = request.prompt or event.message_str or ""
+        arrival = event.get_extra(ARRIVAL_KEY) if hasattr(event, "get_extra") else None
+        if arrival is not None and len(arrival.batch) > 1:
+            # Tool selection must consider every pending intent, while model
+            # messages themselves remain separate and unchanged.
+            prompt = "\n".join(item.event.message_str or "" for item in arrival.batch)
         notification_tool = ""
         if len(prompt.strip()) <= 16 and not any(
             keyword in prompt for keyword in KEYWORD_TOOLS
@@ -1545,6 +1708,12 @@ class QQEnhancePlugin(Star):
         if notification_tool:
             requested.add(notification_tool)
         message_components = getattr(event.message_obj, "message", [])
+        if arrival is not None and len(arrival.batch) > 1:
+            message_components = [
+                component
+                for item in arrival.batch
+                for component in getattr(item.event.message_obj, "message", [])
+            ]
         if not current_group and any(
             isinstance(component, File) for component in message_components
         ):
@@ -2280,6 +2449,8 @@ class QQEnhancePlugin(Star):
         """Stop cleanup without deleting persistent plugin data."""
 
         notification_tasks = list(self.notification_tasks)
+        if hasattr(self, "debouncer"):
+            await self.debouncer.close()
         for task in notification_tasks:
             task.cancel()
         if notification_tasks:

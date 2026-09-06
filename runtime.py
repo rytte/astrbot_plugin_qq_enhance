@@ -89,6 +89,16 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "admin_user_ids": [],
     },
+    "debounce": {
+        "enabled": True,
+        "initial_window_seconds": 0.0,
+        "followup_window_seconds": 0.0,
+        "max_wait_seconds": 5.0,
+        "max_messages": 8,
+        "max_chars": 3000,
+        "max_buffer_mb": 32,
+        "ignore_prefixes": ["/", "!"],
+    },
     "inbound": {
         "semanticize_components": True,
         "enhance_voice_messages": True,
@@ -346,6 +356,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "blocked_domains"),
         ("events", "enabled_types"),
         ("request_notifications", "admin_user_ids"),
+        ("debounce", "ignore_prefixes"),
     )
     for group, key in list_fields:
         value = result[group][key]
@@ -394,6 +405,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("permissions", "allow_cross_private"),
         ("network", "allow_private_network"),
         ("request_notifications", "enabled"),
+        ("debounce", "enabled"),
         ("inbound", "semanticize_components"),
         ("inbound", "enhance_voice_messages"),
         ("inbound", "respond_to_poke"),
@@ -422,6 +434,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         )
 
     ranges = {
+        ("debounce", "max_messages"): (2, 100),
+        ("debounce", "max_chars"): (1, 100000),
+        ("debounce", "max_buffer_mb"): (1, 256),
         ("confirmation", "ttl_seconds"): (30, 300),
         ("limits", "page_size"): (1, 100),
         ("limits", "max_page_size"): (1, 200),
@@ -439,6 +454,18 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("inbound", "max_semantic_chars"): (256, 8000),
         ("audit", "retention_days"): (7, 365),
     }
+    float_ranges = {
+        ("debounce", "initial_window_seconds"): (0.0, 60.0),
+        ("debounce", "followup_window_seconds"): (0.0, 60.0),
+        ("debounce", "max_wait_seconds"): (0.0, 300.0),
+    }
+    for (group, key), (minimum, maximum) in float_ranges.items():
+        value = result[group][key]
+        if type(value) not in {int, float} or isinstance(value, bool):
+            raise ValueError(f"{group}.{key} 必须是 {minimum}～{maximum} 的数字")
+        if not minimum <= float(value) <= maximum:
+            raise ValueError(f"{group}.{key} 必须是 {minimum}～{maximum} 的数字")
+        result[group][key] = float(value)
     for (group, key), (minimum, maximum) in ranges.items():
         value = result[group][key]
         if type(value) is not int or not minimum <= value <= maximum:
