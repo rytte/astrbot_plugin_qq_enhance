@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + NapCat OneBot v11**，提供 **26 个模型工具、77 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + NapCat OneBot v11**，提供 **29 个模型工具、80 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 工具会根据平台、会话、调用者权限和请求内容动态选择。指定操作需要用户发送确认命令后才会执行。
 
@@ -37,6 +37,7 @@
 | 消息防抖 | 连续输入时取消尚未产生回复的生成，将前条完整输入保存为独立用户历史，保留附件和撤回定位，支持全部消息类型 |
 | 语音识别 | AstrBot 未生成语音转写时，自动调用 NapCat 补充识别 |
 | 组件防伪 | 标记用户用普通文字伪装的红包、语音、骰子等组件，并根据真实消息结构提供可信类型清单，帮助模型区分真实组件与伪装文字 |
+| 网页阅读 | 安全读取公开网页、按行续读和页内查找，网页快照按原调用者与会话隔离 |
 | 事件通知 | 可将好友申请、入群申请和群邀请私聊通知指定管理员账号 |
 | 管理与诊断 | 按权限开放工具，支持操作确认、审计记录，以及 WebUI 状态与诊断页面 |
 
@@ -187,6 +188,38 @@ assistant：……
 
 接收账号必须能够收到机器人的私聊。需要回复“通过”或“拒绝”来处理申请的账号，还必须已被设为 **AstrBot 管理员**；填写通知名单不会授予权限。开启通知时，名单不能为空。
 
+### 网页阅读
+
+网页阅读提供三个只读工具，支持读取公开网页、按行续读和页内查找。网页通过 HTTP 下载，并使用 Trafilatura 在本地提取正文，无需第三方网页解析 API。使用前需安装 `requirements.txt` 中的依赖。
+
+| 工具 | 参数 | 作用 |
+| --- | --- | --- |
+| `read_url` | url | 读取公开 HTML 或纯文本，返回正文首段和 page_id |
+| `read_page_section` | page_id、start_line=1、line_count=20 | 继续阅读同一份快照，最多请求 100 行 |
+| `find_in_page` | page_id、keyword、start_line=1、max_matches=5 | 不区分大小写的字面量查找，最多返回 10 个匹配行及附近正文 |
+
+可直接说“读取这个链接并总结”“继续读”或“在网页里找安装步骤”。工具直接接受表中参数，无需 `operation/params` 包装，可与内置搜索配合使用。
+
+正文按行返回（从 1 开始，每行最多 160 字符），附网址、标题和抓取时间。使用 `page_id` 和 `next_start_line` 续读，返回量受 `limits.max_output_chars` 限制。
+
+网页缓存在内存中，按平台实例、机器人账号、调用者和会话隔离，续读和查找不联网。缓存过期、被淘汰或插件重载后需重新读取；重读同一网址会生成新快照。
+
+| 配置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `web_reader.enabled` | `true` | 网页阅读总开关；关闭后隐藏并禁用三个网页工具，不影响内置搜索或 QQ 功能 |
+| `web_reader.cache_ttl_seconds` | 900 | 快照有效期（秒） |
+| `web_reader.max_cached_pages` | 32 | 全插件最多缓存的网页数 |
+| `web_reader.max_cache_mb` | 16 | 缓存容量上限（MiB） |
+| `web_reader.max_download_size_mb` | 2 | 单页解压后下载上限（MiB），与 `network.max_download_size_mb` 取较小值 |
+| `web_reader.max_text_chars` | 200000 | 单页正文字符上限 |
+| `web_reader.max_concurrent_requests` | 2 | 抓取与解析的并发上限 |
+
+抓取与解析共用 `network.timeout_seconds` 超时预算，并发已满时拒绝新请求。
+
+网页工具属于 `web` 能力包。在 `toolsets.disabled_operations` 中填写 `read_url.read`、`read_page_section.read` 或 `find_in_page.find` 可分别禁用。它们不支持二次确认，不能加入 `confirmation.operations`。
+
+仅读取静态正文，不支持 PDF、图片 OCR、登录、验证码、JavaScript 渲染、截图或整站爬取。登录页和动态页面可能无法读全；下载不完整、正文超限或提取失败时返回错误，不以搜索摘要代替原文。网页内容视为不可信资料，不授予 QQ 操作权限。
+
 ### 操作范围与保留期
 
 | 配置 | WebUI 初始值 | 作用 |
@@ -195,11 +228,13 @@ assistant：……
 | `permissions.allow_group_admin` / `allow_group_owner` | `true` | 允许当前群管理员、群主使用相应群管理能力 |
 | `permissions.allow_cross_group` / `allow_cross_private` | `true` | 允许 AstrBot 管理员在校验目标后跨群、跨好友操作 |
 | `confirmation.ttl_seconds` | `120` 秒 | 待确认操作的有效期 |
-| `network.allow_private_network` | `true` | 允许插件请求私网或其他非公网地址 |
+| `network.allow_private_network` | `false` | 允许插件请求私网或其他非公网地址 |
 | `events.retention_days` | `15` 天 | 请求与通知事件的保留期 |
 | `audit.retention_days` | `30` 天 | 操作审计的保留期 |
 
 完整字段、取值范围与说明见 [_conf_schema.json](./_conf_schema.json)。配置会严格校验字段、类型、枚举和操作名称，错误配置会阻止插件加载。
+
+network.allow_private_network 的 WebUI 和运行时默认值均为 false。更新默认值不会覆盖已经显式保存的 true；已有安装如需禁止私网访问，请在 WebUI 将该项设为 false 后重载插件。
 
 <a id="permissions"></a>
 
@@ -281,10 +316,13 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 ## 📚 详细参考
 
 <details>
-<summary>全部 26 个模型工具</summary>
+<summary>全部 29 个模型工具</summary>
 
 | 工具 | 主要能力 |
 | --- | --- |
+| `read_url` | 读取公开网页正文并建立隔离快照 |
+| `read_page_section` | 按行继续阅读已缓存网页 |
+| `find_in_page` | 在网页快照内查找字面量关键词 |
 | `qq_status` | 登录、运行、版本、客户端、插件能力目录 |
 | `qq_account_manage` | 修改账号资料、头像、在线状态 |
 | `qq_user_info` | 陌生人资料、群成员资料 |
@@ -398,7 +436,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 ## 🛠️ 开发验证
 
-准备可导入 AstrBot 的开发环境，并安装 Ruff、pytest 及测试所需依赖后，在插件根目录运行：
+准备可导入 AstrBot 的开发环境，先安装 requirements.txt 中的插件依赖，以及 Ruff、pytest、pytest-asyncio 后，在插件根目录运行：
 
 ```sh
 ruff format --check .
@@ -407,5 +445,7 @@ pytest -q
 ```
 
 测试覆盖能力目录与契约、配置校验、权限与跨会话限制、确认绑定与单次使用、文件和消息处理、工具选择、入站组件、申请通知、撤回上下文和诊断页面。防抖测试包含独立用户历史、多媒体与特殊输入、预处理顺序、重复文本撤回、历史写入失败、任务取消及 AstrBot 真实 Agent 运行器的取消传播。
+
+网页测试覆盖正文提取、中文编码、不可变快照、分页完整性、字面量查找、缓存隔离与过期、并发与取消、重定向校验、连接时 DNS 检查、压缩响应超限、部分响应及文件下载回归。HTTP 测试只使用本机临时服务器，不依赖外部站点。
 
 NapCat 接口契约基线为 4.18.19。单元测试覆盖插件逻辑，QQ 实际行为还受账号权限、NapCat 版本及服务端能力影响。涉及删除、踢人或退群的实机验证，请使用专门的测试账号与测试群。

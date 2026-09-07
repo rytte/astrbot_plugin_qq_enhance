@@ -9,7 +9,7 @@
 | 项目 | 数量 |
 |---|---:|
 | NapCat 已注册动作 | 177 |
-| 插件公开能力 | 26 个工具、77 个操作 |
+| 插件公开能力 | 29 个工具、80 个操作 |
 | 插件覆盖的 NapCat 动作 | 72 |
 
 统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 67 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
@@ -207,8 +207,13 @@
 
 ## 插件公开工具与操作
 
+网页阅读的三个工具为本地能力，不调用 NapCat 动作。它们直接接受工具参数；表中的 read/find 是配置和审计使用的内部操作名，不需要模型额外传入 operation。
+
 | 工具 | 公开操作 | 对应 NapCat 动作或实现 |
 |---|---|---|
+| `read_url` | read | 本地受控 HTTP(S) 下载与正文提取 |
+| `read_page_section` | read | 原调用者、原会话的网页快照分段读取 |
+| `find_in_page` | find | 网页快照的字面量关键词查找 |
 | `qq_status` | `login`、`runtime`、`version`、`clients`、`capabilities` | `get_login_info`<br>`get_online_clients`<br>`get_status`<br>`get_version_info`<br>本地编排：`capabilities` |
 | `qq_account_manage` | `set_profile`、`set_avatar`、`set_online_status` | `set_online_status`<br>`set_qq_avatar`<br>`set_qq_profile` |
 | `qq_user_info` | `stranger`、`group_member` | `get_group_member_info`<br>`get_stranger_info` |

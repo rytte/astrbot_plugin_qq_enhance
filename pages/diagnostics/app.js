@@ -8,6 +8,7 @@ const categoryLabels = {
   message: "消息",
   media: "媒体",
   file: "文件",
+  web: "网页阅读",
 };
 const riskLabels = {
   read: "读取",

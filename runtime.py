@@ -12,6 +12,7 @@ import socket
 import stat
 import time
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -46,11 +47,11 @@ DEFAULT_CONFIG = {
     "permissions": {
         "allow_group_admin": True,
         "allow_group_owner": True,
-        "allow_cross_group": False,
-        "allow_cross_private": False,
+        "allow_cross_group": True,
+        "allow_cross_private": True,
     },
     "confirmation": {
-        "ttl_seconds": 60,
+        "ttl_seconds": 120,
         "operations": [
             "qq_friend_manage.delete",
             "qq_group_files.rmdir",
@@ -84,7 +85,16 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 30,
         "max_download_size_mb": 100,
     },
-    "events": {"enabled_types": [], "retention_days": 30},
+    "web_reader": {
+        "enabled": True,
+        "cache_ttl_seconds": 900,
+        "max_cached_pages": 32,
+        "max_cache_mb": 16,
+        "max_download_size_mb": 2,
+        "max_text_chars": 200000,
+        "max_concurrent_requests": 2,
+    },
+    "events": {"enabled_types": [], "retention_days": 15},
     "request_notifications": {
         "enabled": False,
         "admin_user_ids": [],
@@ -118,7 +128,7 @@ DEFAULT_CONFIG = {
         "mark_recalled_messages": True,
         "max_semantic_chars": 2000,
     },
-    "audit": {"retention_days": 90},
+    "audit": {"retention_days": 30},
 }
 
 CONFIG_KEYS = {key: set(value) for key, value in DEFAULT_CONFIG.items()}
@@ -296,6 +306,16 @@ class _ValidatedResolver(aiohttp.abc.AbstractResolver):
         """Close the stateless resolver."""
 
 
+@dataclass(frozen=True, slots=True)
+class DownloadedResource:
+    """Describe a bounded download and its final response metadata."""
+
+    path: Path
+    url: str
+    content_type: str
+    charset: str | None
+
+
 def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     """Validate the plugin's only supported configuration format.
 
@@ -398,12 +418,21 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
                 f"{group}.{key} 包含未知操作: {', '.join(sorted(unknown))}"
             )
 
+    if any(
+        OPERATION_MAP[name].category == "web"
+        for name in result["confirmation"]["operations"]
+    ):
+        raise ValueError(
+            "网页只读工具不支持二次确认；请通过能力包或 disabled_operations 控制开放"
+        )
+
     bool_fields = (
         ("permissions", "allow_group_admin"),
         ("permissions", "allow_group_owner"),
         ("permissions", "allow_cross_group"),
         ("permissions", "allow_cross_private"),
         ("network", "allow_private_network"),
+        ("web_reader", "enabled"),
         ("request_notifications", "enabled"),
         ("debounce", "enabled"),
         ("inbound", "semanticize_components"),
@@ -434,6 +463,12 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         )
 
     ranges = {
+        ("web_reader", "cache_ttl_seconds"): (30, 86400),
+        ("web_reader", "max_cached_pages"): (1, 256),
+        ("web_reader", "max_cache_mb"): (1, 128),
+        ("web_reader", "max_download_size_mb"): (1, 16),
+        ("web_reader", "max_text_chars"): (1000, 1000000),
+        ("web_reader", "max_concurrent_requests"): (1, 8),
         ("debounce", "max_messages"): (2, 100),
         ("debounce", "max_chars"): (1, 100000),
         ("debounce", "max_buffer_mb"): (1, 256),
@@ -538,6 +573,8 @@ class QQRuntime:
         """
 
         spec = OPERATION_MAP[operation_id]
+        if spec.category == "web" and not self.config["web_reader"]["enabled"]:
+            return False
         packs = self.config["toolsets"]["enabled_packs"]
         if packs and spec.category not in packs:
             return False
@@ -2286,33 +2323,87 @@ class QQRuntime:
         return path
 
     async def download_url(self, raw_url: str, owner_id: str) -> Path:
+        """Download media through the shared safe HTTP transport.
+
+        Args:
+            raw_url: Remote HTTP(S) resource.
+            owner_id: Caller owning the resulting media reference.
+
+        Returns:
+            Registered plugin-owned file path.
+        """
+
+        resource = await self.fetch_url(raw_url)
+        try:
+            await self.storage.add_media_ref(
+                secrets.token_hex(12),
+                owner_id,
+                "download",
+                resource.path,
+                int(time.time()) + self.config["files"]["temp_ttl_seconds"],
+            )
+        except BaseException:
+            resource.path.unlink(missing_ok=True)
+            raise
+        return resource.path
+
+    async def fetch_url(
+        self,
+        raw_url: str,
+        *,
+        maximum_bytes: int | None = None,
+        content_types: frozenset[str] | None = None,
+    ) -> DownloadedResource:
         """Download an HTTP(S) URL with DNS, redirect, and size validation.
 
         Args:
             raw_url: Untrusted remote URL.
-            owner_id: Caller ID owning the resulting media reference.
+            maximum_bytes: Optional stricter decoded response size limit.
+            content_types: Optional allowlist of response media types.
 
         Returns:
-            Plugin-owned downloaded file path.
+            Download metadata; the caller must delete or register the file.
 
         Raises:
             QQToolError: If URL or response violates the configured boundary.
         """
 
-        timeout = aiohttp.ClientTimeout(total=self.config["network"]["timeout_seconds"])
+        seconds = self.config["network"]["timeout_seconds"]
+        timeout = aiohttp.ClientTimeout(total=seconds)
+        deadline = asyncio.get_running_loop().time() + seconds
+        maximum = self.config["network"]["max_download_size_mb"] * 1048576
+        if maximum_bytes is not None:
+            maximum = min(maximum, maximum_bytes)
         current = raw_url
         connector = aiohttp.TCPConnector(
             resolver=_ValidatedResolver(self.config["network"]["allow_private_network"])
         )
         async with aiohttp.ClientSession(
-            timeout=timeout, trust_env=False, connector=connector
+            timeout=timeout,
+            trust_env=False,
+            connector=connector,
+            cookie_jar=aiohttp.DummyCookieJar(),
         ) as session:
             for _ in range(6):
-                await self.validate_url(current)
                 try:
-                    response = await session.get(current, allow_redirects=False)
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    raise QQToolError("network_error", "下载媒体失败") from exc
+                    await asyncio.wait_for(
+                        self.validate_url(current),
+                        timeout=max(
+                            0.001, deadline - asyncio.get_running_loop().time()
+                        ),
+                    )
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    response = await session.get(
+                        current,
+                        allow_redirects=False,
+                        timeout=aiohttp.ClientTimeout(total=remaining),
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise QQToolError("timeout", "资源下载超时") from exc
+                except aiohttp.ClientError as exc:
+                    raise QQToolError("network_error", "资源下载失败") from exc
                 async with response:
                     if response.status in {301, 302, 303, 307, 308}:
                         location = response.headers.get("Location")
@@ -2324,7 +2415,20 @@ class QQRuntime:
                         raise QQToolError(
                             "network_error", f"下载返回 HTTP {response.status}"
                         )
-                    maximum = self.config["network"]["max_download_size_mb"] * 1048576
+                    if content_types is not None and (
+                        response.status == 206 or "Content-Range" in response.headers
+                    ):
+                        raise QQToolError(
+                            "partial_response", "服务器仅返回部分网页，未生成完整快照"
+                        )
+                    if (
+                        content_types is not None
+                        and response.content_type not in content_types
+                    ):
+                        raise QQToolError(
+                            "unsupported_content_type",
+                            "仅支持 HTML 和纯文本网页，不支持此响应类型",
+                        )
                     content_length = response.headers.get("Content-Length")
                     if content_length:
                         try:
@@ -2333,6 +2437,10 @@ class QQRuntime:
                             raise QQToolError(
                                 "response_invalid", "下载响应的 Content-Length 无效"
                             ) from exc
+                        if declared_size < 0:
+                            raise QQToolError(
+                                "response_invalid", "下载响应的 Content-Length 无效"
+                            )
                         if declared_size > maximum:
                             raise QQToolError(
                                 "invalid_parameters", "下载文件超过配置上限"
@@ -2363,17 +2471,21 @@ class QQRuntime:
                                         "invalid_parameters", "下载文件超过配置上限"
                                     )
                                 output.write(chunk)
-                    except Exception:
+                    except BaseException as exc:
                         path.unlink(missing_ok=True)
+                        if isinstance(exc, asyncio.TimeoutError):
+                            raise QQToolError("timeout", "资源下载超时") from exc
+                        if isinstance(exc, aiohttp.ClientError):
+                            raise QQToolError(
+                                "network_error", "响应正文下载失败"
+                            ) from exc
                         raise
-                    await self.storage.add_media_ref(
-                        secrets.token_hex(12),
-                        owner_id,
-                        "download",
+                    return DownloadedResource(
                         path,
-                        int(time.time()) + self.config["files"]["temp_ttl_seconds"],
+                        str(response.url),
+                        response.content_type,
+                        response.charset,
                     )
-                    return path
             raise QQToolError("network_error", "下载重定向次数超过 5 次")
 
     async def validate_url(self, raw_url: str, *, resolve_dns: bool = True) -> None:
@@ -2389,7 +2501,11 @@ class QQRuntime:
             QQToolError: If any URL or resolved address is forbidden.
         """
 
-        parsed = urlsplit(raw_url)
+        try:
+            parsed = urlsplit(raw_url)
+            port = parsed.port
+        except ValueError as exc:
+            raise QQToolError("invalid_parameters", "URL 的主机或端口格式无效") from exc
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise QQToolError("invalid_parameters", "只允许带域名的 HTTP(S) URL")
         if parsed.username or parsed.password:
@@ -2420,7 +2536,7 @@ class QQRuntime:
         try:
             addresses = await asyncio.get_running_loop().getaddrinfo(
                 hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
+                port or (443 if parsed.scheme == "https" else 80),
                 type=socket.SOCK_STREAM,
             )
         except socket.gaierror as exc:

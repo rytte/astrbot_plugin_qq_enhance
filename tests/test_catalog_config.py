@@ -30,12 +30,73 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert set(TOOL_OPERATIONS) == {item.tool for item in OPERATIONS}
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
     assert all(item.display_name.strip() for item in OPERATIONS)
-    assert len(TOOL_OPERATIONS) == 26
+    assert len(TOOL_OPERATIONS) == 29
 
 
 def test_version_range_is_explicit() -> None:
     assert NAPCAT_MIN_VERSION == (4, 18, 19)
     assert NAPCAT_MAX_VERSION == (5, 0, 0)
+
+
+@pytest.mark.parametrize("config", [None, {}])
+def test_all_runtime_defaults_match_webui_schema(config) -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    pending = [("", schema, validate_config(config))]
+    while pending:
+        prefix, items, defaults = pending.pop()
+        assert set(items) == set(defaults), prefix
+        for name, item in items.items():
+            path = f"{prefix}.{name}" if prefix else name
+            if item["type"] == "object":
+                assert item["default"] == {}, path
+                assert isinstance(defaults[name], dict), path
+                pending.append((path, item["items"], defaults[name]))
+            else:
+                assert type(item["default"]) is type(defaults[name]), path
+                assert item["default"] == defaults[name], path
+
+
+def test_web_reader_defaults_and_private_network_default_match_schema() -> None:
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    defaults = validate_config(None)
+    assert defaults["web_reader"]["enabled"] is True
+    assert defaults["network"]["allow_private_network"] is False
+    assert schema["network"]["items"]["allow_private_network"]["default"] is False
+    assert {
+        key: value["default"] for key, value in schema["web_reader"]["items"].items()
+    } == defaults["web_reader"]
+    assert (
+        validate_config({"network": {"allow_private_network": True}})["network"][
+            "allow_private_network"
+        ]
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"web_reader": {"cache_ttl_seconds": 0}},
+        {"web_reader": {"max_cached_pages": True}},
+        {"web_reader": {"max_cache_mb": "16"}},
+        {"web_reader": {"max_download_size_mb": 17}},
+        {"web_reader": {"max_text_chars": 0}},
+        {"web_reader": {"max_concurrent_requests": 0}},
+        {"web_reader": {"unknown": True}},
+        {"confirmation": {"operations": ["read_url.read"]}},
+    ],
+)
+def test_web_reader_invalid_config_is_rejected(config) -> None:
+    with pytest.raises(ValueError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", [], {}])
+def test_web_reader_switch_rejects_non_boolean_values(value) -> None:
+    with pytest.raises(ValueError, match=r"web_reader\.enabled 必须是布尔值"):
+        validate_config({"web_reader": {"enabled": value}})
 
 
 def test_default_confirmation_operations_are_explicit() -> None:
@@ -144,7 +205,10 @@ def test_valid_config_preserves_explicit_values() -> None:
     result = validate_config(
         {
             "toolsets": {"exposure_mode": "compact", "enabled_packs": ["group"]},
-            "confirmation": {"ttl_seconds": 120},
+            "permissions": {"allow_cross_group": False, "allow_cross_private": False},
+            "confirmation": {"ttl_seconds": 60},
+            "events": {"retention_days": 30},
+            "audit": {"retention_days": 90},
             "request_notifications": {
                 "enabled": True,
                 "admin_user_ids": ["10001"],
@@ -153,7 +217,11 @@ def test_valid_config_preserves_explicit_values() -> None:
     )
     assert result["toolsets"]["exposure_mode"] == "compact"
     assert "admin_users" not in result["permissions"]
-    assert result["confirmation"]["ttl_seconds"] == 120
+    assert result["permissions"]["allow_cross_group"] is False
+    assert result["permissions"]["allow_cross_private"] is False
+    assert result["confirmation"]["ttl_seconds"] == 60
+    assert result["events"]["retention_days"] == 30
+    assert result["audit"]["retention_days"] == 90
     assert result["confirmation"]["operations"]
     assert result["request_notifications"] == {
         "enabled": True,

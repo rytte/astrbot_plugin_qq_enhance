@@ -79,8 +79,9 @@ def test_plugin_registers_read_only_diagnostics_api(tmp_path) -> None:
             "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
             return_value=str(tmp_path),
         ),
-        patch("astrbot_plugin_qq_enhance.main.QQRuntime"),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
     ):
+        runtime_factory.return_value.config = validate_config(None)
         plugin = QQEnhancePlugin(context)
 
     context.register_web_api.assert_called_once()

@@ -27,7 +27,7 @@
       "enabled_packs": {
         "type": "list",
         "description": "启用的能力包",
-        "hint": "留空表示全部能力包。可填写 status、account、friend、group、message、media、file、request。",
+        "hint": "留空表示全部能力包。可填写 status、account、friend、group、message、media、file、request、web。",
         "default": []
       },
       "disabled_operations": {
@@ -264,6 +264,20 @@
       "retention_days": {"type": "int", "description": "审计保留天数", "default": 30, "minimum": 7, "maximum": 365}
     }
   },
+  "web_reader": {
+    "type": "object",
+    "description": "网页阅读",
+    "default": {},
+    "items": {
+      "enabled": {"type": "bool", "description": "启用网页阅读", "hint": "关闭后隐藏并禁用本插件的三个网页工具，不影响内置搜索或 QQ 功能。", "default": true},
+      "cache_ttl_seconds": {"type": "int", "description": "网页快照有效期（秒）", "default": 900, "minimum": 30, "maximum": 86400},
+      "max_cached_pages": {"type": "int", "description": "最多缓存网页数", "default": 32, "minimum": 1, "maximum": 256},
+      "max_cache_mb": {"type": "int", "description": "网页缓存上限（MiB）", "default": 16, "minimum": 1, "maximum": 128},
+      "max_download_size_mb": {"type": "int", "description": "单页下载上限（MiB）", "hint": "与 network.max_download_size_mb 取较小值，按解压后的响应计量。", "default": 2, "minimum": 1, "maximum": 16},
+      "max_text_chars": {"type": "int", "description": "单页正文字符上限", "default": 200000, "minimum": 1000, "maximum": 1000000},
+      "max_concurrent_requests": {"type": "int", "description": "网页抓取与解析并发上限", "default": 2, "minimum": 1, "maximum": 8}
+    }
+  },
   "limits": {
     "type": "object",
     "description": "输出与消息限制",
@@ -296,7 +310,7 @@
     "items": {
       "allowed_domains": {"type": "list", "description": "允许的域名；留空表示不额外限制公网域名", "default": []},
       "blocked_domains": {"type": "list", "description": "禁止的域名", "default": []},
-      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": true},
+      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": false},
       "timeout_seconds": {"type": "int", "description": "下载总超时（秒）", "default": 30, "minimum": 3, "maximum": 180},
       "max_download_size_mb": {"type": "int", "description": "下载上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048}
     }

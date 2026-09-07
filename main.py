@@ -43,6 +43,7 @@ from .inbound import (
 )
 from .runtime import QQRuntime, QQToolError, validate_config
 from .storage import Storage
+from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, WebReader
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
@@ -164,6 +165,15 @@ def _format_audit_rows(rows: list[dict]) -> str:
         "timeout": "超时",
         "response_invalid": "响应无效",
         "internal_error": "内部错误",
+        "page_unavailable": "页面不可用",
+        "content_unavailable": "没有有效正文",
+        "unsupported_content_type": "不支持的网页类型",
+        "partial_response": "网页响应不完整",
+        "invalid_encoding": "网页编码无效",
+        "content_too_large": "正文超过上限",
+        "cache_limit": "缓存容量不足",
+        "output_limit": "输出预算不足",
+        "busy": "网页处理繁忙",
     }
     entries = []
     for index, row in enumerate(rows, 1):
@@ -219,6 +229,7 @@ class QQEnhancePlugin(Star):
         data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
+        self.web_reader = WebReader(self.runtime)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
@@ -246,6 +257,10 @@ class QQEnhancePlugin(Star):
             ]
             if not enabled_operations:
                 tool.active = False
+                continue
+            if tool_name in WEB_TOOL_NAMES:
+                tool.description = TOOL_DESCRIPTIONS[tool_name]
+                tool.parameters = deepcopy(WEB_TOOL_SCHEMAS[tool_name])
                 continue
             details = []
             for operation in enabled_operations:
@@ -716,6 +731,7 @@ class QQEnhancePlugin(Star):
         while True:
             try:
                 await self.runtime.cleanup()
+                self.web_reader.cleanup()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1586,7 +1602,7 @@ class QQEnhancePlugin(Star):
     async def select_tools(
         self, event: AstrMessageEvent, request: ProviderRequest
     ) -> None:
-        """Prune only the current request's QQ tool set.
+        """Prune only this plugin's request-local tool set.
 
         Args:
             event: Current message event.
@@ -1595,9 +1611,9 @@ class QQEnhancePlugin(Star):
 
         if request.func_tool is None:
             return
-        qq_tools = set(TOOL_OPERATIONS)
+        plugin_tools = set(TOOL_OPERATIONS)
         if event.get_platform_name() != "aiocqhttp":
-            for tool_name in qq_tools:
+            for tool_name in plugin_tools:
                 request.func_tool.remove_tool(tool_name)
             return
 
@@ -1707,6 +1723,34 @@ class QQEnhancePlugin(Star):
                 requested.update(tool_names)
         if notification_tool:
             requested.add(notification_tool)
+        if re.search(r"https?://", prompt, re.IGNORECASE):
+            requested.update(WEB_TOOL_NAMES)
+        for context_item in request.contexts[-12:]:
+            if not isinstance(context_item, dict):
+                continue
+            calls = context_item.get("tool_calls") or []
+            if any(
+                isinstance(call, dict)
+                and isinstance(call.get("function"), dict)
+                and call["function"].get("name") in WEB_TOOL_NAMES
+                for call in calls
+            ):
+                requested.update(WEB_TOOL_NAMES)
+                break
+            if context_item.get("role") == "tool":
+                content = context_item.get("content")
+                if isinstance(content, str):
+                    try:
+                        result = json.loads(content)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(result, dict) and result.get("operation") in {
+                        "read_url.read",
+                        "read_page_section.read",
+                        "find_in_page.find",
+                    }:
+                        requested.update(WEB_TOOL_NAMES)
+                        break
         message_components = getattr(event.message_obj, "message", [])
         if arrival is not None and len(arrival.batch) > 1:
             message_components = [
@@ -1759,12 +1803,22 @@ class QQEnhancePlugin(Star):
                 maximum = 10
             ordered = sorted(
                 selected & visible,
-                key=lambda name: (name not in requested, name),
+                key=lambda name: (
+                    name not in requested,
+                    name not in WEB_TOOL_NAMES,
+                    name,
+                ),
             )
             visible &= set(ordered[:maximum])
         visible &= self.runtime.enabled_tools()
-        for tool_name in qq_tools - visible:
+        for tool_name in plugin_tools - visible:
             request.func_tool.remove_tool(tool_name)
+        if visible & WEB_TOOL_NAMES and WEB_READER_PROMPT not in (
+            request.system_prompt or ""
+        ):
+            request.system_prompt = (
+                f"{request.system_prompt or ''}\n{WEB_READER_PROMPT}\n"
+            )
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def capture_onebot_event(self, event: AstrMessageEvent) -> None:
@@ -2445,10 +2499,76 @@ class QQEnhancePlugin(Star):
 
         return await self.runtime.execute(event, "qq_notice", operation, params)
 
+    @filter.llm_tool(name="read_url")
+    async def read_url(self, event: AstrMessageEvent, url: str) -> str:
+        """读取公开网页正文并返回首段和页面引用。
+
+        Args:
+            url(string): 用户指定的 HTTP(S) 网页地址。
+        """
+
+        return await self.web_reader.execute(event, "read_url", {"url": url})
+
+    @filter.llm_tool(name="read_page_section")
+    async def read_page_section(
+        self,
+        event: AstrMessageEvent,
+        page_id: str,
+        start_line: int = 1,
+        line_count: int = 20,
+    ) -> str:
+        """按行继续读取当前调用者在当前会话的网页快照。
+
+        Args:
+            page_id(string): read_url 返回的页面引用。
+            start_line(number): 起始行号，从 1 开始，优先使用 next_start_line。
+            line_count(number): 本次最多读取的行数，默认 20，最大 100。
+        """
+
+        return await self.web_reader.execute(
+            event,
+            "read_page_section",
+            {
+                "page_id": page_id,
+                "start_line": start_line,
+                "line_count": line_count,
+            },
+        )
+
+    @filter.llm_tool(name="find_in_page")
+    async def find_in_page(
+        self,
+        event: AstrMessageEvent,
+        page_id: str,
+        keyword: str,
+        start_line: int = 1,
+        max_matches: int = 5,
+    ) -> str:
+        """在网页快照中查找字面量关键词，并返回匹配行附近的正文。
+
+        Args:
+            page_id(string): read_url 返回的页面引用。
+            keyword(string): 不区分大小写的字面量关键词，不是正则表达式。
+            start_line(number): 从该行开始查找，默认 1。
+            max_matches(number): 最多返回的匹配行数，默认 5，最大 10。
+        """
+
+        return await self.web_reader.execute(
+            event,
+            "find_in_page",
+            {
+                "page_id": page_id,
+                "keyword": keyword,
+                "start_line": start_line,
+                "max_matches": max_matches,
+            },
+        )
+
     async def terminate(self) -> None:
         """Stop cleanup without deleting persistent plugin data."""
 
         notification_tasks = list(self.notification_tasks)
+        await self.web_reader.close()
         if hasattr(self, "debouncer"):
             await self.debouncer.close()
         for task in notification_tasks:

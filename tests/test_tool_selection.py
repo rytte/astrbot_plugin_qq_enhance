@@ -12,6 +12,11 @@ from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
+from astrbot_plugin_qq_enhance.web_reader import (
+    WEB_READER_PROMPT,
+    WEB_TOOL_NAMES,
+    WEB_TOOL_SCHEMAS,
+)
 
 
 class SelectionEvent:
@@ -75,8 +80,9 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
         return True
 
 
+@pytest.mark.parametrize("web_enabled", [True, False])
 @pytest.mark.asyncio
-async def test_initialize_uses_registered_tool_manager_api() -> None:
+async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     manager = FunctionToolManager()
     for tool_name in TOOL_OPERATIONS:
@@ -90,21 +96,31 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     plugin.context = SimpleNamespace(
         provider_manager=SimpleNamespace(llm_tools=manager)
     )
-    plugin.config = validate_config(None)
+    plugin.config = validate_config({"web_reader": {"enabled": web_enabled}})
     plugin.storage = SimpleNamespace(initialize=AsyncMock())
-    plugin.runtime = SimpleNamespace(
-        operation_enabled=lambda _operation_id: True,
-        cleanup=AsyncMock(),
-    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    plugin.runtime.cleanup = AsyncMock()
     plugin.cleanup_task = None
     plugin.notification_tasks = set()
     plugin.notification_locks = {}
     plugin.recall_messages = {}
+    plugin.web_reader = SimpleNamespace(cleanup=lambda: None, close=AsyncMock())
 
     await plugin.initialize()
 
     plugin.storage.initialize.assert_awaited_once()
     assert all(manager.get_func(tool_name) is not None for tool_name in TOOL_OPERATIONS)
+    for name in WEB_TOOL_NAMES:
+        tool = manager.get_func(name)
+        assert tool.active is web_enabled
+        if web_enabled:
+            assert tool.parameters == WEB_TOOL_SCHEMAS[name]
+            assert "operation" not in tool.parameters["properties"]
+    assert all(
+        manager.get_func(name).active
+        for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES
+    )
     send_tool = manager.get_func("qq_send_message")
     params_schema = send_tool.parameters["properties"]["params"]
     params_description = params_schema["description"]
@@ -145,6 +161,97 @@ async def test_initialize_uses_registered_tool_manager_api() -> None:
     assert '{"message_id":正整数}' in forward_description
     assert "不得使用 type、data、name、uin 或 content 包装" in forward_description
     await plugin.terminate()
+
+
+@pytest.mark.parametrize("web_enabled", [True, False])
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+@pytest.mark.parametrize(
+    "contexts",
+    [
+        [],
+        [
+            {
+                "role": "tool",
+                "content": '{"ok":true,"operation":"read_url.read","data":{"page_id":"example"}}',
+            }
+        ],
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "read_url", "arguments": "{}"}}],
+            }
+        ],
+    ],
+)
+@pytest.mark.asyncio
+async def test_web_switch_controls_tools_for_urls_and_followups(
+    web_enabled, mode, contexts
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {
+            "toolsets": {"exposure_mode": mode},
+            "web_reader": {"enabled": web_enabled},
+        }
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    request = ProviderRequest(
+        prompt="接着说" if contexts else "读取 HTTPS://example.test/article",
+        contexts=contexts,
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in [
+                    *TOOL_OPERATIONS,
+                    "web_search_tavily",
+                    "tavily_extract_web_page",
+                ]
+            ]
+        ),
+    )
+    await plugin.select_tools(SelectionEvent(), request)
+    remaining = {tool.name for tool in request.func_tool.tools}
+    assert remaining & WEB_TOOL_NAMES == (WEB_TOOL_NAMES if web_enabled else set())
+    assert (WEB_READER_PROMPT in (request.system_prompt or "")) is web_enabled
+    assert {"web_search_tavily", "tavily_extract_web_page", "qq_send_message"} <= remaining
+    if mode != "full":
+        assert len(remaining & set(TOOL_OPERATIONS)) <= (10 if mode == "compact" else 15)
+
+
+@pytest.mark.asyncio
+async def test_web_pack_restriction_preserves_unrelated_builtin_tools() -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {
+            "toolsets": {
+                "enabled_packs": ["web"],
+                "disabled_operations": ["find_in_page.find"],
+            }
+        }
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    request = ProviderRequest(
+        prompt="读取 https://example.test",
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in [
+                    *TOOL_OPERATIONS,
+                    "web_search_tavily",
+                    "tavily_extract_web_page",
+                ]
+            ]
+        ),
+    )
+    await plugin.select_tools(SelectionEvent(), request)
+    assert {tool.name for tool in request.func_tool.tools} == {
+        "read_url",
+        "read_page_section",
+        "web_search_tavily",
+        "tavily_extract_web_page",
+    }
 
 
 @pytest.mark.asyncio
