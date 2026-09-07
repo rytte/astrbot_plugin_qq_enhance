@@ -123,6 +123,12 @@
         "hint": "首条消息按等待窗口配置进入模型；同一会话、同一用户继续输入时，取消尚未执行工具或进入流式发送的生成，将前条完整输入保存为独立历史消息。支持所有能进入 AstrBot 本地 Agent 的 QQ 输入。",
         "default": true
       },
+      "shared_group": {
+        "type": "bool",
+        "description": "群聊共用防抖",
+        "hint": "开启后，同一群聊中不同用户的连续输入也会共用防抖；私聊仍按用户隔离。",
+        "default": true
+      },
       "initial_window_seconds": {
         "type": "float",
         "description": "首条消息等待窗口（秒）",

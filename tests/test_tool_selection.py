@@ -559,6 +559,26 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_group_management_prompt_exposes_group_manage_tool() -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    tools = [
+        FunctionTool(name=name, description="", parameters={"type": "object"})
+        for name in TOOL_OPERATIONS
+    ]
+    request = ProviderRequest(
+        prompt="看下你的群管理工具",
+        func_tool=ToolSet(tools),
+    )
+
+    await plugin.select_tools(GroupOwnerSelectionEvent(), request)
+
+    assert request.func_tool.get_tool("qq_group_manage") is not None
+
+
+@pytest.mark.asyncio
 async def test_private_admin_leave_group_prompt_ignores_stale_request_context() -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})

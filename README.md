@@ -141,7 +141,7 @@ QQ Enhance initialized
 
 ### 消息防抖
 
-防抖默认开启，可通过 `debounce.enabled` 关闭。
+防抖默认开启，可通过 `debounce.enabled` 关闭。群聊默认共用防抖，私聊仍按用户隔离；可通过 `debounce.shared_group` 关闭群聊共享。
 
 首条输入会按照 `initial_window_seconds` 等待后进入模型流程。同一会话、同一用户继续输入时，如果前一请求仍可取消，插件会按照 `followup_window_seconds` 等待，再取消它，将该条输入保存为没有机器人回复的独立 `user` 历史消息，并让新输入进入 AstrBot 原有流程。例如：
 
@@ -159,6 +159,7 @@ assistant：……
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
 | `debounce.enabled` | `true` | 启用消息防抖 |
+| `debounce.shared_group` | `true` | 群聊共用防抖；关闭后同一群聊中的不同用户分别处理，私聊始终按用户隔离 |
 | `debounce.initial_window_seconds` | `0` | 首条消息进入模型前的等待窗口，0 表示不额外等待 |
 | `debounce.followup_window_seconds` | `0` | 后续消息触发取消前的等待窗口，0 表示立即处理 |
 | `debounce.max_wait_seconds` | `5` | 一轮防抖实际等待窗口的累计上限，0 表示不限制；模型和工具运行时间不计入 |

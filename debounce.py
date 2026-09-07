@@ -191,7 +191,11 @@ class MessageDebouncer:
         previous = arrival.previous
         # A failed database write remains retryable instead of silently losing
         # an input whose generation has already been cancelled.
-        scope = (event.unified_msg_origin, event.get_sender_id())
+        shared_group = config["shared_group"] and bool(event.get_group_id())
+        scope = (
+            event.unified_msg_origin,
+            "group" if shared_group else event.get_sender_id(),
+        )
         for (umo, _), job in list(self.pending.items()):
             if umo == event.unified_msg_origin and not job.done():
                 await asyncio.shield(job)
@@ -263,11 +267,14 @@ class MessageDebouncer:
                 not in str(
                     getattr(previous.event.get_result(), "result_content_type", "")
                 )
-                and not any(
-                    item.event.unified_msg_origin == event.unified_msg_origin
-                    and item.event.get_sender_id() != event.get_sender_id()
-                    and not item.finished.is_set()
-                    for item in ArrivalFilter.tails.values()
+                and (
+                    shared_group
+                    or not any(
+                        item.event.unified_msg_origin == event.unified_msg_origin
+                        and item.event.get_sender_id() != event.get_sender_id()
+                        and not item.finished.is_set()
+                        for item in ArrivalFilter.tails.values()
+                    )
                 )
             )
         if can_replace:

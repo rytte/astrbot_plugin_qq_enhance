@@ -101,6 +101,7 @@ DEFAULT_CONFIG = {
     },
     "debounce": {
         "enabled": True,
+        "shared_group": True,
         "initial_window_seconds": 0.0,
         "followup_window_seconds": 0.0,
         "max_wait_seconds": 5.0,
@@ -435,6 +436,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("web_reader", "enabled"),
         ("request_notifications", "enabled"),
         ("debounce", "enabled"),
+        ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
         ("inbound", "enhance_voice_messages"),
         ("inbound", "respond_to_poke"),

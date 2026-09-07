@@ -524,7 +524,7 @@ async def test_early_recall_is_retained_when_generation_is_superseded():
 
 @pytest.mark.asyncio
 async def test_different_senders_are_never_cancelled_together():
-    harness = Harness()
+    harness = Harness({"shared_group": False})
     first, second = (
         Event("sender 7", 1, group="10"),
         Event("sender 8", 2, sender=8, group="10"),
@@ -538,6 +538,24 @@ async def test_different_senders_are_never_cancelled_together():
         await wait(second.prepared)
         assert not harness.tasks[0].cancelled()
         assert texts(harness.requests[-1]) == ["sender 7", "reply", "sender 8"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_shared_group_debounce_can_cancel_another_sender():
+    harness = Harness()
+    first = Event("sender 7", 1, group="10")
+    second = Event("sender 8", 2, sender=8, group="10")
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        second_task = harness.start(second)
+        await wait(second.prepared)
+        second.allow_reply.set()
+        await second_task
+        assert harness.tasks[0].cancelled()
+        assert texts(harness.requests[-1]) == ["sender 7", "sender 8"]
     finally:
         await harness.finish()
 
@@ -919,7 +937,7 @@ async def test_failed_persistence_is_retried_before_next_generation():
 
 @pytest.mark.asyncio
 async def test_other_sender_between_inputs_keeps_shared_history_order():
-    harness = Harness()
+    harness = Harness({"shared_group": False})
     first = Event("A first", 1, group="10")
     other = Event("B intervenes", 2, sender=8, group="10")
     last = Event("A second", 3, group="10")

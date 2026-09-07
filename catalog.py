@@ -992,6 +992,7 @@ KEYWORD_TOOLS = {
     "群昵称": {"qq_group_member_manage"},
     "群名片": {"qq_group_member_manage"},
     "成员名片": {"qq_group_member_manage"},
+    "群管理": {"qq_group_manage"},
     "群名称": {"qq_group_manage"},
     "修改群名": {"qq_group_manage"},
     "改群名": {"qq_group_manage"},
