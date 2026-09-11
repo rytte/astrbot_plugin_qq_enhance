@@ -404,10 +404,10 @@ async def test_targeted_poke_can_follow_message_without_a_message_id():
         await harness.finish()
 
 
-@pytest.mark.parametrize("boundary", ["tool", "streaming", "limit", "chars", "sent"])
+@pytest.mark.parametrize("boundary", ["tool", "streaming", "limit", "sent"])
 @pytest.mark.asyncio
 async def test_effects_and_limits_preserve_old_reply_and_serialize_next(boundary):
-    harness = Harness({"max_chars": 1} if boundary == "chars" else None)
+    harness = Harness()
     first, second = Event("first", 1), Event("second", 2)
     try:
         harness.start(first, tool=boundary == "tool", streaming=boundary == "streaming")
@@ -587,7 +587,7 @@ async def test_conversation_switch_does_not_move_old_input():
         {"enabled": 1},
         {"max_messages": 1},
         {"max_messages": True},
-        {"max_chars": 0},
+        {"max_chars": 3000},
         {"max_buffer_mb": 257},
         {"ignore_prefixes": "/"},
     ],

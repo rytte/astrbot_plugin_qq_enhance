@@ -32,7 +32,6 @@ class Arrival:
     protected: bool = False
     persisted: bool = False
     persistence: asyncio.Task | None = None
-    chars: int = 0
     buffer_bytes: int = 0
     waited_seconds: float = 0.0
 
@@ -187,7 +186,6 @@ class MessageDebouncer:
                     self.conflict_reported = True
                 return
         arrival.batch = [arrival]
-        arrival.chars = len(event.message_str or "")
         previous = arrival.previous
         # A failed database write remains retryable instead of silently losing
         # an input whose generation has already been cancelled.
@@ -242,8 +240,6 @@ class MessageDebouncer:
             and not previous.event.is_stopped()
             and not streaming
             and len(previous.batch) < config["max_messages"]
-            and sum(item.chars for item in previous.batch) + arrival.chars
-            <= config["max_chars"]
             and sum(item.buffer_bytes for item in previous.batch)
             <= config["max_buffer_mb"] * 1024 * 1024
         )

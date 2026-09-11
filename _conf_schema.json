@@ -161,13 +161,6 @@
         "minimum": 2,
         "maximum": 100
       },
-      "max_chars": {
-        "type": "int",
-        "description": "一批连续输入的文本字符预算",
-        "default": 3000,
-        "minimum": 1,
-        "maximum": 100000
-      },
       "max_buffer_mb": {
         "type": "int",
         "description": "允许续接的输入快照预算（MiB）",
