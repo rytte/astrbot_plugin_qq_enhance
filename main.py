@@ -9,6 +9,8 @@ from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 
+from mcp.types import CallToolResult
+
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import File, Plain, Record, Reply
@@ -35,6 +37,7 @@ from .catalog import (
     TOOL_OPERATIONS,
 )
 from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer, mark_content
+from .context_images import ContextImageError
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -229,6 +232,7 @@ class QQEnhancePlugin(Star):
         data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
+        self.context_images = self.runtime.context_images
         self.web_reader = WebReader(self.runtime)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
@@ -759,6 +763,31 @@ class QQEnhancePlugin(Star):
         """
         self.debouncer.bind_request(event, request)
 
+    @filter.on_llm_request(priority=-10000)
+    async def virtualize_context_images(
+        self, event: AstrMessageEvent, request: ProviderRequest
+    ) -> None:
+        """Archive QQ images and replace persistent attachment paths with refs.
+
+        Args:
+            event: Current QQ event.
+            request: Fully decorated provider request.
+        """
+
+        if not self.config["context_images"]["enabled"]:
+            return
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        configured_id = self.config["platform"]["platform_id"]
+        if configured_id and event.get_platform_id() != configured_id:
+            return
+        try:
+            await self.context_images.prepare_request(event, request)
+        except ContextImageError as exc:
+            logger.warning("Failed to archive QQ context image: %s", exc.code)
+            event.set_result(f"图片无法安全加入会话：{exc.message}。")
+            event.stop_event()
+
     @filter.on_agent_begin(priority=-20000)
     async def snapshot_debounce_input(
         self, event: AstrMessageEvent, run_context
@@ -769,6 +798,8 @@ class QQEnhancePlugin(Star):
             event: Current QQ event.
             run_context: Initialized AstrBot agent context.
         """
+        if self.config["context_images"]["enabled"]:
+            self.context_images.mark_current_request_images(event, run_context)
         self.debouncer.snapshot(event, run_context)
 
     @filter.on_using_llm_tool(priority=20000)
@@ -1527,6 +1558,21 @@ class QQEnhancePlugin(Star):
         if entry is None or not entry["recalled"] or entry["marked"]:
             return
         entry["marked"] = await self._append_recall_marker(entry)
+
+    @filter.on_agent_done(priority=-2000)
+    async def remove_inspected_images_before_history_save(
+        self, _event: AstrMessageEvent, run_context, _response
+    ) -> None:
+        """Remove inspect-tool image bytes and cache paths before persistence.
+
+        Args:
+            _event: Original message event, unused by image cleanup.
+            run_context: Agent context containing messages awaiting persistence.
+            _response: Final model response, unused by image cleanup.
+        """
+
+        if self.config["context_images"]["enabled"]:
+            self.context_images.clean_runtime_images(run_context)
 
     @filter.on_agent_done(priority=-1000)
     async def mark_pending_recall_before_history_save(
@@ -2437,11 +2483,11 @@ class QQEnhancePlugin(Star):
     @filter.llm_tool(name="qq_media")
     async def qq_media(
         self, event: AstrMessageEvent, operation: str, params: dict
-    ) -> str:
+    ) -> str | CallToolResult:
         """读取、转换或识别 QQ 媒体。
 
         Args:
-            operation(string): get_image、get_record、convert_record 或 ocr。
+            operation(string): inspect、get_image、get_record、convert_record 或 ocr。
             params(object): 当前 operation 的严格参数对象。
         """
 

@@ -9,7 +9,7 @@
 | 项目 | 数量 |
 |---|---:|
 | NapCat 已注册动作 | 177 |
-| 插件公开能力 | 29 个工具、80 个操作 |
+| 插件公开能力 | 29 个工具、81 个操作 |
 | 插件覆盖的 NapCat 动作 | 72 |
 
 统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 67 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
@@ -207,7 +207,7 @@
 
 ## 插件公开工具与操作
 
-网页阅读的三个工具为本地能力，不调用 NapCat 动作。它们直接接受工具参数；表中的 read/find 是配置和审计使用的内部操作名，不需要模型额外传入 operation。
+网页阅读的三个工具和 `qq_media.inspect` 为本地能力，不调用 NapCat 动作。网页工具直接接受工具参数；表中的 read/find 是配置和审计使用的内部操作名，不需要模型额外传入 operation。
 
 | 工具 | 公开操作 | 对应 NapCat 动作或实现 |
 |---|---|---|
@@ -235,7 +235,7 @@
 | `qq_forward_get` | `get` | `get_forward_msg` |
 | `qq_message_manage` | `recall`、`mark_read`、`reaction_add`、`reaction_remove` | `delete_msg`<br>`mark_msg_as_read`<br>`set_msg_emoji_like` |
 | `qq_recent_contacts` | `list` | `get_recent_contact` |
-| `qq_media` | `get_image`、`get_record`、`convert_record`、`ocr` | `get_image`<br>`get_record`<br>`ocr_image` |
+| `qq_media` | `inspect`、`get_image`、`get_record`、`convert_record`、`ocr` | 本地会话图片重载<br>`get_image`<br>`get_record`<br>`ocr_image` |
 | `qq_group_files` | `info`、`list_root`、`list_folder`、`url`、`upload`、`mkdir`、`delete`、`rmdir`、`move`、`rename`、`transfer` | `create_group_file_folder`<br>`delete_group_file`<br>`delete_group_folder`<br>`get_group_file_system_info`<br>`get_group_file_url`<br>`get_group_files_by_folder`<br>`get_group_root_files`<br>`move_group_file`<br>`rename_group_file`<br>`trans_group_file`<br>`upload_group_file` |
 | `qq_private_files` | `url`、`upload` | `get_private_file_url`<br>`upload_private_file` |
 | `qq_essence` | `list`、`add`、`remove` | `delete_essence_msg`<br>`get_essence_msg_list`<br>`set_essence_msg` |

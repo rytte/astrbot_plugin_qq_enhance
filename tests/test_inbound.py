@@ -525,9 +525,7 @@ async def test_napcat_stt_stays_plain_when_semanticization_is_disabled() -> None
 @pytest.mark.asyncio
 async def test_semanticization_alone_does_not_call_napcat_for_a_record() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config(
-        {"inbound": {"enhance_voice_messages": False}}
-    )
+    plugin.config = validate_config({"inbound": {"enhance_voice_messages": False}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(),

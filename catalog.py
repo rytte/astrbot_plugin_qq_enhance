@@ -99,6 +99,7 @@ OPERATION_DISPLAY_NAMES = {
     "qq_message_manage.reaction_add": "添加消息表情回应",
     "qq_message_manage.reaction_remove": "移除消息表情回应",
     "qq_recent_contacts.list": "获取最近联系人",
+    "qq_media.inspect": "重新加载会话图片",
     "qq_media.get_image": "获取图片信息",
     "qq_media.get_record": "获取语音文件",
     "qq_media.convert_record": "转换语音文件格式",
@@ -506,6 +507,7 @@ OPERATIONS = (
         "message",
         permission="astrbot_admin",
     ),
+    _op("qq_media", "inspect", None, "media"),
     _op("qq_media", "get_image", "get_image", "media"),
     _op("qq_media", "get_record", "get_record", "media"),
     _op("qq_media", "convert_record", "get_record", "media", risk="write"),
@@ -863,6 +865,10 @@ OPERATION_PARAMETERS = {
     "qq_message_manage.reaction_add": _params("message_id", "emoji_id"),
     "qq_message_manage.reaction_remove": _params("message_id", "emoji_id"),
     "qq_recent_contacts.list": _params(optional=("count", *PAGE_PARAMS)),
+    "qq_media.inspect": _params(
+        "image_ref",
+        hint="只能使用当前 AstrBot 会话历史中 [QQ ImageRef ...] 提供的引用。",
+    ),
     "qq_media.get_image": _params("file"),
     "qq_media.get_record": _params(
         "file",
@@ -954,7 +960,8 @@ TOOL_DESCRIPTIONS = {
     "qq_message_manage": "撤回、标记已读或增删消息表情回应。",
     "qq_recent_contacts": "查询最近联系人和消息摘要。",
     "qq_media": (
-        "获取图片或语音、转码语音、执行图片 OCR。读取或转换语音时只能使用 "
+        "按 ImageRef 重新查看当前会话原图，或获取图片或语音、转码语音、执行图片 OCR。"
+        "inspect 只能使用当前会话历史中的 image_ref。读取或转换语音时只能使用 "
         "OneBot/NapCat 原始媒体标识，不能使用 AstrBot 本地临时路径。"
     ),
     "qq_group_files": "查询或管理群文件与文件夹。",

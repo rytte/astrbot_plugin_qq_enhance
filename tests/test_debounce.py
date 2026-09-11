@@ -142,6 +142,9 @@ class Harness:
             get_config=lambda **kwargs: {"agent_runner": {"runner_type": "local"}},
             get_all_stars=lambda: [],
         )
+        self.plugin.context_images = SimpleNamespace(
+            mark_current_request_images=lambda _event, _run_context: None
+        )
         self.plugin.debouncer = MessageDebouncer(self.plugin)
         self.tasks = []
         self.requests = []

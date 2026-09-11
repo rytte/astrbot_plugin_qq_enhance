@@ -118,8 +118,7 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
             assert tool.parameters == WEB_TOOL_SCHEMAS[name]
             assert "operation" not in tool.parameters["properties"]
     assert all(
-        manager.get_func(name).active
-        for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES
+        manager.get_func(name).active for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES
     )
     send_tool = manager.get_func("qq_send_message")
     params_schema = send_tool.parameters["properties"]["params"]
@@ -130,9 +129,7 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     assert params_schema["properties"]["target"]["additionalProperties"] is False
     assert params_schema["properties"]["components"]["minItems"] == 1
     assert params_schema["properties"]["components"]["maxItems"] == 30
-    assert params_schema["properties"]["components"]["items"]["required"] == [
-        "type"
-    ]
+    assert params_schema["properties"]["components"]["items"]["required"] == ["type"]
     component_schema = params_schema["properties"]["components"]["items"]
     assert component_schema["additionalProperties"] is False
     assert "text" in component_schema["properties"]
@@ -214,9 +211,15 @@ async def test_web_switch_controls_tools_for_urls_and_followups(
     remaining = {tool.name for tool in request.func_tool.tools}
     assert remaining & WEB_TOOL_NAMES == (WEB_TOOL_NAMES if web_enabled else set())
     assert (WEB_READER_PROMPT in (request.system_prompt or "")) is web_enabled
-    assert {"web_search_tavily", "tavily_extract_web_page", "qq_send_message"} <= remaining
+    assert {
+        "web_search_tavily",
+        "tavily_extract_web_page",
+        "qq_send_message",
+    } <= remaining
     if mode != "full":
-        assert len(remaining & set(TOOL_OPERATIONS)) <= (10 if mode == "compact" else 15)
+        assert len(remaining & set(TOOL_OPERATIONS)) <= (
+            10 if mode == "compact" else 15
+        )
 
 
 @pytest.mark.asyncio

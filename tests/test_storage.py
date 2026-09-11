@@ -1,10 +1,61 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 
 import pytest
 
 from astrbot_plugin_qq_enhance.storage import Storage
+
+
+@pytest.mark.asyncio
+async def test_initialize_removes_deprecated_context_image_source_columns(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "data.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE context_images (
+                image_ref TEXT PRIMARY KEY,
+                platform_id TEXT NOT NULL,
+                unified_msg_origin TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                source_message_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                path TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_accessed_at INTEGER NOT NULL,
+                orphaned_at INTEGER
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO context_images VALUES (
+                'img_0123456789abcdef01234567', 'platform-a', 'origin-a',
+                'conversation-a', '456', 'message', 'image.bin', 'image/png',
+                10, 20, 100, 1, 2, NULL
+            )
+            """
+        )
+
+    storage = Storage(database_path)
+    await storage.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(context_images)")
+        }
+    assert "source_message_id" not in columns
+    assert "source_kind" not in columns
+    records = await storage.list_context_images()
+    assert len(records) == 1
+    assert records[0]["image_ref"] == "img_0123456789abcdef01234567"
 
 
 @pytest.mark.asyncio

@@ -342,9 +342,7 @@ async def test_expired_or_disabled_mapping_is_ignored() -> None:
     assert plugin.recall_messages == {}
     plugin.context.conversation_manager.update_conversation.assert_not_awaited()
 
-    plugin.config = validate_config(
-        {"inbound": {"mark_recalled_messages": False}}
-    )
+    plugin.config = validate_config({"inbound": {"mark_recalled_messages": False}})
     await plugin.track_context_message(message_event, request)
     assert plugin.recall_messages == {}
 

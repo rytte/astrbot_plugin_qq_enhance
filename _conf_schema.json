@@ -270,6 +270,17 @@
       "retention_days": {"type": "int", "description": "审计保留天数", "default": 30, "minimum": 7, "maximum": 365}
     }
   },
+  "context_images": {
+    "type": "object",
+    "description": "图片历史轻量化",
+    "default": {},
+    "items": {
+      "enabled": {"type": "bool", "description": "启用图片历史轻量化", "hint": "图片保存为历史上下文时替换为轻量引用；需要时模型可通过 qq_media.inspect 重新加载原图。", "default": true},
+      "orphan_grace_days": {"type": "int", "description": "图片引用从历史消失后的自然日宽限天数", "default": 3, "minimum": 1, "maximum": 30},
+      "retention_days": {"type": "int", "description": "原图最长保留自然日数", "hint": "按 AstrBot 所在主机的本地日期计算；0 表示关闭绝对保留期，孤儿与容量清理仍然生效。", "default": 30, "minimum": 0},
+      "max_storage_mb": {"type": "int", "description": "会话原图总存储上限（MiB）", "hint": "空间不足时按本地自然日从最早日期开始整日淘汰，无论图片是否仍被会话历史引用。", "default": 2048, "minimum": 64, "maximum": 10240}
+    }
+  },
   "web_reader": {
     "type": "object",
     "description": "网页阅读",
@@ -304,7 +315,7 @@
     "items": {
       "allowed_roots": {"type": "list", "description": "额外允许的绝对目录", "default": []},
       "max_file_size_mb": {"type": "int", "description": "本地文件上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048},
-      "max_base64_size_mb": {"type": "int", "description": "Base64 解码上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
+      "max_base64_size_mb": {"type": "int", "description": "Base64 解码与单次图片重载上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
       "temp_ttl_seconds": {"type": "int", "description": "插件临时文件生命周期（秒）", "default": 21600, "minimum": 600, "maximum": 604800},
       "cleanup_interval_seconds": {"type": "int", "description": "临时文件清理间隔（秒）", "default": 600, "minimum": 60, "maximum": 86400}
     }

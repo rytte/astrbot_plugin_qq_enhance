@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.types import CallToolResult, ImageContent
+from PIL import Image as PillowImage
 
-from astrbot.core.message.components import File
+from astrbot.core.message.components import File, Image
+from astrbot.core.provider.entities import ProviderRequest
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP
 from astrbot_plugin_qq_enhance.runtime import (
     QQRuntime,
@@ -117,6 +120,7 @@ class FakeEvent:
         )
         self.message_obj = SimpleNamespace(raw_message={})
         self.message_str = ""
+        self.extras = {}
 
     def get_sender_id(self) -> str:
         return self.sender_id
@@ -139,6 +143,12 @@ class FakeEvent:
     def is_admin(self) -> bool:
         return self.admin
 
+    def get_extra(self, key: str, default=None):
+        return self.extras.get(key, default)
+
+    def set_extra(self, key: str, value) -> None:
+        self.extras[key] = value
+
 
 async def make_runtime(tmp_path, config: dict | None = None):
     client = FakeClient()
@@ -156,6 +166,69 @@ async def make_runtime(tmp_path, config: dict | None = None):
     ):
         runtime = QQRuntime(FakeContext(client), validate_config(config), storage)
     return runtime, client, storage
+
+
+def test_context_images_switch_defaults_enabled_and_controls_inspect() -> None:
+    runtime = object.__new__(QQRuntime)
+    runtime.config = validate_config(None)
+    assert runtime.config["context_images"]["enabled"] is True
+    assert runtime.config["context_images"]["orphan_grace_days"] == 3
+    assert runtime.config["context_images"]["retention_days"] == 30
+    assert runtime.operation_enabled("qq_media.inspect") is True
+
+    runtime.config = validate_config({"context_images": {"enabled": False}})
+    assert runtime.operation_enabled("qq_media.inspect") is False
+    assert runtime.operation_enabled("qq_media.get_image") is True
+
+    with pytest.raises(ValueError, match="context_images.enabled"):
+        validate_config({"context_images": {"enabled": 1}})
+    assert (
+        validate_config({"context_images": {"retention_days": 0}})["context_images"][
+            "retention_days"
+        ]
+        == 0
+    )
+    with pytest.raises(ValueError, match="context_images.retention_days"):
+        validate_config({"context_images": {"retention_days": -1}})
+    with pytest.raises(ValueError, match="context_images.retention_days"):
+        validate_config({"context_images": {"retention_days": False}})
+
+
+@pytest.mark.asyncio
+async def test_disabled_context_images_skips_lifecycle_reconciliation(
+    tmp_path,
+) -> None:
+    runtime, _, _ = await make_runtime(tmp_path, {"context_images": {"enabled": False}})
+    runtime.context_images.reconcile = AsyncMock()
+    runtime.storage.cleanup = AsyncMock(return_value=[])
+
+    await runtime.cleanup()
+
+    runtime.context_images.reconcile.assert_not_awaited()
+    runtime.storage.cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_context_image_lifecycle_runs_once_per_local_day(tmp_path) -> None:
+    runtime, _, _ = await make_runtime(tmp_path)
+    runtime.context_images.reconcile = AsyncMock()
+    runtime.storage.cleanup = AsyncMock(return_value=[])
+
+    with patch(
+        "astrbot_plugin_qq_enhance.runtime.time.localtime",
+        return_value=time.struct_time((2026, 9, 10, 1, 0, 0, 0, 253, -1)),
+    ):
+        await runtime.cleanup()
+        await runtime.cleanup()
+    runtime.context_images.reconcile.assert_awaited_once()
+
+    with patch(
+        "astrbot_plugin_qq_enhance.runtime.time.localtime",
+        return_value=time.struct_time((2026, 9, 11, 0, 1, 0, 1, 254, -1)),
+    ):
+        await runtime.cleanup()
+    assert runtime.context_images.reconcile.await_count == 2
+    assert runtime.storage.cleanup.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -205,9 +278,7 @@ def test_parameter_contract_rejects_unknown_and_missing() -> None:
         runtime.validate_parameters(
             "qq_media.get_record",
             {
-                "file": (
-                    "C:\\Users\\tester\\.astrbot\\data\\temp\\media_audio.wav"
-                ),
+                "file": ("C:\\Users\\tester\\.astrbot\\data\\temp\\media_audio.wav"),
                 "out_format": "wav",
             },
         )
@@ -266,6 +337,35 @@ async def test_online_status_sends_complete_napcat_payload(tmp_path) -> None:
         "set_online_status",
         {"status": 50, "ext_status": 0, "battery_status": 0},
     ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_inspect_returns_multimodal_result_without_calling_napcat_media(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    image_path = tmp_path / "context.png"
+    PillowImage.new("RGB", (9, 7), (10, 20, 30)).save(image_path, format="PNG")
+    event = FakeEvent()
+    event.message_obj = SimpleNamespace(
+        raw_message={},
+        message_id="456",
+        message=[Image(file=str(image_path))],
+    )
+    request = ProviderRequest(
+        conversation=SimpleNamespace(cid="conversation-a", history="[]"),
+        image_urls=[str(image_path)],
+    )
+    await runtime.context_images.prepare_request(event, request)
+    image_ref = (await runtime.storage.list_context_images())[0]["image_ref"]
+
+    result = await runtime.execute(
+        event, "qq_media", "inspect", {"image_ref": image_ref}
+    )
+
+    assert isinstance(result, CallToolResult)
+    assert any(isinstance(item, ImageContent) for item in result.content)
+    assert all(action != "get_image" for action, _ in client.calls)
 
 
 @pytest.mark.asyncio

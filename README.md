@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + NapCat OneBot v11**，提供 **29 个模型工具、80 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + NapCat OneBot v11**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 工具会根据平台、会话、调用者权限和请求内容动态选择。指定操作需要用户发送确认命令后才会执行。
 
@@ -49,7 +49,28 @@
 [QQ component|QQ语音消息：我们下午三点见]
 ```
 
-这些是插件生成的语义示例。普通图片继续由 AstrBot 原生处理；带有效摘要的图片会额外补充图片描述。
+这些是插件生成的语义示例。当前轮的普通图片仍由 AstrBot 原生视觉链路处理；持久历史只保存可重新加载原图的 `QQ ImageRef`，不自动生成或保存图片描述。
+
+### 图片历史轻量化
+
+此功能默认开启；将 `context_images.enabled` 设为 `false` 后，不再归档新图片、改写图片历史或开放 `qq_media.inspect`，已有图片副本保持不变。收到 QQ 图片时，插件会把未经重新编码的原图复制到插件数据目录。当前 Agent 运行仍保留 AstrBot 已准备的图片路径提示和推理图片；保存历史时会同时过滤路径提示与图片 Base64，只留下如下引用：
+
+```text
+[QQ ImageRef image_ref=img_a1b2c3..., 1920x1080；如需重新查看原图，调用 qq_media(operation="inspect", params={"image_ref":"img_a1b2c3..."})]
+```
+
+`qq_media.inspect` 只接受当前平台实例、消息来源和 AstrBot 会话共同绑定的引用，不能跨群、跨私聊或跨会话读取。重载的图片只在当次 Agent 工具循环中可见；AstrBot 在该轮生成的工具缓存路径、图片 Base64 和当前消息的附件路径提示都会在保存历史前移除。
+
+插件启动后立即检查一次图片生命周期，之后每个主机本地自然日最多检查一次。引用从历史消失后进入孤儿宽限期，默认在日期相差 3 天后删除；重新出现则取消孤儿标记。所有原图默认最多保留 30 个自然日，无论是否仍被历史引用；将 `context_images.retention_days` 设为 `0` 可关闭此绝对保留期，但孤儿与容量清理仍然生效。
+
+原图默认总容量为 2048 MiB。归档新图片时空间不足，会从最早的本地自然日开始整日淘汰，无论图片是否仍被历史引用，并按日期继续清理到整批新图片可以写入。若当前批次本身超过总容量，则拒绝归档且不淘汰已有图片。被清理的引用再次交给 `qq_media.inspect` 时会明确返回图片已过期、不存在或不属于当前会话。
+
+| 配置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `context_images.enabled` | `true` | 是否启用图片历史轻量化 |
+| `context_images.orphan_grace_days` | `3` | 图片引用从历史消失后的自然日宽限天数 |
+| `context_images.retention_days` | `30` | 所有原图的最长自然日保留期；0 表示关闭绝对保留期 |
+| `context_images.max_storage_mb` | `2048` | 会话原图总存储上限，单位 MiB |
 
 <a id="quick-start"></a>
 
@@ -165,7 +186,7 @@ assistant：……
 | `debounce.max_wait_seconds` | `5` | 一轮防抖实际等待窗口的累计上限，0 表示不限制；模型和工具运行时间不计入 |
 | `debounce.max_messages` | `8` | 每批最多续接的输入条数 |
 | `debounce.max_chars` | `3000` | 每批输入的文本字符预算 |
-| `debounce.max_buffer_mb` | `32` | 已准备输入的编码内容预算，单位 MiB，包含图片和音频 |
+| `debounce.max_buffer_mb` | `32` | 已准备且需要持久化的输入内容预算，单位 MiB；会话图片 Base64 已被排除 |
 | `debounce.ignore_prefixes` | `["/", "!"]` | 排除命令类前缀；空列表表示不按前缀排除 |
 
 前一请求开始执行工具、进入流式发送、发送过内容，同一共享会话有其他用户插话，或达到上述预算时，插件会等待该请求结束，再处理后续输入，不截断或丢弃前面的消息。已由其他插件处理的输入沿用原流程。当前支持 AstrBot 本地 Agent；第三方 Agent Runner 不执行此防抖。
@@ -345,7 +366,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 | `qq_forward_get` | 读取并按深度展开合并转发 |
 | `qq_message_manage` | 撤回、已读、消息表情回应 |
 | `qq_recent_contacts` | 最近联系人 |
-| `qq_media` | 图片、语音文件、语音格式转换、OCR |
+| `qq_media` | 按 ImageRef 重载会话原图、图片与语音文件、语音格式转换、OCR |
 | `qq_group_files` | 群文件查询、上传、目录与文件管理 |
 | `qq_private_files` | 私聊文件链接与上传 |
 | `qq_essence` | 群精华消息 |
@@ -421,7 +442,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 本地文件仅允许来自 AstrBot 临时目录、插件专属数据目录，以及 `files.allowed_roots` 中已经存在的绝对目录。路径会在解析符号链接后再次检查，目录、设备文件和越界路径会被拒绝。
 
-本地文件与 HTTP(S) 下载初始上限为 100 MiB，Base64 解码初始上限为 10 MiB。插件创建的临时媒体初始保留 6 小时，NapCat 或 AstrBot 创建的文件不由本插件删除。模型获得的是媒体引用 `media_ref`，不会获得 NapCat 返回的绝对媒体路径。
+本地文件与 HTTP(S) 下载初始上限为 100 MiB，Base64 解码和单次会话图片重载的初始上限为 10 MiB。插件创建的临时媒体初始保留 6 小时，NapCat 或 AstrBot 创建的文件不由本插件删除。模型获得的是媒体引用 `media_ref` 或会话图片 `image_ref`，不会获得 NapCat 返回的绝对媒体路径。
 
 插件实际请求的 URL 会校验 HTTP(S) 协议、凭据、域名策略、DNS 结果和重定向。`network.allow_private_network=false` 时拒绝回环、私网、链路本地及保留地址。仅嵌入卡片而不由插件请求的 URL 不解析 DNS，但仍校验协议、凭据、域名、本地主机名及 IP 字面量。
 
