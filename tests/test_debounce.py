@@ -8,6 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from astrbot_plugin_qq_enhance.debounce import (
+    ARRIVAL_KEY,
+    ArrivalFilter,
+    MessageDebouncer,
+)
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.runtime import validate_config
 
 from astrbot.core.agent.message import (
     Message,
@@ -18,13 +25,6 @@ from astrbot.core.agent.message import (
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.utils.session_lock import session_lock_manager
-from astrbot_plugin_qq_enhance.debounce import (
-    ARRIVAL_KEY,
-    ArrivalFilter,
-    MessageDebouncer,
-)
-from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
-from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +81,9 @@ class Event:
 
     def get_self_id(self):
         return "99"
+
+    def is_admin(self):
+        return False
 
     def get_group_id(self):
         return self.group
@@ -701,8 +704,8 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
     from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
     from astrbot.core.pipeline.process_stage.follow_up import (
         register_active_runner,
-        unregister_active_runner,
         try_capture_follow_up,
+        unregister_active_runner,
     )
     from astrbot.core.provider.entities import LLMResponse
 

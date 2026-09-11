@@ -4,11 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
-from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.message.components import File
-from astrbot.core.provider.entities import ProviderRequest
-from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
@@ -17,6 +12,11 @@ from astrbot_plugin_qq_enhance.web_reader import (
     WEB_TOOL_NAMES,
     WEB_TOOL_SCHEMAS,
 )
+
+from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.message.components import File
+from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.provider.func_tool_manager import FunctionToolManager
 
 
 class SelectionEvent:
@@ -96,13 +96,18 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin.context = SimpleNamespace(
         provider_manager=SimpleNamespace(llm_tools=manager)
     )
-    plugin.config = validate_config({"web_reader": {"enabled": web_enabled}})
+    plugin.config = validate_config(
+        {
+            "web_reader": {"enabled": web_enabled},
+        }
+    )
     plugin.storage = SimpleNamespace(initialize=AsyncMock())
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     plugin.runtime.cleanup = AsyncMock()
     plugin.cleanup_task = None
     plugin.notification_tasks = set()
+    plugin.handoff_tasks = set()
     plugin.notification_locks = {}
     plugin.recall_messages = {}
     plugin.web_reader = SimpleNamespace(cleanup=lambda: None, close=AsyncMock())
@@ -123,7 +128,11 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     send_tool = manager.get_func("qq_send_message")
     params_schema = send_tool.parameters["properties"]["params"]
     params_description = params_schema["description"]
+    assert send_tool.parameters["properties"]["operation"]["enum"] == ["send"]
     assert params_schema["required"] == ["target", "components"]
+    assert "oneOf" not in params_schema
+    assert "expect_reply" not in params_schema["properties"]
+    assert "handoff_ref" not in params_schema["properties"]
     assert params_schema["additionalProperties"] is False
     assert params_schema["properties"]["target"]["required"] == ["type"]
     assert params_schema["properties"]["target"]["additionalProperties"] is False

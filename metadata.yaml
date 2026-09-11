@@ -1,7 +1,7 @@
 name: astrbot_plugin_qq_enhance
 display_name: QQ 能力增强
-desc: 面向 NapCat OneBot v11，提供 29 个模型工具、81 个操作，涵盖消息与卡片发送、好友互动、账号与群管理、历史查询、文件处理、会话图片重载、图片文字识别及申请审批；支持网页阅读、消息防抖、语音识别、表情与卡片感知、撤回感知、权限控制、二次确认与审计诊断。
-version: 1.3.1
+desc: 面向 NapCat OneBot v11，提供 29 个模型工具、81 个操作，涵盖消息与卡片发送、好友互动、账号与群管理、历史查询、文件处理、跨会话交流、图片上下文轻量化、图片文字识别及申请审批；支持网页阅读、消息防抖、语音识别、表情与卡片感知、撤回感知、权限控制、二次确认与审计诊断。
+version: 1.4.0
 author: rytte
 repo: "https://github.com/rytte/astrbot_plugin_qq_enhance"
 support_platforms:

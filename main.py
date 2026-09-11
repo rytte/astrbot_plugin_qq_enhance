@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextContent
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -24,6 +24,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_config_path,
     get_astrbot_plugin_data_path,
 )
+from astrbot.core.utils.session_lock import session_lock_manager
 
 from .catalog import (
     KEYWORD_TOOLS,
@@ -36,8 +37,8 @@ from .catalog import (
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
-from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer, mark_content
 from .context_images import ContextImageError
+from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer, mark_content
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -51,6 +52,7 @@ from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, Web
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
 PLUGIN_NAME = "astrbot_plugin_qq_enhance"
+HANDOFF_SOURCE_MAX_CHARS = 2000
 COMPONENT_SPOOF_LABELS = {
     "red_packet": (
         "QQ红包消息（仅识别，不能代领）",
@@ -232,10 +234,12 @@ class QQEnhancePlugin(Star):
         data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
+        self.runtime.handoff_send_observer = self._schedule_cross_session_handoff
         self.context_images = self.runtime.context_images
         self.web_reader = WebReader(self.runtime)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
+        self.handoff_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
         self.debouncer = MessageDebouncer(self)
@@ -276,6 +280,15 @@ class QQEnhancePlugin(Star):
                     detail += f"。{rule.hint}"
                 details.append(detail)
             tool.description = TOOL_DESCRIPTIONS[tool_name]
+            if (
+                tool_name == "qq_send_message"
+                and self.config["cross_session_handoff"]["enabled"]
+                and self.config["permissions"]["allow_cross_private_to_admin"]
+            ):
+                tool.description += (
+                    " 配置允许普通用户跨会话私聊 AstrBot 管理员；"
+                    "来源说明中的 source_actor_is_admin=true 表示原发起人可作为目标。"
+                )
             params_schema = {
                 "type": "object",
                 "description": "；".join(details),
@@ -729,6 +742,216 @@ class QQEnhancePlugin(Star):
             }
         )
 
+    def _schedule_cross_session_handoff(
+        self,
+        event: AstrMessageEvent,
+        operation_id: str,
+        params: dict,
+        target_kind: str,
+        target_id: str,
+        data: object,
+        source_override: dict | None,
+    ) -> None:
+        """Schedule a non-waking history entry after a successful cross-session send.
+
+        Args:
+            event: Source QQ event.
+            operation_id: Executed send operation.
+            params: Validated operation parameters.
+            target_kind: Resolved group or private target kind.
+            target_id: Resolved numeric target ID.
+            data: Successful NapCat response data.
+            source_override: Original source metadata retained through confirmation.
+
+        """
+
+        if not self.config["cross_session_handoff"]["enabled"]:
+            return
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        if (
+            target_kind not in {"group", "private"}
+            or not str(target_id).isdecimal()
+            or int(target_id) <= 0
+        ):
+            return
+        target = params.get("target")
+        if isinstance(target, dict) and target.get("type") == "temporary":
+            logger.info("Cross-session handoff skipped for a temporary QQ target")
+            return
+        target_session = MessageSession(
+            str(event.get_platform_id()),
+            (
+                MessageType.GROUP_MESSAGE
+                if target_kind == "group"
+                else MessageType.FRIEND_MESSAGE
+            ),
+            str(target_id),
+        )
+        target_umo = str(target_session)
+        source_umo = str(event.unified_msg_origin)
+        if target_umo == source_umo:
+            return
+
+        if operation_id == "qq_send_forward.send":
+            nodes = params.get("nodes")
+            node_count = len(nodes) if isinstance(nodes, list) else 0
+            sent_content = f"[QQ 合并转发消息，共 {node_count} 个节点]"
+        else:
+            rendered_parts = []
+            components = params.get("components")
+            if not isinstance(components, list):
+                components = []
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+                component_type = str(component.get("type") or "").lower()
+                if component_type in {"text", "plain"}:
+                    rendered_parts.append(str(component.get("text") or ""))
+                elif component_type == "image":
+                    summary = str(component.get("summary") or "").strip()
+                    rendered_parts.append(f"[图片：{summary}]" if summary else "[图片]")
+                elif component_type in {"record", "audio"}:
+                    rendered_parts.append("[语音]")
+                elif component_type == "video":
+                    rendered_parts.append("[视频]")
+                elif component_type == "file":
+                    name = str(
+                        component.get("name") or component.get("text") or ""
+                    ).strip()
+                    rendered_parts.append(f"[文件：{name}]" if name else "[文件]")
+                elif component_type in {"at", "mention_user"}:
+                    user_id = component.get("id") or component.get("mention_user_id")
+                    rendered_parts.append(f"[@{user_id}]")
+                elif component_type == "reply":
+                    rendered_parts.append(
+                        f"[回复消息 {component.get('id') or ''}]".strip()
+                    )
+                elif component_type == "face":
+                    rendered_parts.append(
+                        f"[QQ 表情 {component.get('id') or ''}]".strip()
+                    )
+                elif component_type == "dice":
+                    rendered_parts.append("[QQ 骰子]")
+                elif component_type == "rps":
+                    rendered_parts.append("[QQ 猜拳]")
+                elif component_type == "share":
+                    title = str(component.get("title") or "链接分享")
+                    rendered_parts.append(
+                        f"[{title}：{component.get('url') or ''}]".strip()
+                    )
+                elif component_type == "music":
+                    title = str(
+                        component.get("title") or component.get("query") or "音乐卡片"
+                    )
+                    rendered_parts.append(f"[{title}]")
+                elif component_type == "contact":
+                    rendered_parts.append(
+                        f"[QQ 联系人：{component.get('id') or ''}]".strip()
+                    )
+                elif component_type == "location":
+                    title = str(component.get("title") or "位置")
+                    rendered_parts.append(f"[{title}]")
+                elif component_type == "json":
+                    rendered_parts.append("[QQ JSON 卡片]")
+            sent_content = "".join(rendered_parts).strip() or "[QQ 消息]"
+        if len(sent_content) > 4000:
+            sent_content = sent_content[:4000] + "…"
+
+        source = source_override
+        if not isinstance(source, dict):
+            source = event.get_extra("_qq_enhance_handoff_source", {})
+        if not isinstance(source, dict):
+            source = {}
+        source_text = str(source.get("source_text") or event.message_str or "").strip()
+        if len(source_text) > HANDOFF_SOURCE_MAX_CHARS:
+            source_text = source_text[:HANDOFF_SOURCE_MAX_CHARS] + "…"
+        now = int(time.time())
+        metadata = {
+            "source_umo": source_umo,
+            "source_conversation_id": str(source.get("source_conversation_id") or ""),
+            "source_actor_id": str(
+                source.get("source_actor_id") or event.get_sender_id() or ""
+            ),
+            "source_actor_name": str(
+                source.get("source_actor_name")
+                or getattr(event, "get_sender_name", lambda: "")()
+                or ""
+            )[:200],
+            "source_actor_is_admin": (
+                source.get("source_actor_is_admin")
+                if type(source.get("source_actor_is_admin")) is bool
+                else event.is_admin()
+            ),
+            "source_message_id": str(
+                source.get("source_message_id")
+                or getattr(event.message_obj, "message_id", "")
+                or ""
+            ),
+            "source_time": int(source.get("source_time") or now),
+            "source_text": source_text,
+            "target_umo": target_umo,
+            "sent_message_id": str(
+                (data.get("message_id") or "") if isinstance(data, dict) else ""
+            ),
+        }
+        metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+        metadata_json = (
+            metadata_json.replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+        history_content = (
+            f"{sent_content}\n\n<cross_session_origin>\n{metadata_json}\n"
+            "</cross_session_origin>"
+        )
+        task = asyncio.create_task(
+            self._persist_cross_session_handoff(
+                target_umo, str(event.get_platform_id()), history_content
+            )
+        )
+        self.handoff_tasks.add(task)
+        task.add_done_callback(self.handoff_tasks.discard)
+
+    async def _persist_cross_session_handoff(
+        self, target_umo: str, platform_id: str, content: str
+    ) -> None:
+        """Append one assistant entry without invoking the target session model.
+
+        Args:
+            target_umo: Fully qualified target AstrBot session.
+            platform_id: Target platform instance ID.
+            content: Sent message plus trusted origin metadata.
+        """
+
+        try:
+            async with session_lock_manager.acquire_lock(target_umo):
+                manager = self.context.conversation_manager
+                conversation_id = await manager.get_curr_conversation_id(target_umo)
+                if conversation_id is None:
+                    conversation_id = await manager.new_conversation(
+                        target_umo, platform_id=platform_id
+                    )
+                conversation = await manager.get_conversation(
+                    target_umo, conversation_id
+                )
+                if conversation is None:
+                    raise RuntimeError("target conversation is unavailable")
+                history = json.loads(conversation.history or "[]")
+                if not isinstance(history, list):
+                    raise ValueError("target conversation history must be a list")
+                history.append({"role": "assistant", "content": content})
+                await manager.update_conversation(
+                    target_umo, conversation_id, history=history
+                )
+            logger.info("Persisted cross-session handoff to umo=%s", target_umo)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to persist cross-session handoff to umo=%s", target_umo
+            )
+
     async def _cleanup_loop(self) -> None:
         """Run periodic retention cleanup until plugin termination."""
 
@@ -762,6 +985,10 @@ class QQEnhancePlugin(Star):
             request: Fully decorated provider request.
         """
         self.debouncer.bind_request(event, request)
+        if request.conversation is not None:
+            event.set_extra(
+                "_qq_enhance_handoff_conversation_id", request.conversation.cid
+            )
 
     @filter.on_llm_request(priority=-10000)
     async def virtualize_context_images(
@@ -800,6 +1027,47 @@ class QQEnhancePlugin(Star):
         """
         if self.config["context_images"]["enabled"]:
             self.context_images.mark_current_request_images(event, run_context)
+        if (
+            self.config.get("cross_session_handoff", {}).get("enabled", False)
+            and getattr(run_context, "messages", None)
+            and run_context.messages[-1].role == "user"
+        ):
+            source_parts = [str(event.message_str or "").strip()]
+            content = run_context.messages[-1].content
+            if isinstance(content, list):
+                for part in content:
+                    if getattr(part, "_no_save", False):
+                        continue
+                    part_type = getattr(part, "type", "")
+                    if part_type == "image_url":
+                        source_parts.append("[图片]")
+                    elif part_type == "audio_url":
+                        source_parts.append("[音频]")
+            source_text = "\n".join(item for item in source_parts if item).strip()
+            if len(source_text) > HANDOFF_SOURCE_MAX_CHARS:
+                source_text = source_text[:HANDOFF_SOURCE_MAX_CHARS] + "…"
+            message_obj = getattr(event, "message_obj", None)
+            event.set_extra(
+                "_qq_enhance_handoff_source",
+                {
+                    "source_umo": str(event.unified_msg_origin),
+                    "source_conversation_id": str(
+                        event.get_extra("_qq_enhance_handoff_conversation_id", "")
+                    ),
+                    "source_actor_id": str(event.get_sender_id() or ""),
+                    "source_actor_name": str(
+                        getattr(event, "get_sender_name", lambda: "")() or ""
+                    )[:200],
+                    "source_actor_is_admin": event.is_admin(),
+                    "source_message_id": str(
+                        getattr(message_obj, "message_id", "") or ""
+                    ),
+                    "source_time": int(
+                        getattr(message_obj, "timestamp", 0) or time.time()
+                    ),
+                    "source_text": source_text,
+                },
+            )
         self.debouncer.snapshot(event, run_context)
 
     @filter.on_using_llm_tool(priority=20000)
@@ -814,6 +1082,78 @@ class QQEnhancePlugin(Star):
             tool_args: Tool arguments.
         """
         self.debouncer.protect(event)
+
+    @filter.on_llm_tool_respond(priority=20000)
+    async def record_builtin_cross_session_send(
+        self,
+        event: AstrMessageEvent,
+        tool,
+        tool_args,
+        tool_result: CallToolResult | None,
+    ) -> None:
+        """Record successful cross-session sends made by AstrBot's built-in tool.
+
+        Args:
+            event: Source QQ event.
+            tool: Tool that completed.
+            tool_args: Arguments passed to the tool.
+            tool_result: Normalized tool result.
+        """
+
+        if (
+            not self.config["cross_session_handoff"]["enabled"]
+            or getattr(tool, "name", "") != "send_message_to_user"
+            or not isinstance(tool_args, dict)
+            or tool_result is None
+            or getattr(tool_result, "isError", False) is True
+        ):
+            return
+        current_umo = str(event.unified_msg_origin)
+        raw_session = tool_args.get("session") or current_umo
+        try:
+            target_session = (
+                MessageSession.from_str(raw_session)
+                if isinstance(raw_session, str)
+                else raw_session
+            )
+        except Exception:
+            return
+        if not isinstance(target_session, MessageSession):
+            return
+        target_umo = str(target_session)
+        if (
+            target_umo == current_umo
+            or target_session.platform_id != event.get_platform_id()
+        ):
+            return
+        if target_session.message_type == MessageType.GROUP_MESSAGE:
+            target_kind = "group"
+        elif target_session.message_type == MessageType.FRIEND_MESSAGE:
+            target_kind = "private"
+        else:
+            return
+        if (
+            not target_session.session_id.isdecimal()
+            or int(target_session.session_id) <= 0
+        ):
+            return
+        result_text = "\n".join(
+            item.text for item in tool_result.content if isinstance(item, TextContent)
+        )
+        if f"Message sent to session {target_umo}" not in result_text:
+            return
+        messages = tool_args.get("messages")
+        if not isinstance(messages, list):
+            return
+        self._schedule_cross_session_handoff(
+            event,
+            "send_message_to_user",
+            {"components": messages},
+            target_kind,
+            target_session.session_id,
+            {},
+            None,
+        )
 
     @filter.on_llm_response(priority=20000)
     async def protect_debounce_response(
@@ -2614,6 +2954,7 @@ class QQEnhancePlugin(Star):
         """Stop cleanup without deleting persistent plugin data."""
 
         notification_tasks = list(self.notification_tasks)
+        handoff_tasks = list(self.handoff_tasks)
         await self.web_reader.close()
         if hasattr(self, "debouncer"):
             await self.debouncer.close()
@@ -2622,6 +2963,11 @@ class QQEnhancePlugin(Star):
         if notification_tasks:
             await asyncio.gather(*notification_tasks, return_exceptions=True)
         self.notification_tasks.clear()
+        for task in handoff_tasks:
+            task.cancel()
+        if handoff_tasks:
+            await asyncio.gather(*handoff_tasks, return_exceptions=True)
+        self.handoff_tasks.clear()
         if self.cleanup_task is not None:
             self.cleanup_task.cancel()
             with suppress(asyncio.CancelledError):

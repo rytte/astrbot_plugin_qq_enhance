@@ -62,6 +62,12 @@
         "type": "bool",
         "description": "允许 AstrBot 管理员跨好友操作",
         "default": true
+      },
+      "allow_cross_private_to_admin": {
+        "type": "bool",
+        "description": "允许普通用户跨会话私聊 AstrBot 管理员",
+        "hint": "仅放宽 qq_send_message.send 的私聊目标；目标仍须是同平台的机器人好友，不允许跨群或临时会话。需同时开启跨会话消息衔接。",
+        "default": false
       }
     }
   },
@@ -272,6 +278,19 @@
       "orphan_grace_days": {"type": "int", "description": "图片引用从历史消失后的自然日宽限天数", "default": 3, "minimum": 1, "maximum": 30},
       "retention_days": {"type": "int", "description": "原图最长保留自然日数", "hint": "按 AstrBot 所在主机的本地日期计算；0 表示关闭绝对保留期，孤儿与容量清理仍然生效。", "default": 30, "minimum": 0},
       "max_storage_mb": {"type": "int", "description": "会话原图总存储上限（MiB）", "hint": "空间不足时按本地自然日从最早日期开始整日淘汰，无论图片是否仍被会话历史引用。", "default": 2048, "minimum": 64, "maximum": 10240}
+    }
+  },
+  "cross_session_handoff": {
+    "type": "object",
+    "description": "跨会话消息衔接",
+    "default": {},
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用跨会话消息衔接",
+        "hint": "跨会话发送成功后，将实际发送内容和来源说明写入目标会话历史，使后续交流能够自然承接；不会唤醒目标会话模型。",
+        "default": true
+      }
     }
   },
   "web_reader": {

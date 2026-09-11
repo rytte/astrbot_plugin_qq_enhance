@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
         "allow_group_owner": True,
         "allow_cross_group": True,
         "allow_cross_private": True,
+        "allow_cross_private_to_admin": False,
     },
     "confirmation": {
         "ttl_seconds": 120,
@@ -86,6 +87,7 @@ DEFAULT_CONFIG = {
         "retention_days": 30,
         "max_storage_mb": 2048,
     },
+    "cross_session_handoff": {"enabled": True},
     "network": {
         "allowed_domains": [],
         "blocked_domains": [],
@@ -433,15 +435,16 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(
             "网页只读工具不支持二次确认；请通过能力包或 disabled_operations 控制开放"
         )
-
     bool_fields = (
         ("permissions", "allow_group_admin"),
         ("permissions", "allow_group_owner"),
         ("permissions", "allow_cross_group"),
         ("permissions", "allow_cross_private"),
+        ("permissions", "allow_cross_private_to_admin"),
         ("network", "allow_private_network"),
         ("web_reader", "enabled"),
         ("context_images", "enabled"),
+        ("cross_session_handoff", "enabled"),
         ("request_notifications", "enabled"),
         ("debounce", "enabled"),
         ("debounce", "shared_group"),
@@ -718,6 +721,9 @@ class QQRuntime:
                         "params": {
                             "authorization_params": normalized,
                             "action_params": action_params,
+                            "handoff_source": event.get_extra(
+                                "_qq_enhance_handoff_source"
+                            ),
                         },
                         "target_kind": target_kind,
                         "target_id": target_id,
@@ -872,6 +878,25 @@ class QQRuntime:
                         str(normalized["flag"]),
                         "approved" if operation == "approve" else "rejected",
                     )
+            if operation_id in {
+                "qq_send_message.send",
+                "qq_send_forward.send",
+            }:
+                observer = getattr(self, "handoff_send_observer", None)
+                if callable(observer):
+                    try:
+                        observer(
+                            event,
+                            operation_id,
+                            normalized,
+                            target_kind,
+                            target_id,
+                            data,
+                            None,
+                        )
+                    except Exception:
+                        logger.exception("Failed to schedule cross-session handoff")
+                        warnings.append("消息已发送，但跨会话历史衔接失败")
             if isinstance(data, CallToolResult):
                 await self.audit(
                     event,
@@ -988,7 +1013,27 @@ class QQRuntime:
             )
             if not record["action"]:
                 raise QQToolError("response_invalid", "待确认操作缺少协议 action")
-            await self.call_action(event, record["action"], action_params)
+            data = await self.call_action(event, record["action"], action_params)
+            if spec.operation_id in {
+                "qq_send_message.send",
+                "qq_send_forward.send",
+            }:
+                observer = getattr(self, "handoff_send_observer", None)
+                if callable(observer):
+                    try:
+                        observer(
+                            event,
+                            spec.operation_id,
+                            authorization_params,
+                            record["target_kind"],
+                            record["target_id"],
+                            data,
+                            stored_params.get("handoff_source"),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to schedule confirmed cross-session handoff"
+                        )
             await self.audit(
                 event,
                 spec,
@@ -1355,10 +1400,22 @@ class QQRuntime:
                     allowed = (
                         is_admin and self.config["permissions"]["allow_cross_private"]
                     )
+                    if (
+                        not allowed
+                        and spec.operation_id == "qq_send_message.send"
+                        and self.config["cross_session_handoff"]["enabled"]
+                        and self.config["permissions"]["allow_cross_private_to_admin"]
+                    ):
+                        astrbot_config = self.context.get_config()
+                        admin_ids = astrbot_config.get("admins_id", [])
+                        allowed = isinstance(admin_ids, list) and any(
+                            str(admin_id) == target_id for admin_id in admin_ids
+                        )
                     if not allowed:
                         raise QQToolError(
                             "permission_denied",
-                            "跨好友操作仅允许开启该权限的 AstrBot 管理员发起",
+                            "跨好友操作仅允许开启该权限的 AstrBot 管理员发起；"
+                            "普通用户仅可在配置允许时私聊 AstrBot 管理员",
                         )
                     if not await self.target_exists(event, "private", target_id):
                         raise QQToolError(
@@ -2700,7 +2757,10 @@ class QQRuntime:
                 "next_cursor": data["next_cursor"],
                 "warnings": [],
             }
-        if operation_id in {"qq_send_message.send", "qq_send_forward.send"}:
+        if operation_id in {
+            "qq_send_message.send",
+            "qq_send_forward.send",
+        }:
             summary = "NapCat 已接受发送请求；最终回复不要重复消息正文或卡片"
             if isinstance(data, dict) and data.get("random_results"):
                 summary = (
