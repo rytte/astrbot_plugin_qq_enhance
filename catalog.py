@@ -939,7 +939,10 @@ TOOL_DESCRIPTIONS = {
     "qq_user_info": "查询陌生人或群成员公开资料；查询非好友仅限管理员私聊。",
     "qq_friend_list": "查询好友或单向好友列表。",
     "qq_friend_history": "分页查询好友私聊历史。",
-    "qq_friend_interact": "向好友点赞或戳一戳。",
+    "qq_friend_interact": (
+        "向好友点赞或戳一戳。私聊戳回对方时用 operation=poke、user_id=发起者 QQ 号；"
+        "群聊戳一戳使用 qq_group_member_manage.poke。无需先查询 qq_status 或陌生人资料。"
+    ),
     "qq_friend_request": "查询、通过或拒绝好友申请。",
     "qq_friend_manage": "删除好友或修改好友备注。",
     "qq_group_list": "查询机器人加入的群列表。",
@@ -947,7 +950,11 @@ TOOL_DESCRIPTIONS = {
     "qq_group_members": "查询群成员列表或成员详情。",
     "qq_group_history": "分页查询群聊历史。",
     "qq_group_request": "查询、通过或拒绝加群申请和群邀请；管理员私聊可查询全部群申请。",
-    "qq_group_member_manage": "戳一戳群成员，或修改群成员名片、头衔、禁言、移出和管理员身份。",
+    "qq_group_member_manage": (
+        "戳一戳群成员，或修改群成员名片、头衔、禁言、移出和管理员身份。"
+        "群聊戳回对方时用 operation=poke、group_id=事件群号、user_id=发起者 QQ 号；"
+        "无需先查询 qq_status 或好友资料。"
+    ),
     "qq_group_manage": "执行全员禁言、改群名或头像、签到、退群。",
     "qq_send_message": (
         "向当前或获授权的 QQ 会话发送结构化消息；音乐卡片必须作为唯一组件单独发送。"

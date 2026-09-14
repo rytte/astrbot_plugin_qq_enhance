@@ -576,9 +576,10 @@ def describe_inbound_event(
         )
         if not self_id or target_id != str(self_id) or actor_id == str(self_id):
             return ""
-        content = (
-            f"QQ互动：用户 {actor_id} 戳了你" if actor_id else "QQ互动：有人戳了你"
-        )
+        group_id = _clean_text(raw_event.get("group_id") or "", 40)
+        scope = f"群聊（群号 {group_id}）" if group_id else "私聊"
+        actor = f"用户 {actor_id} 戳了你" if actor_id else "有人戳了你"
+        content = f"QQ互动：{scope}，{actor}"
         return format_component_semantics(content)
 
     if not semanticize_components or post_type not in {None, "message"}:

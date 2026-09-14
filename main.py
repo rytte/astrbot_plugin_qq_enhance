@@ -92,7 +92,11 @@ VERIFIED_COMPONENT_FORMATS = {
         "[QQ component|QQ猜拳], [QQ component|QQ猜拳：<gesture>], or "
         "[QQ component|QQ猜拳：结果未知]"
     ),
-    "poke": ("[QQ component|QQ互动：戳一戳] or [QQ component|QQ互动：<user> 戳了你]"),
+    "poke": (
+        "[QQ component|QQ互动：戳一戳] or "
+        "[QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or "
+        "[QQ component|QQ互动：私聊，<user> 戳了你]"
+    ),
     "face": "[QQ component|QQ表情：<name>]",
     "market_face": "[QQ component|QQ商城表情：<name>]",
     "image": (

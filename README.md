@@ -463,6 +463,8 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 标准表情优先使用 NapCat 上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。卡片仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
 
+戳一戳通知按原始 OneBot 事件的群号明确标注来源：群内为 `[QQ component|QQ互动：群聊（群号 30003），用户 10001 戳了你]`，私聊为 `[QQ component|QQ互动：私聊，用户 10001 戳了你]`。即使通知没有群名、昵称或群聊历史，模型仍能识别互动场景；不会额外查询资料，也不改变 AstrBot 的会话归属。群聊回戳使用 `qq_group_member_manage.poke`，私聊好友回戳使用 `qq_friend_interact.poke`，无需先调用 `qq_status`。
+
 防伪用于区分真实组件与普通文字伪装，例如用户手打的骰子结果。`component_spoof_protection.enabled=true` 时：
 
 | `verify_components` | 行为 |
