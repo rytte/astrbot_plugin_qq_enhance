@@ -53,6 +53,11 @@ RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
 PLUGIN_NAME = "astrbot_plugin_qq_enhance"
 HANDOFF_SOURCE_MAX_CHARS = 2000
+QQ_TOOL_DIALOGUE_PROMPT = """QQ工具调用前后，发言是可选的：可以直接调用，也可以沿用当前人设与对话语气自然回应用户。
+不要输出内部行动计划、工具选择推演、措辞或情绪/语气安排，也不要缩成“先戳回去”“戳回来”等动作播报。没话对用户说时直接调用工具。
+戳一戳、点赞等轻量互动成功后，默认不复述“戳回来了”“操作成功”等完成报告。
+可以继续自然聊天，没有新内容就结束，不必补发回复。
+查询结果、用户追问、必要澄清和失败信息仍应正常交代；不要提前或虚假宣称成功。"""
 COMPONENT_SPOOF_LABELS = {
     "red_packet": (
         "QQ红包消息（仅识别，不能代领）",
@@ -2203,6 +2208,17 @@ class QQEnhancePlugin(Star):
         visible &= self.runtime.enabled_tools()
         for tool_name in plugin_tools - visible:
             request.func_tool.remove_tool(tool_name)
+        if (
+            self.config["toolsets"]["inject_dialogue_prompt"]
+            and any(
+                request.func_tool.get_tool(tool_name)
+                for tool_name in visible - WEB_TOOL_NAMES
+            )
+            and QQ_TOOL_DIALOGUE_PROMPT not in (request.system_prompt or "")
+        ):
+            request.system_prompt = (
+                f"{request.system_prompt or ''}\n{QQ_TOOL_DIALOGUE_PROMPT}\n"
+            )
         if visible & WEB_TOOL_NAMES and WEB_READER_PROMPT not in (
             request.system_prompt or ""
         ):

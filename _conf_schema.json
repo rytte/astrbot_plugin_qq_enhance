@@ -24,6 +24,12 @@
         "options": ["compact", "balanced", "full"],
         "labels": ["精简", "平衡", "完整"]
       },
+      "inject_dialogue_prompt": {
+        "type": "bool",
+        "description": "注入工具对话提示",
+        "hint": "为 QQ 工具追加自然对话提示，减少动作播报和机械完成报告",
+        "default": true
+      },
       "enabled_packs": {
         "type": "list",
         "description": "启用的能力包",
@@ -190,7 +196,8 @@
     "items": {
       "semanticize_components": {
         "type": "bool",
-        "description": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]",
+        "description": "启用入站消息语义化",
+        "hint": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]",
         "default": true
       },
       "enhance_voice_messages": {

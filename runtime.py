@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
         "exposure_mode": "balanced",
+        "inject_dialogue_prompt": True,
         "enabled_packs": [],
         "disabled_operations": [],
     },
@@ -436,6 +437,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             "网页只读工具不支持二次确认；请通过能力包或 disabled_operations 控制开放"
         )
     bool_fields = (
+        ("toolsets", "inject_dialogue_prompt"),
         ("permissions", "allow_group_admin"),
         ("permissions", "allow_group_owner"),
         ("permissions", "allow_cross_group"),

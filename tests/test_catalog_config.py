@@ -38,6 +38,19 @@ def test_version_range_is_explicit() -> None:
     assert NAPCAT_MAX_VERSION == (5, 0, 0)
 
 
+@pytest.mark.parametrize("config", [None, {}, {"toolsets": {}}])
+def test_tool_dialogue_prompt_is_enabled_by_default(config) -> None:
+    assert validate_config(config)["toolsets"]["inject_dialogue_prompt"] is True
+
+
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, None, [], {}])
+def test_tool_dialogue_prompt_requires_a_boolean(value) -> None:
+    with pytest.raises(
+        ValueError, match="toolsets[.]inject_dialogue_prompt 必须是布尔值"
+    ):
+        validate_config({"toolsets": {"inject_dialogue_prompt": value}})
+
+
 @pytest.mark.parametrize("config", [None, {}])
 def test_all_runtime_defaults_match_webui_schema(config) -> None:
     schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
-from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.main import QQ_TOOL_DIALOGUE_PROMPT, QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
 from astrbot_plugin_qq_enhance.web_reader import (
     WEB_READER_PROMPT,
@@ -78,6 +78,128 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
 
     def is_admin(self) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+@pytest.mark.parametrize("event_type", [SelectionEvent, PrivateAdminSelectionEvent])
+async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
+    mode, event_type
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {
+            "toolsets": {"exposure_mode": mode},
+            "inbound": {"component_spoof_protection": {"enabled": False}},
+        }
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    event = event_type()
+    request = ProviderRequest(
+        prompt=event.message_str,
+        system_prompt="Existing persona",
+        contexts=[{"role": "assistant", "content": "我看看。"}],
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+
+    await plugin.select_tools(event, request)
+    await plugin.select_tools(event, request)
+
+    assert request.system_prompt.startswith("Existing persona")
+    assert request.system_prompt.count(QQ_TOOL_DIALOGUE_PROMPT) == 1
+    assert request.prompt == event.message_str
+    assert request.contexts == [{"role": "assistant", "content": "我看看。"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(mode) -> None:
+    requests = []
+    for enabled in (True, False):
+        plugin = object.__new__(QQEnhancePlugin)
+        plugin.config = validate_config(
+            {"toolsets": {"exposure_mode": mode, "inject_dialogue_prompt": enabled}}
+        )
+        plugin.runtime = object.__new__(QQRuntime)
+        plugin.runtime.config = plugin.config
+        request = ProviderRequest(
+            prompt="读取 https://example.test",
+            system_prompt="Existing persona",
+            func_tool=ToolSet(
+                [
+                    FunctionTool(
+                        name=name, description="", parameters={"type": "object"}
+                    )
+                    for name in TOOL_OPERATIONS
+                ]
+            ),
+        )
+
+        await plugin.select_tools(SelectionEvent(), request)
+
+        assert request.func_tool.get_tool("qq_send_message") is not None
+        assert WEB_READER_PROMPT in request.system_prompt
+        requests.append(request)
+
+    enabled_request, disabled_request = requests
+    assert enabled_request.system_prompt.count(QQ_TOOL_DIALOGUE_PROMPT) == 1
+    assert QQ_TOOL_DIALOGUE_PROMPT not in disabled_request.system_prompt
+    assert (
+        enabled_request.system_prompt.replace(f"\n{QQ_TOOL_DIALOGUE_PROMPT}\n", "")
+        == disabled_request.system_prompt
+    )
+    assert {tool.name for tool in enabled_request.func_tool.tools} == {
+        tool.name for tool in disabled_request.func_tool.tools
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_names", "config", "platform_name"),
+    [
+        (None, {}, "aiocqhttp"),
+        ([], {}, "aiocqhttp"),
+        (["unrelated_tool"], {}, "aiocqhttp"),
+        (list(TOOL_OPERATIONS), {"toolsets": {"enabled_packs": ["web"]}}, "aiocqhttp"),
+        (list(TOOL_OPERATIONS), {}, "other"),
+    ],
+)
+async def test_qq_tool_dialogue_prompt_does_not_affect_unrelated_requests(
+    tool_names, config, platform_name
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(config)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    event = SelectionEvent()
+    event.get_platform_name = lambda: platform_name
+    request = ProviderRequest(
+        prompt="读取 https://example.test",
+        system_prompt="Existing persona",
+        func_tool=(
+            ToolSet(
+                [
+                    FunctionTool(
+                        name=name, description="", parameters={"type": "object"}
+                    )
+                    for name in tool_names
+                ]
+            )
+            if tool_names is not None
+            else None
+        ),
+    )
+
+    await plugin.select_tools(event, request)
+
+    assert request.system_prompt.startswith("Existing persona")
+    assert QQ_TOOL_DIALOGUE_PROMPT not in request.system_prompt
 
 
 @pytest.mark.parametrize("web_enabled", [True, False])
