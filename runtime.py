@@ -331,7 +331,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     """Validate the plugin's only supported configuration format.
 
     Args:
-        config: Configuration supplied by AstrBot.
+        config: Configuration normalized against the current schema by AstrBot.
 
     Returns:
         A validated copy with documented defaults filled for missing fields.
@@ -360,11 +360,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             spoof_config = copied_group.pop("component_spoof_protection")
             if not isinstance(spoof_config, dict):
                 raise ValueError("inbound.component_spoof_protection 必须是对象")
-            if "verify_components" in spoof_config:
-                raise ValueError(
-                    "inbound.component_spoof_protection.verify_components 已移除，请删除该字段；"
-                    "开启防伪即验证组件，历史保存请使用 persist_verification_in_history"
-                )
             unknown_spoof_fields = set(spoof_config) - {
                 "enabled",
                 "persist_verification_in_history",

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+from textwrap import dedent
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
+from astrbot.api import AstrBotConfig
 from astrbot_plugin_qq_enhance.catalog import (
     NAPCAT_MAX_VERSION,
     NAPCAT_MIN_VERSION,
@@ -13,6 +19,7 @@ from astrbot_plugin_qq_enhance.catalog import (
     OPERATIONS,
     TOOL_OPERATIONS,
 )
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import (
     PROTECTED_COMPONENT_TYPES,
     validate_config,
@@ -284,18 +291,102 @@ def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("verify_components", [False, True, None])
-def test_removed_verify_components_is_rejected(enabled, verify_components) -> None:
-    with pytest.raises(ValueError, match="verify_components 已移除，请删除该字段"):
-        validate_config(
-            {
-                "inbound": {
-                    "component_spoof_protection": {
-                        "enabled": enabled,
-                        "verify_components": verify_components,
-                    }
-                }
-            }
+@pytest.mark.parametrize("persist_verification_in_history", [None, False, True])
+def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
+    tmp_path,
+    enabled,
+    verify_components,
+    persist_verification_in_history,
+) -> None:
+    config_path = tmp_path / "astrbot_plugin_qq_enhance_config.json"
+    spoof_config = {"enabled": enabled, "verify_components": verify_components}
+    if persist_verification_in_history is not None:
+        spoof_config["persist_verification_in_history"] = (
+            persist_verification_in_history
         )
+    config_path.write_text(
+        json.dumps(
+            {
+                "removed_group": {"enabled": True},
+                "inbound": {
+                    "removed_field": True,
+                    "component_spoof_protection": spoof_config,
+                },
+                "network": {"allow_private_network": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    context = SimpleNamespace(register_web_api=Mock())
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+            return_value=str(tmp_path),
+        ),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
+    ):
+        runtime_factory.return_value.config = dict(config)
+        plugin = QQEnhancePlugin(context, config)
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert plugin.config == saved_config
+    assert "removed_group" not in plugin.config
+    assert "removed_field" not in plugin.config["inbound"]
+    assert plugin.config["inbound"]["component_spoof_protection"] == {
+        "enabled": enabled,
+        "persist_verification_in_history": (
+            True
+            if persist_verification_in_history is None
+            else persist_verification_in_history
+        ),
+        "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
+    }
+    assert plugin.config["network"]["allow_private_network"] is True
+    context.register_web_api.assert_called_once()
+
+
+def test_plugin_import_does_not_prevalidate_persisted_config(tmp_path) -> None:
+    plugin_root = Path(__file__).resolve().parents[1]
+    config_path = tmp_path / f"{plugin_root.name}_config.json"
+    original = json.dumps(
+        {"inbound": {"component_spoof_protection": {"verify_components": False}}}
+    )
+    config_path.write_text(original, encoding="utf-8")
+    script = dedent(
+        """
+        import sys
+        from unittest.mock import patch
+
+        sys.path[:0] = sys.argv[1:3]
+        from astrbot.core.utils import astrbot_path
+
+        with patch.object(astrbot_path, "get_astrbot_config_path", return_value=sys.argv[3]):
+            import astrbot_plugin_qq_enhance.main
+        """
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(plugin_root.parent),
+            str(plugin_root.parent / "AstrBot"),
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr).decode(
+        "utf-8", errors="replace"
+    )
+    assert config_path.read_text(encoding="utf-8") == original
 
 
 def test_component_spoof_protection_requires_semanticization() -> None:

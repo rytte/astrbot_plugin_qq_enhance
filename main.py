@@ -21,7 +21,6 @@ from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
-    get_astrbot_config_path,
     get_astrbot_plugin_data_path,
 )
 from astrbot.core.utils.session_lock import session_lock_manager
@@ -201,20 +200,6 @@ def _format_audit_rows(rows: list[dict]) -> str:
             lines.append(f"   确认 ID：{row['pending_id']}")
         entries.append("\n".join(lines))
     return f"最近 {len(rows)} 条审计记录：\n\n" + "\n\n".join(entries)
-
-
-_persisted_config_path = (
-    Path(get_astrbot_config_path())
-    / f"{Path(__file__).resolve().parent.name}_config.json"
-)
-if _persisted_config_path.is_file():
-    try:
-        _persisted_config = json.loads(
-            _persisted_config_path.read_text(encoding="utf-8-sig")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("QQ 能力增强配置文件无法读取或不是有效 JSON") from exc
-    validate_config(_persisted_config)
 
 
 class QQEnhancePlugin(Star):
