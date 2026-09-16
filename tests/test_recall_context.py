@@ -446,6 +446,7 @@ async def test_cancelled_append_does_not_mark_notice_delivered(started):
 async def test_termination_cancels_pending_recall_writes():
     plugin, conversation = make_plugin([])
     plugin.notification_tasks = set()
+    plugin.notification_events = set()
     plugin.handoff_tasks = set()
     plugin.cleanup_task = None
     plugin.web_reader = SimpleNamespace(close=AsyncMock())

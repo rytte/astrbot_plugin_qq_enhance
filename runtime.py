@@ -37,6 +37,7 @@ from .catalog import (
     OperationSpec,
 )
 from .context_images import ContextImageError, ContextImageManager
+from .request_notification import RequestNotificationEvent
 from .storage import Storage
 
 DEFAULT_CONFIG = {
@@ -655,6 +656,8 @@ class QQRuntime:
         warnings: list[str] = []
         spec = OPERATION_MAP.get(operation_id)
         try:
+            if isinstance(event, RequestNotificationEvent):
+                raise QQToolError("permission_denied", "平台申请通知不具备工具执行授权")
             if spec is None or operation not in TOOL_OPERATIONS.get(tool, ()):
                 raise QQToolError(
                     "invalid_parameters", f"不支持的 operation：{operation}"

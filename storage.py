@@ -105,6 +105,16 @@ class Storage:
                     CREATE INDEX IF NOT EXISTS idx_requests_lookup
                         ON requests(request_type, status, created_at DESC);
 
+                    CREATE TABLE IF NOT EXISTS request_notifications (
+                        request_id INTEGER NOT NULL,
+                        unified_msg_origin TEXT NOT NULL,
+                        conversation_id TEXT NOT NULL,
+                        prompt_hash TEXT NOT NULL,
+                        PRIMARY KEY (request_id, unified_msg_origin, conversation_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_request_notifications_session
+                        ON request_notifications(unified_msg_origin, conversation_id);
+
                     CREATE TABLE IF NOT EXISTS media_refs (
                         media_ref TEXT PRIMARY KEY,
                         owner_id TEXT NOT NULL,
@@ -601,6 +611,71 @@ class Storage:
 
         return await asyncio.to_thread(get_sync)
 
+    async def bind_request_notification(
+        self,
+        request_id: int,
+        unified_msg_origin: str,
+        conversation_id: str,
+        prompt: str,
+    ) -> None:
+        """Associate trusted notification input with its native conversation.
+
+        Args:
+            request_id: Locally stored platform request identifier.
+            unified_msg_origin: Destination administrator session.
+            conversation_id: Conversation selected under the native session lock.
+            prompt: Final user input; only its digest is stored in plugin metadata.
+        """
+
+        prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+        def bind_sync() -> None:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO request_notifications
+                        (request_id, unified_msg_origin, conversation_id, prompt_hash)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (request_id, unified_msg_origin, conversation_id)
+                    DO UPDATE SET prompt_hash = excluded.prompt_hash
+                    """,
+                    (request_id, unified_msg_origin, conversation_id, prompt_hash),
+                )
+
+        await asyncio.to_thread(bind_sync)
+
+    async def get_request_notification_bindings(
+        self, platform_id: str, unified_msg_origin: str, conversation_id: str
+    ) -> list[dict]:
+        """Read notification identities without exposing comments or OneBot flags.
+
+        Args:
+            platform_id: Platform containing the original requests.
+            unified_msg_origin: Current administrator session.
+            conversation_id: Current conversation, not merely its session.
+
+        Returns:
+            Input digests with the associated request types and current statuses.
+        """
+
+        def get_sync() -> list[dict]:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    """
+                    SELECT notifications.prompt_hash, requests.request_type, requests.status
+                    FROM request_notifications AS notifications
+                    JOIN requests ON requests.request_id = notifications.request_id
+                    WHERE requests.platform_id = ?
+                        AND notifications.unified_msg_origin = ?
+                        AND notifications.conversation_id = ?
+                    """,
+                    (platform_id, unified_msg_origin, conversation_id),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+        return await asyncio.to_thread(get_sync)
+
     async def update_request(self, flag: str, status: str) -> None:
         """Mark all matching captured requests as processed.
 
@@ -957,6 +1032,10 @@ class Storage:
                 )
                 connection.execute(
                     "DELETE FROM requests WHERE created_at < ?", (event_cutoff,)
+                )
+                connection.execute(
+                    "DELETE FROM request_notifications "
+                    "WHERE request_id NOT IN (SELECT request_id FROM requests)"
                 )
                 connection.execute(
                     "DELETE FROM audit_logs WHERE created_at < ?", (audit_cutoff,)

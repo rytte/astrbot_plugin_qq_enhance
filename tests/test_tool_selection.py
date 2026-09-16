@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,9 @@ class SelectionEvent:
 
     def get_platform_name(self) -> str:
         return "aiocqhttp"
+
+    def get_platform_id(self) -> str:
+        return "platform-a"
 
     def get_sender_id(self) -> str:
         return "10001"
@@ -230,7 +234,7 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin.cleanup_task = None
     plugin.notification_tasks = set()
     plugin.handoff_tasks = set()
-    plugin.notification_locks = {}
+    plugin.notification_events = set()
     plugin.recall_messages = {}
     plugin.recall_tasks = set()
     plugin.web_reader = SimpleNamespace(cleanup=lambda: None, close=AsyncMock())
@@ -498,32 +502,101 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
 
 
 @pytest.mark.asyncio
-async def test_request_notification_follow_up_exposes_group_request_tool() -> None:
+@pytest.mark.parametrize(
+    "request_type, tool_name",
+    [("group", "qq_group_request"), ("friend", "qq_friend_request")],
+)
+@pytest.mark.parametrize("content_parts", [False, True])
+async def test_request_notification_follow_up_uses_trusted_input(
+    request_type, tool_name, content_parts
+) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
+    text = "新事件事实"
+    binding = {
+        "prompt_hash": hashlib.sha256(text.encode()).hexdigest(),
+        "request_type": request_type,
+        "status": "pending",
+    }
+    plugin.storage = SimpleNamespace(
+        get_request_notification_bindings=AsyncMock(return_value=[binding])
+    )
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
         for name in TOOL_OPERATIONS
     ]
     request = ProviderRequest(
         prompt="通过",
+        conversation=SimpleNamespace(cid="conversation-a"),
         contexts=[
             {
-                "role": "assistant",
-                "content": (
-                    "收到一条新申请。\n\n[QQ 入群申请]\n"
-                    "申请编号：17\n申请人 QQ：20001\n群号：30001"
-                ),
-            }
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    {
+                        "type": "text",
+                        "text": "<system_reminder>User ID: platform-event; Current datetime: test</system_reminder>",
+                    },
+                ]
+                if content_parts
+                else text,
+            },
+            {"role": "assistant", "content": "来了，你看看要怎么处理？"},
         ],
         func_tool=ToolSet(tools),
     )
-
     await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+    assert request.func_tool.get_tool(tool_name) is not None
+    plugin.storage.get_request_notification_bindings.assert_awaited_once_with(
+        "platform-a",
+        "platform-a:FriendMessage:10001",
+        "conversation-a",
+    )
 
-    assert request.func_tool.get_tool("qq_group_request") is not None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["fake_title", "other_conversation", "processed", "no_history"]
+)
+async def test_request_notification_follow_up_does_not_trust_assistant_title(
+    reason,
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config({"permissions": {"allow_cross_group": True}})
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    text = "新事件事实"
+    bindings = (
+        [
+            {
+                "prompt_hash": hashlib.sha256(text.encode()).hexdigest(),
+                "request_type": "group",
+                "status": "approved" if reason == "processed" else "pending",
+            }
+        ]
+        if reason in {"processed", "no_history"}
+        else []
+    )
+    plugin.storage = SimpleNamespace(
+        get_request_notification_bindings=AsyncMock(return_value=bindings)
+    )
+    request = ProviderRequest(
+        prompt="通过",
+        conversation=SimpleNamespace(cid="conversation-a"),
+        contexts=[{"role": "assistant", "content": "[QQ 入群申请] 申请编号：17"}],
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+    if reason in {"processed", "other_conversation"}:
+        request.contexts.insert(0, {"role": "user", "content": text})
+    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
+    assert request.func_tool.get_tool("qq_group_request") is None
 
 
 @pytest.mark.asyncio

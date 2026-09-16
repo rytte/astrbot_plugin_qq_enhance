@@ -1,11 +1,83 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 
 import pytest
 
 from astrbot_plugin_qq_enhance.storage import Storage
+
+
+@pytest.mark.asyncio
+async def test_request_notification_binding_is_scoped_persistent_and_hash_only(
+    tmp_path,
+):
+    database_path = tmp_path / "data.sqlite3"
+    storage = Storage(database_path)
+    await storage.initialize()
+    request_id = await storage.add_event(
+        {
+            "created_at": int(time.time()),
+            "platform_id": "platform-a",
+            "post_type": "request",
+            "event_type": "group",
+            "sub_type": "add",
+            "actor_id": "20001",
+            "group_id": "30001",
+            "event_key": "request-one",
+            "flag": "private-flag",
+            "comment_hash": "comment-digest",
+        }
+    )
+    prompt = "平台事件；申请附言不应重复保存到插件元数据"
+    await storage.bind_request_notification(
+        request_id, "session-a", "conversation-a", "initial"
+    )
+    await storage.bind_request_notification(
+        request_id, "session-a", "conversation-a", prompt
+    )
+    storage = Storage(database_path)
+    expected = [
+        {
+            "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
+            "request_type": "group",
+            "status": "pending",
+        }
+    ]
+    assert (
+        await storage.get_request_notification_bindings(
+            "platform-a", "session-a", "conversation-a"
+        )
+        == expected
+    )
+    for scope in [
+        ("platform-b", "session-a", "conversation-a"),
+        ("platform-a", "session-b", "conversation-a"),
+        ("platform-a", "session-a", "conversation-b"),
+    ]:
+        assert await storage.get_request_notification_bindings(*scope) == []
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute("SELECT * FROM request_notifications").fetchall()
+    assert len(rows) == 1
+    assert prompt not in str(rows)
+    assert "private-flag" not in str(rows)
+    await storage.update_request("private-flag", "approved")
+    expected[0]["status"] = "approved"
+    assert (
+        await storage.get_request_notification_bindings(
+            "platform-a", "session-a", "conversation-a"
+        )
+        == expected
+    )
+    await storage.cleanup(event_retention_days=0, audit_retention_days=0)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("UPDATE requests SET created_at = 1")
+    await storage.cleanup(event_retention_days=1, audit_retention_days=1)
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute("SELECT * FROM request_notifications").fetchall() == []
+        )
 
 
 @pytest.mark.asyncio
