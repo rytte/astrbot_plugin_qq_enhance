@@ -191,11 +191,13 @@ async def drain_handoffs(plugin: QQEnhancePlugin) -> None:
         await asyncio.gather(*tasks)
 
 
-def test_switch_and_admin_target_permission_defaults_are_strict() -> None:
+def test_switch_and_admin_target_permission_defaults_are_enabled_and_validated() -> (
+    None
+):
     config = validate_config(None)
 
     assert config["cross_session_handoff"]["enabled"] is True
-    assert config["permissions"]["allow_cross_private_to_admin"] is False
+    assert config["permissions"]["allow_cross_private_to_admin"] is True
     with pytest.raises(ValueError, match="cross_session_handoff.enabled"):
         validate_config({"cross_session_handoff": {"enabled": 1}})
     with pytest.raises(ValueError, match="permissions.allow_cross_private_to_admin"):
@@ -323,8 +325,10 @@ async def test_target_user_can_message_source_admin_with_existing_send(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handoff_enabled", [False, True])
 async def test_admin_target_permission_does_not_open_other_cross_session_targets(
     tmp_path,
+    handoff_enabled,
 ) -> None:
     _, runtime, conversations, client = await build_runtime(
         tmp_path,
@@ -332,7 +336,8 @@ async def test_admin_target_permission_does_not_open_other_cross_session_targets
             "permissions": {
                 "allow_cross_private": False,
                 "allow_cross_private_to_admin": True,
-            }
+            },
+            "cross_session_handoff": {"enabled": handoff_enabled},
         },
         admin_ids=["10001"],
     )
@@ -360,35 +365,65 @@ async def test_admin_target_permission_does_not_open_other_cross_session_targets
             },
         )
     )
+    to_other_group = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "group", "id": 40002},
+                "components": [{"type": "text", "text": "你好"}],
+            },
+        )
+    )
+    temporary_to_admin = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "temporary", "id": 10001, "group_id": 40001},
+                "components": [{"type": "text", "text": "你好"}],
+            },
+        )
+    )
 
     assert to_non_admin["error"]["code"] == "permission_denied"
     assert forward_to_admin["error"]["code"] == "permission_denied"
+    assert to_other_group["error"]["code"] == "permission_denied"
+    assert temporary_to_admin["error"]["code"] == "permission_denied"
     assert not any(
-        action in {"send_private_msg", "send_private_forward_msg"}
+        action in {"send_private_msg", "send_group_msg", "send_private_forward_msg"}
         for action, _ in client.calls
     )
     assert conversations.histories == {}
 
 
 @pytest.mark.asyncio
-async def test_admin_target_permission_depends_on_handoff_total_switch(
+@pytest.mark.parametrize("permission_enabled", [False, True])
+@pytest.mark.parametrize("handoff_enabled", [False, True])
+@pytest.mark.parametrize("group_id", ["", "40001"])
+async def test_admin_target_permission_is_independent_of_handoff_switch(
     tmp_path,
+    permission_enabled,
+    handoff_enabled,
+    group_id,
 ) -> None:
-    _, runtime, conversations, _ = await build_runtime(
+    plugin, runtime, conversations, client = await build_runtime(
         tmp_path,
         {
             "permissions": {
                 "allow_cross_private": False,
-                "allow_cross_private_to_admin": True,
+                "allow_cross_private_to_admin": permission_enabled,
             },
-            "cross_session_handoff": {"enabled": False},
+            "cross_session_handoff": {"enabled": handoff_enabled},
         },
         admin_ids=["10001"],
     )
 
     result = json.loads(
         await runtime.execute(
-            Event("20001", admin=False),
+            Event("20001", admin=False, group_id=group_id),
             "qq_send_message",
             "send",
             {
@@ -397,9 +432,63 @@ async def test_admin_target_permission_depends_on_handoff_total_switch(
             },
         )
     )
+    await drain_handoffs(plugin)
 
-    assert result["error"]["code"] == "permission_denied"
+    assert result["ok"] is permission_enabled
+    assert (
+        any(
+            action == "send_private_msg" and params.get("user_id") == 10001
+            for action, params in client.calls
+        )
+        is permission_enabled
+    )
+    if not permission_enabled:
+        assert result["error"]["code"] == "permission_denied"
+    if permission_enabled and handoff_enabled:
+        history = conversations.history("platform-a:FriendMessage:10001")
+        assert len(history) == 1
+        assert history[0]["content"].startswith("你好")
+        assert '"source_actor_id":"20001"' in history[0]["content"]
+        assert '"source_actor_is_admin":false' in history[0]["content"]
+    else:
+        assert conversations.histories == {}
+        assert conversations.created == []
+        assert not plugin.handoff_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handoff_enabled", [False, True])
+async def test_admin_target_permission_still_requires_a_friend(
+    tmp_path,
+    handoff_enabled,
+) -> None:
+    plugin, runtime, conversations, client = await build_runtime(
+        tmp_path,
+        {
+            "permissions": {
+                "allow_cross_private": False,
+                "allow_cross_private_to_admin": True,
+            },
+            "cross_session_handoff": {"enabled": handoff_enabled},
+        },
+        admin_ids=["50001"],
+    )
+    result = json.loads(
+        await runtime.execute(
+            Event("20001", admin=False),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "private", "id": 50001},
+                "components": [{"type": "text", "text": "你好"}],
+            },
+        )
+    )
+
+    assert result["error"]["code"] == "target_not_found"
+    assert not any(action == "send_private_msg" for action, _ in client.calls)
     assert conversations.histories == {}
+    assert not plugin.handoff_tasks
 
 
 @pytest.mark.asyncio

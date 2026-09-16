@@ -264,22 +264,19 @@ QQ Enhance initialized
 
 ### 跨会话消息衔接
 
-跨会话发送成功后，插件将实际发送内容和来源说明写入目标会话历史，使后续交流能够自然承接，不会因此唤醒目标会话模型。普通用户向管理员转达回复的权限由单独开关控制，不随消息衔接自动放开。
+跨会话发送成功后，插件将实际发送内容和来源说明写入目标会话历史，使后续交流能够自然承接，不会因此唤醒目标会话模型。
 
 #### 常用配置
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
 | `cross_session_handoff.enabled` | `true` | 将跨会话发送内容和来源说明写入目标历史 |
-| `permissions.allow_cross_private_to_admin` | `false` | 允许普通用户跨会话私聊指定范围内的 AstrBot 管理员；依赖消息衔接开启 |
 
 #### 详细说明
 
 消息衔接支持 `qq_send_message.send`、`qq_send_forward.send` 和 AstrBot 内置 `send_message_to_user` 向其他普通 QQ 会话发送消息，内容追加为目标会话的 `assistant` 历史。关闭总开关后，不再追加这类历史。
 
-普通用户向管理员转达仅放宽 `qq_send_message.send` 的私聊目标，目标必须是同平台、机器人好友列表中的 AstrBot 管理员；不放宽跨群、临时会话、合并转发或其他跨好友操作。来源说明会标明原发起人是否为管理员，实际发送时仍根据 AstrBot 当前 `admins_id` 重新校验目标身份。
-
-来源说明包含发起会话、用户、原话和时间，原话会进入目标会话历史，因此跨会话发送前应确认目标会话可以看到这些信息。插件不保存逐条衔接记录；目标 QQ 实际收到的消息不包含来源说明。
+来源说明包含发起会话、用户、原话和时间，并标明原发起人是否为管理员。原话会进入目标会话历史，因此跨会话发送前应确认目标会话可以看到这些信息。插件不保存逐条衔接记录；目标 QQ 实际收到的消息不包含来源说明。
 
 ### 消息防抖
 
@@ -397,12 +394,15 @@ assistant：……
 | `platform.platform_id` | 空字符串 | 留空允许任意 `aiocqhttp` 实例；填写后限定该实例 |
 | `permissions.allow_group_admin` / `allow_group_owner` | `true` | 允许当前群管理员、群主使用相应群管理能力 |
 | `permissions.allow_cross_group` / `allow_cross_private` | `true` | 允许 AstrBot 管理员在校验目标后跨群、跨好友操作 |
+| `permissions.allow_cross_private_to_admin` | `true` | 允许普通用户跨会话私聊指定范围内的 AstrBot 管理员 |
 | `confirmation.ttl_seconds` | `120` 秒 | 待确认操作的有效期 |
 | `network.allow_private_network` | `false` | 允许插件请求私网或其他非公网地址 |
 | `events.retention_days` | `15` 天 | 请求与通知事件的保留期 |
 | `audit.retention_days` | `30` 天 | 操作审计的保留期 |
 
 #### 详细说明
+
+**普通用户向管理员转达**：`permissions.allow_cross_private_to_admin` 仅放宽 `qq_send_message.send` 的私聊目标，目标必须是同平台、机器人好友列表中的 AstrBot 管理员；不放宽跨群、临时会话、合并转发或其他跨好友操作。实际发送时仍根据 AstrBot 当前 `admins_id` 重新校验目标身份。
 
 调用者权限及二次确认流程见 [权限与确认](#permissions)。`network.allow_private_network` 的 WebUI 和运行时默认值均为 `false`；已有安装如果显式保存了 `true`，需要在 WebUI 改为 `false` 后重载插件，才会禁止私网访问。
 

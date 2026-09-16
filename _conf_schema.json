@@ -72,8 +72,8 @@
       "allow_cross_private_to_admin": {
         "type": "bool",
         "description": "允许普通用户跨会话私聊 AstrBot 管理员",
-        "hint": "仅放宽 qq_send_message.send 的私聊目标；目标仍须是同平台的机器人好友，不允许跨群或临时会话。需同时开启跨会话消息衔接。",
-        "default": false
+        "hint": "仅放宽 qq_send_message.send 的私聊目标；目标须是同平台、机器人好友列表中的 AstrBot 管理员，不允许跨群或临时会话。",
+        "default": true
       }
     }
   },

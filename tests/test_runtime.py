@@ -96,6 +96,9 @@ class FakeContext:
     def __init__(self, client: FakeClient) -> None:
         self.platform = FakePlatform(client)
 
+    def get_config(self):
+        return {"admins_id": ["10001"]}
+
     def get_platform_inst(self, platform_id: str):
         return self.platform if platform_id == "platform-a" else None
 

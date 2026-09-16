@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
         "allow_group_owner": True,
         "allow_cross_group": True,
         "allow_cross_private": True,
-        "allow_cross_private_to_admin": False,
+        "allow_cross_private_to_admin": True,
     },
     "confirmation": {
         "ttl_seconds": 120,
@@ -1405,7 +1405,7 @@ class QQRuntime:
                     if (
                         not allowed
                         and spec.operation_id == "qq_send_message.send"
-                        and self.config["cross_session_handoff"]["enabled"]
+                        and params.get("target", {}).get("type") == "private"
                         and self.config["permissions"]["allow_cross_private_to_admin"]
                     ):
                         astrbot_config = self.context.get_config()
