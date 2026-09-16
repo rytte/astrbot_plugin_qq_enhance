@@ -17,7 +17,7 @@ from astrbot.api.message_components import File, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import json_response
-from astrbot.core.agent.message import Message, TextPart
+from astrbot.core.agent.message import TextPart
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
@@ -37,7 +37,7 @@ from .catalog import (
     TOOL_OPERATIONS,
 )
 from .context_images import ContextImageError
-from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer, mark_content
+from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -50,6 +50,7 @@ from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, Web
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
+RECALL_EXCERPT_MAX_CHARS = 200
 PLUGIN_NAME = "astrbot_plugin_qq_enhance"
 HANDOFF_SOURCE_MAX_CHARS = 2000
 QQ_TOOL_DIALOGUE_PROMPT = """QQ工具调用前后，发言是可选的：可以直接调用，也可以沿用当前人设与对话语气自然回应用户。
@@ -219,6 +220,7 @@ class QQEnhancePlugin(Star):
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.handoff_tasks: set[asyncio.Task[None]] = set()
+        self.recall_tasks: set[asyncio.Task[None]] = set()
         self.notification_locks: dict[str, asyncio.Lock] = {}
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
         self.debouncer = MessageDebouncer(self)
@@ -1547,24 +1549,7 @@ class QQEnhancePlugin(Star):
             or (not prompt and not (debounced and debounced.batch))
         ):
             return
-        try:
-            history = json.loads(request.conversation.history or "[]")
-        except (TypeError, json.JSONDecodeError):
-            logger.warning(
-                "Cannot track QQ message recall because conversation history is invalid: umo=%s",
-                event.unified_msg_origin,
-            )
-            return
-        if not isinstance(history, list):
-            logger.warning(
-                "Cannot track QQ message recall because conversation history is not a list: umo=%s",
-                event.unified_msg_origin,
-            )
-            return
-
         self._cleanup_recall_messages()
-        while len(self.recall_messages) >= RECALL_TRACK_MAX_ENTRIES:
-            del self.recall_messages[next(iter(self.recall_messages))]
 
         sent_at = raw.get("time")
         if (
@@ -1581,159 +1566,73 @@ class QQEnhancePlugin(Star):
             scope_id,
             str(message_id),
         )
-        self.recall_messages.pop(key, None)
+        if key in self.recall_messages:
+            return
+        while len(self.recall_messages) >= RECALL_TRACK_MAX_ENTRIES:
+            del self.recall_messages[next(iter(self.recall_messages))]
+        excerpt = prompt.strip()
+        if len(excerpt) > RECALL_EXCERPT_MAX_CHARS:
+            excerpt = excerpt[:RECALL_EXCERPT_MAX_CHARS] + "…"
         self.recall_messages[key] = {
             "unified_msg_origin": event.unified_msg_origin,
             "conversation_id": request.conversation.cid,
-            "history_length": len(history),
-            "prompt": prompt,
+            "excerpt": excerpt or "[非文本消息]",
             "sender_id": sender_id,
             "sent_at": sent_at,
             "expires_at": time.monotonic() + RECALL_TRACK_TTL_SECONDS,
-            "recalled": False,
-            "marked": False,
-            "marker": "",
-            "debounced": bool(debounced and debounced.batch),
+            "pending": False,
+            "notified": False,
+            "history_ready": (
+                debounced.history_ready if debounced and debounced.batch else None
+            ),
         }
-        event.set_extra("_qq_enhance_recall_key", key)
         if hasattr(self, "debouncer"):
             pending = self.debouncer.early_recalls.pop(key, None)
             if pending is not None and pending[0] > time.monotonic():
                 await self.mark_recalled_message(pending[1])
 
-    async def _append_recall_marker(self, entry: dict) -> bool:
-        """Append a verified recall marker to one persisted user message.
+    async def _append_recall_notice(self, entry: dict, content: str) -> None:
+        """Append a recall event after the original input has finished saving.
 
         Args:
-            entry: Short-lived message mapping created before the LLM request.
-
-        Returns:
-            Whether the target history item is already marked or was updated.
+            entry: Short-lived original message and conversation mapping.
+            content: Platform recall description to persist as a new user entry.
         """
 
         try:
-            conversation = await self.context.conversation_manager.get_conversation(
-                entry["unified_msg_origin"], entry["conversation_id"]
-            )
-            if conversation is None:
-                return False
-            history = json.loads(conversation.history or "[]")
-            if not isinstance(history, list):
-                raise ValueError("conversation history is not a list")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            logger.warning(
-                "Cannot mark recalled QQ message because conversation history is invalid: umo=%s",
-                entry["unified_msg_origin"],
-            )
-            return False
-        except Exception:
-            logger.exception(
-                "Failed to load conversation while marking recalled QQ message: umo=%s",
-                entry["unified_msg_origin"],
-            )
-            return False
-
-        if entry.get("debounced") and "message_content" not in entry:
-            return False
-        marker = entry["marker"]
-        if "message_content" in entry:
-            original = entry["message_content"]
-            marked = mark_content(original, marker)
-            candidates = [
-                (index, item)
-                for index, item in enumerate(history)
-                if isinstance(item, dict)
-                and item.get("role") == "user"
-                and (item.get("content") == original or item.get("content") == marked)
-            ]
-            exact = [
-                item
-                for index, item in candidates
-                if index == entry.get("history_index")
-            ]
-            target = (
-                exact[0]
-                if exact
-                else (
-                    candidates[0][1]
-                    if len(candidates) == 1 and entry.get("history_persisted")
-                    else None
+            if entry["history_ready"] is not None:
+                await entry["history_ready"].wait()
+            async with session_lock_manager.acquire_lock(entry["unified_msg_origin"]):
+                manager = self.context.conversation_manager
+                conversation = await manager.get_conversation(
+                    entry["unified_msg_origin"], entry["conversation_id"]
                 )
-            )
-            if target is None:
-                return False
-            if target["content"] == marked:
-                return True
-            target["content"] = marked
-            try:
-                await self.context.conversation_manager.update_conversation(
+                if conversation is None:
+                    logger.warning(
+                        "Cannot append QQ recall notice: original conversation was removed"
+                    )
+                    return
+                history = json.loads(conversation.history or "[]")
+                if not isinstance(history, list):
+                    raise ValueError("conversation history is not a list")
+                await manager.update_conversation(
                     entry["unified_msg_origin"],
                     entry["conversation_id"],
-                    history=history,
+                    history=[*history, {"role": "user", "content": content}],
+                    token_usage=None,
                 )
-            except Exception:
-                logger.exception("Failed to mark a recalled QQ input in history")
-                return False
-            return True
-        prompt = entry["prompt"]
-        matches = []
-        marked_matches = []
-        for index, item in enumerate(history):
-            if not isinstance(item, dict) or item.get("role") != "user":
-                continue
-            content = item.get("content")
-            if isinstance(content, str):
-                if content == f"{prompt}\n{marker}":
-                    marked_matches.append(index)
-                elif content == prompt:
-                    matches.append((index, item, "content"))
-            elif isinstance(content, list):
-                for part in content:
-                    if not isinstance(part, dict) or part.get("type") not in {
-                        "text",
-                        "input_text",
-                    }:
-                        continue
-                    text = part.get("text")
-                    if text == f"{prompt}\n{marker}":
-                        marked_matches.append(index)
-                        break
-                    if text == prompt:
-                        matches.append((index, part, "text"))
-                        break
-        history_length = entry["history_length"]
-        if any(index >= history_length for index in marked_matches):
-            return True
-        preferred = [match for match in matches if match[0] >= history_length]
-        if len(preferred) == 1:
-            _, target, field = preferred[0]
-        elif not preferred and len(matches) == 1:
-            # History trimming may shift the new message before its original index.
-            _, target, field = matches[0]
-        else:
-            return False
-        target[field] = f"{target[field]}\n{marker}"
-        try:
-            await self.context.conversation_manager.update_conversation(
-                entry["unified_msg_origin"],
-                entry["conversation_id"],
-                history=history,
-            )
+                entry["notified"] = True
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception(
-                "Failed to update conversation for recalled QQ message: umo=%s",
+                "Failed to append QQ recall notice: umo=%s",
                 entry["unified_msg_origin"],
             )
-            return False
-        logger.info(
-            "Recalled QQ message marked in conversation history: umo=%s",
-            entry["unified_msg_origin"],
-        )
-        return True
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def mark_recalled_message(self, event: AstrMessageEvent) -> None:
-        """Apply friend and group recall notices to tracked conversation messages.
+        """Schedule independent recall notices for tracked QQ messages.
 
         Args:
             event: Current OneBot notice event.
@@ -1786,15 +1685,20 @@ class QQEnhancePlugin(Star):
                     pending.pop(next(iter(pending)))
                 pending[key] = (now + RECALL_TRACK_TTL_SECONDS, event)
             return
-        if entry["marked"]:
+        if entry["pending"] or entry["notified"]:
             return
         if (
             scope_kind == "group"
             and str(raw.get("user_id") or "") != entry["sender_id"]
         ):
             return
-        entry["recalled"] = True
         recalled_at = raw.get("time")
+        sent_time = "未知时间"
+        if entry["sent_at"] is not None:
+            try:
+                sent_time = time.strftime("%H:%M:%S", time.localtime(entry["sent_at"]))
+            except (ValueError, OverflowError, OSError):
+                pass
         if (
             isinstance(recalled_at, (str, int))
             and not isinstance(recalled_at, bool)
@@ -1805,44 +1709,24 @@ class QQEnhancePlugin(Star):
         else:
             elapsed = -1
         if 0 <= elapsed <= RECALL_TRACK_TTL_SECONDS:
-            minutes, seconds = divmod(elapsed, 60)
-            if minutes and seconds:
-                duration = f"{minutes} 分 {seconds} 秒"
-            elif minutes:
-                duration = f"{minutes} 分钟"
-            else:
-                duration = f"{seconds} 秒"
-            entry["marker"] = f"[该 QQ 消息已在发送后 {duration}被撤回]"
+            recall_status = f"已在发送后 {elapsed} 秒被撤回"
         else:
-            entry["marker"] = "[该 QQ 消息已被撤回]"
-        if (
-            "message_content" in entry
-            and (message := entry.get("live_message")) is not None
-        ):
-            message.content = Message.model_validate(
-                {
-                    "role": "user",
-                    "content": mark_content(message.content, entry["marker"]),
-                }
-            ).content
-        entry["marked"] = await self._append_recall_marker(entry)
+            recall_status = "已被撤回"
+        content = (
+            f"[QQ 撤回事件: 用户 {entry['sender_id']} 于 {sent_time} "
+            f"发送的消息{recall_status}。原消息摘录（仅用于定位）："
+            + json.dumps(entry["excerpt"], ensure_ascii=False)
+            + "]"
+        )
+        entry["pending"] = True
+        task = asyncio.create_task(self._append_recall_notice(entry, content))
+        self.recall_tasks.add(task)
 
-    @filter.after_message_sent()
-    async def finish_pending_recall(self, event: AstrMessageEvent) -> None:
-        """Retry a recall that arrived before the current turn was persisted.
+        def completed(done):
+            self.recall_tasks.discard(done)
+            entry["pending"] = False
 
-        Args:
-            event: Original message event whose response was just sent.
-        """
-
-        key = event.get_extra("_qq_enhance_recall_key")
-        if not isinstance(key, tuple):
-            return
-        self._cleanup_recall_messages()
-        entry = self.recall_messages.get(key)
-        if entry is None or not entry["recalled"] or entry["marked"]:
-            return
-        entry["marked"] = await self._append_recall_marker(entry)
+        task.add_done_callback(completed)
 
     @filter.on_agent_done(priority=-2000)
     async def remove_inspected_images_before_history_save(
@@ -1858,76 +1742,6 @@ class QQEnhancePlugin(Star):
 
         if self.config["context_images"]["enabled"]:
             self.context_images.clean_runtime_images(run_context)
-
-    @filter.on_agent_done(priority=-1000)
-    async def mark_pending_recall_before_history_save(
-        self, event: AstrMessageEvent, run_context, _response
-    ) -> None:
-        """Attach an early recall marker before AstrBot persists agent history.
-
-        Args:
-            event: Original message event for the completed agent run.
-            run_context: Agent context containing messages that will be persisted.
-            _response: Final model response, unused by recall tracking.
-        """
-
-        for entry in self.recall_messages.values():
-            message = entry.get("live_message")
-            if (
-                entry["recalled"]
-                and message is not None
-                and any(
-                    message is item for item in getattr(run_context, "messages", [])
-                )
-            ):
-                message.content = Message.model_validate(
-                    {
-                        "role": "user",
-                        "content": mark_content(message.content, entry["marker"]),
-                    }
-                ).content
-        key = event.get_extra("_qq_enhance_recall_key")
-        if not isinstance(key, tuple):
-            return
-        self._cleanup_recall_messages()
-        entry = self.recall_messages.get(key)
-        if entry is None or not entry["recalled"] or entry["marked"]:
-            return
-        if "message_content" in entry:
-            return
-        for message in reversed(getattr(run_context, "messages", [])):
-            if getattr(message, "role", None) != "user":
-                continue
-            content = getattr(message, "content", None)
-            if isinstance(content, str):
-                if content == f"{entry['prompt']}\n{entry['marker']}":
-                    entry["marked"] = True
-                    return
-                if content == entry["prompt"]:
-                    message.content = f"{content}\n{entry['marker']}"
-                    entry["marked"] = True
-                    return
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        part_type = part.get("type")
-                        text = part.get("text")
-                    else:
-                        part_type = getattr(part, "type", None)
-                        text = getattr(part, "text", None)
-                    if part_type not in {"text", "input_text"}:
-                        continue
-                    if text == f"{entry['prompt']}\n{entry['marker']}":
-                        entry["marked"] = True
-                        return
-                    if text != entry["prompt"]:
-                        continue
-                    if isinstance(part, dict):
-                        part["text"] = f"{text}\n{entry['marker']}"
-                    else:
-                        part.text = f"{text}\n{entry['marker']}"
-                    entry["marked"] = True
-                    return
 
     @filter.on_llm_request()
     async def select_tools(
@@ -2924,6 +2738,12 @@ class QQEnhancePlugin(Star):
         if handoff_tasks:
             await asyncio.gather(*handoff_tasks, return_exceptions=True)
         self.handoff_tasks.clear()
+        recall_tasks = list(self.recall_tasks)
+        for task in recall_tasks:
+            task.cancel()
+        if recall_tasks:
+            await asyncio.gather(*recall_tasks, return_exceptions=True)
+        self.recall_tasks.clear()
         if self.cleanup_task is not None:
             self.cleanup_task.cancel()
             with suppress(asyncio.CancelledError):

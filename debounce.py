@@ -9,7 +9,7 @@ from typing import ClassVar
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
-from astrbot.core.agent.message import Message, dump_messages_with_checkpoints
+from astrbot.core.agent.message import dump_messages_with_checkpoints
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.utils.session_lock import session_lock_manager
 
@@ -26,11 +26,13 @@ class Arrival:
     previous: Arrival | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     finished: asyncio.Event = field(default_factory=asyncio.Event)
+    history_ready: asyncio.Event = field(default_factory=asyncio.Event)
     request: ProviderRequest | None = None
     messages: list[dict] = field(default_factory=list)
     batch: list[Arrival] = field(default_factory=list)
     protected: bool = False
     persisted: bool = False
+    superseded: bool = False
     persistence: asyncio.Task | None = None
     buffer_bytes: int = 0
     waited_seconds: float = 0.0
@@ -84,37 +86,14 @@ class ArrivalFilter(filter.CustomFilter):
         def completed(_task):
             arrival.finished.set()
             arrival.ready.set()
+            if not arrival.superseded:
+                arrival.history_ready.set()
             arrival.previous = None
             if self.tails.get(key) is arrival:
                 self.tails.pop(key, None)
 
         task.add_done_callback(completed)
         return True
-
-
-def mark_content(content, marker: str):
-    """Append a recall marker without replacing attachments or reminders.
-
-    Args:
-        content: Persisted content or runtime content parts.
-        marker: Verified recall description.
-
-    Returns:
-        Content with exactly one copy of the marker.
-    """
-    if isinstance(content, str):
-        return content if content.endswith("\n" + marker) else f"{content}\n{marker}"
-    if isinstance(content, list):
-        for part in content:
-            text = (
-                part.get("text")
-                if isinstance(part, dict)
-                else getattr(part, "text", None)
-            )
-            if text == marker:
-                return content
-        return [*content, {"type": "text", "text": marker}]
-    return content
 
 
 class MessageDebouncer:
@@ -282,6 +261,7 @@ class MessageDebouncer:
             for path in paths:
                 event.track_temporary_local_file(path)
             paths.clear()
+            previous.superseded = True
             previous.task.cancel()
             job = asyncio.create_task(self._persist_after_finish(previous, scope))
             arrival.persistence = job
@@ -339,14 +319,6 @@ class MessageDebouncer:
             if not isinstance(history, list):
                 raise ValueError("Conversation history must be a list")
             messages = deepcopy(arrival.messages)
-            recall = self.plugin.recall_messages.get(
-                event.get_extra("_qq_enhance_recall_key")
-            )
-            if recall and recall["recalled"]:
-                messages[-1]["content"] = mark_content(
-                    messages[-1]["content"], recall["marker"]
-                )
-            index = len(history) + len(messages) - 1
             await manager.update_conversation(
                 event.unified_msg_origin,
                 cid,
@@ -354,16 +326,7 @@ class MessageDebouncer:
                 token_usage=None,
             )
             arrival.persisted = True
-            if recall:
-                recall["history_index"] = index
-                recall["history_length"] = index
-                recall["history_persisted"] = True
-                recall["marked"] = recall["recalled"] and (
-                    messages[-1]["content"]
-                    == mark_content(recall["message_content"], recall["marker"])
-                )
-                if recall["recalled"] and not recall["marked"]:
-                    recall["marked"] = await self.plugin._append_recall_marker(recall)
+            arrival.history_ready.set()
             # Only the input's size and source event are needed for later batch
             # limits and tool selection; release its full request history.
             arrival.request = None
@@ -415,46 +378,6 @@ class MessageDebouncer:
         arrival.buffer_bytes = len(
             json.dumps(arrival.messages, ensure_ascii=False).encode("utf-8")
         )
-        key = event.get_extra("_qq_enhance_recall_key")
-        recall = self.plugin.recall_messages.get(key)
-        if recall:
-            recall["message_content"] = deepcopy(arrival.messages[-1]["content"])
-            recall["history_index"] = len(contexts)
-            recall["live_message"] = current
-        # Rebind previously tracked inputs to the new runtime objects. A recall
-        # during generation must not be overwritten by the later history save.
-        runtime_messages = (
-            run_context.messages[1:] if request.system_prompt else run_context.messages
-        )
-        for entry in self.plugin.recall_messages.values():
-            if (
-                entry["conversation_id"] != request.conversation.cid
-                or entry["unified_msg_origin"] != event.unified_msg_origin
-                or "message_content" not in entry
-            ):
-                continue
-            index = entry.get("history_index", -1)
-            runtime_index = sum(
-                item.get("role") != "_checkpoint" for item in contexts[:index]
-            )
-            if 0 <= runtime_index < len(runtime_messages):
-                message = runtime_messages[runtime_index]
-                content = dump_messages_with_checkpoints([message])[0]["content"]
-                original = entry["message_content"]
-                if content == original or (
-                    entry["recalled"]
-                    and content == mark_content(original, entry["marker"])
-                ):
-                    entry["live_message"] = message
-                    if entry["recalled"]:
-                        message.content = Message.model_validate(
-                            {
-                                "role": "user",
-                                "content": mark_content(
-                                    message.content, entry["marker"]
-                                ),
-                            }
-                        ).content
         arrival.ready.set()
 
     def protect(self, event) -> None:

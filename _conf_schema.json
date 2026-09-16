@@ -246,8 +246,8 @@
       },
       "mark_recalled_messages": {
         "type": "bool",
-        "description": "在模型上下文中的 QQ 消息末尾标记该消息已被撤回",
-        "hint": "支持私聊和群聊；只更新已有上下文，不会因撤回事件唤醒模型或主动回复。",
+        "description": "消息撤回感知",
+        "hint": "支持私聊和群聊；向原会话历史末尾追加独立的 QQ 撤回事件标签，不会因撤回事件唤醒模型或主动回复。",
         "default": true
       },
       "max_semantic_chars": {

@@ -140,6 +140,7 @@ class Harness:
             {"debounce": {"enabled": True, **(config or {})}}
         )
         self.plugin.recall_messages = {}
+        self.plugin.recall_tasks = set()
         self.plugin.context = SimpleNamespace(
             conversation_manager=self.manager,
             get_config=lambda **kwargs: {"agent_runner": {"runner_type": "local"}},
@@ -228,9 +229,6 @@ class Harness:
                         raise RuntimeError("provider failed")
                     await self.plugin.protect_debounce_response(event, None)
                     messages.append(Message(role="assistant", content="reply"))
-                    await self.plugin.mark_pending_recall_before_history_save(
-                        event, event.runtime, None
-                    )
                     await self.manager.update_conversation(
                         event.unified_msg_origin,
                         conversation.cid,
@@ -256,6 +254,16 @@ class Harness:
                 task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         await self.plugin.debouncer.close()
+        recalls = list(self.plugin.recall_tasks)
+        for task in recalls:
+            task.cancel()
+        if recalls:
+            await asyncio.gather(*recalls, return_exceptions=True)
+
+    async def drain_recalls(self):
+        tasks = list(self.plugin.recall_tasks)
+        if tasks:
+            await asyncio.wait_for(asyncio.gather(*tasks), 3)
 
 
 async def wait(event):
@@ -438,7 +446,7 @@ async def test_targeted_poke_can_follow_message_without_a_message_id():
         harness.start(poke)
         await wait(poke.prepared)
         assert texts(harness.requests[-1]) == [first.message_str, poke.message_str]
-        assert poke.get_extra("_qq_enhance_recall_key") is None
+        assert set(harness.plugin.recall_messages) == {("qq", "private", "7", "1")}
     finally:
         await harness.finish()
 
@@ -508,7 +516,7 @@ async def test_media_cleanup_ownership_moves_to_successor():
 
 @pytest.mark.parametrize("target", [1, 2])
 @pytest.mark.asyncio
-async def test_recall_marks_only_one_identical_input_and_survives_history_save(target):
+async def test_recall_appends_one_event_for_identical_inputs_after_history_save(target):
     harness = Harness()
     first, second = Event("同样的文字", 1), Event("同样的文字", 2)
     try:
@@ -528,11 +536,18 @@ async def test_recall_marks_only_one_identical_input_and_survives_history_save(t
             },
         )
         await harness.plugin.mark_recalled_message(notice)
+        assert "[QQ 撤回事件:" not in json.dumps(
+            dump_messages_with_checkpoints(second.runtime.messages), ensure_ascii=False
+        )
         second.allow_reply.set()
         await harness.tasks[-1]
+        await harness.drain_recalls()
         history = harness.manager.history(second)
-        assert "撤回" in json.dumps(history[target - 1], ensure_ascii=False)
-        assert "撤回" not in json.dumps(history[2 - target], ensure_ascii=False)
+        assert texts(history[:3]) == ["同样的文字", "同样的文字", "reply"]
+        assert history[-1]["role"] == "user"
+        assert "消息 ID" not in history[-1]["content"]
+        for key, entry in harness.plugin.recall_messages.items():
+            assert entry["notified"] is (key[-1] == str(target))
         assert json.dumps(history, ensure_ascii=False).count("被撤回") == 1
     finally:
         await harness.finish()
@@ -559,7 +574,9 @@ async def test_early_recall_is_retained_when_generation_is_superseded():
         await harness.plugin.mark_recalled_message(notice)
         harness.start(second)
         await wait(second.prepared)
-        assert "被撤回" in json.dumps(harness.requests[-1][0], ensure_ascii=False)
+        assert texts(harness.requests[-1])[0] == "将撤回"
+        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
+        assert texts(harness.requests[-1])[-1] == "新的输入"
     finally:
         await harness.finish()
 
@@ -727,7 +744,8 @@ async def test_recall_during_persistence_is_not_lost():
         await harness.plugin.mark_recalled_message(notice)
         release.set()
         await wait(second.prepared)
-        assert "被撤回" in json.dumps(harness.requests[-1][0], ensure_ascii=False)
+        assert texts(harness.requests[-1])[0] == "early recall"
+        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
     finally:
         release.set()
         await harness.finish()
@@ -755,9 +773,6 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
         async def on_agent_done(self, context, response):
             await harness.plugin.protect_debounce_response(
                 context.context.event, response
-            )
-            await harness.plugin.mark_pending_recall_before_history_save(
-                context.context.event, context, response
             )
 
     async def pipeline(event):
@@ -829,7 +844,7 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
 
 
 @pytest.mark.asyncio
-async def test_recall_before_preprocessing_finishes_is_applied_to_original_input():
+async def test_recall_before_preprocessing_finishes_is_appended_after_original_input():
     harness = Harness()
     gate = asyncio.Event()
     first, second = Event("slow voice", 1), Event("next", 2)
@@ -852,7 +867,8 @@ async def test_recall_before_preprocessing_finishes_is_applied_to_original_input
         harness.start(second)
         gate.set()
         await wait(second.prepared)
-        assert "被撤回" in json.dumps(harness.requests[-1][0], ensure_ascii=False)
+        assert texts(harness.requests[-1])[0] == "slow voice"
+        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
         assert not harness.plugin.debouncer.early_recalls
     finally:
         gate.set()
@@ -944,8 +960,9 @@ async def test_persistence_survives_successor_cancellation():
         await harness.finish()
 
 
+@pytest.mark.parametrize("recalled", [False, True])
 @pytest.mark.asyncio
-async def test_failed_persistence_is_retried_before_next_generation():
+async def test_failed_persistence_is_retried_before_next_generation(recalled):
     harness = Harness()
     first, second, third = (
         Event("first", 1),
@@ -965,14 +982,39 @@ async def test_failed_persistence_is_retried_before_next_generation():
     try:
         harness.start(first)
         await wait(first.prepared)
+        if recalled:
+            await harness.plugin.mark_recalled_message(
+                Event(
+                    "",
+                    None,
+                    raw={
+                        "post_type": "notice",
+                        "notice_type": "friend_recall",
+                        "user_id": 7,
+                        "message_id": 1,
+                        "time": 1005,
+                    },
+                )
+            )
         second_task = harness.start(second)
         with pytest.raises(RuntimeError, match="database unavailable"):
             await second_task
         assert harness.plugin.debouncer.failed
+        assert harness.manager.history(first) == []
+        if recalled:
+            assert not first.get_extra(ARRIVAL_KEY).history_ready.is_set()
+            assert harness.plugin.recall_tasks
         harness.start(third)
         await wait(third.prepared)
         assert texts(harness.requests[-1]) == ["first", "third"]
         assert not harness.plugin.debouncer.failed
+        if recalled:
+            third.allow_reply.set()
+            await harness.tasks[-1]
+            await harness.drain_recalls()
+            history = harness.manager.history(third)
+            assert texts(history[:3]) == ["first", "third", "reply"]
+            assert "[QQ 撤回事件:" in history[-1]["content"]
     finally:
         await harness.finish()
 
@@ -1036,8 +1078,11 @@ async def test_pure_image_without_prompt_is_retained_and_recallable():
         await harness.plugin.mark_recalled_message(notice)
         second.allow_reply.set()
         await harness.tasks[-1]
+        await harness.drain_recalls()
         history = harness.manager.history(second)
-        assert "被撤回" in json.dumps(history[0], ensure_ascii=False)
+        assert "[QQ 撤回事件:" not in json.dumps(history[0], ensure_ascii=False)
+        assert "[QQ 撤回事件:" in history[-1]["content"]
+        assert "[非文本消息]" in history[-1]["content"]
         assert any(
             part.get("image_url", {}).get("url") == image["image_url"]["url"]
             for part in history[0]["content"]
