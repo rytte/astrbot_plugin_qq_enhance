@@ -37,7 +37,7 @@ from .catalog import (
     OperationSpec,
 )
 from .context_images import ContextImageError, ContextImageManager
-from .request_notification import RequestNotificationEvent
+from .request_notification import PlatformNotificationEvent
 from .storage import Storage
 
 DEFAULT_CONFIG = {
@@ -656,8 +656,8 @@ class QQRuntime:
         warnings: list[str] = []
         spec = OPERATION_MAP.get(operation_id)
         try:
-            if isinstance(event, RequestNotificationEvent):
-                raise QQToolError("permission_denied", "平台申请通知不具备工具执行授权")
+            if isinstance(event, PlatformNotificationEvent):
+                raise QQToolError("permission_denied", "平台事件通知不具备工具执行授权")
             if spec is None or operation not in TOOL_OPERATIONS.get(tool, ()):
                 raise QQToolError(
                     "invalid_parameters", f"不支持的 operation：{operation}"
@@ -967,7 +967,7 @@ class QQRuntime:
                 }
             )
 
-    async def confirm(self, event: Any, pending_id: str) -> str:
+    async def confirm(self, event: Any, pending_id: str) -> dict:
         """Execute an exact pending operation after a real user command.
 
         Args:
@@ -975,11 +975,16 @@ class QQRuntime:
             pending_id: Bound pending operation identifier.
 
         Returns:
-            Human-readable confirmation result.
+            Trusted outcome facts for notification, without stored action parameters.
         """
 
+        result = {"status": "not_executed", "message": ""}
+        if isinstance(event, PlatformNotificationEvent):
+            result["message"] = "平台事件通知不具备操作确认授权。"
+            return result
         if not re.fullmatch(r"[0-9a-f]{8}", pending_id):
-            return "确认编号格式无效。"
+            result["message"] = "确认编号格式无效。"
+            return result
         record = await self.storage.claim_pending(
             pending_id,
             str(event.get_sender_id() or ""),
@@ -987,11 +992,17 @@ class QQRuntime:
             event.get_platform_id(),
         )
         if record is None:
-            return "待确认操作不存在、已过期、已使用，或不属于当前用户与会话。"
+            result["message"] = (
+                "待确认操作不存在、已过期、已使用，或不属于当前用户与会话；本次未执行操作。"
+            )
+            return result
+        result["operation"] = record["operation_id"]
+        result["target"] = {"type": record["target_kind"], "id": record["target_id"]}
         spec = OPERATION_MAP.get(record["operation_id"])
         if spec is None:
             await self.storage.finish_pending(pending_id)
-            return "待确认操作已失效：插件不再支持该操作。"
+            result["message"] = "待确认操作已失效：插件不再支持该操作。"
+            return result
         started = time.monotonic()
         try:
             if not self.operation_enabled(spec.operation_id):
@@ -1018,7 +1029,10 @@ class QQRuntime:
             )
             if not record["action"]:
                 raise QQToolError("response_invalid", "待确认操作缺少协议 action")
+            result["status"] = "unknown"
             data = await self.call_action(event, record["action"], action_params)
+            result["status"] = "executed"
+            result["message"] = "QQ 接口已报告执行成功，本次确认已处理，不要再次执行。"
             if spec.operation_id in {
                 "qq_send_message.send",
                 "qq_send_forward.send",
@@ -1050,25 +1064,48 @@ class QQRuntime:
                 pending_id,
                 int((time.monotonic() - started) * 1000),
             )
-            return f"已确认并执行：{record['summary']}"
+            return result
         except QQToolError as exc:
-            await self.audit(
-                event,
-                spec,
-                record["target_kind"],
-                record["target_id"],
-                "confirmed",
-                exc.code,
-                record["params_hash"],
-                pending_id,
-                int((time.monotonic() - started) * 1000),
-            )
-            return f"确认后执行失败：{exc.message}"
+            try:
+                await self.audit(
+                    event,
+                    spec,
+                    record["target_kind"],
+                    record["target_id"],
+                    "confirmed",
+                    exc.code,
+                    record["params_hash"],
+                    pending_id,
+                    int((time.monotonic() - started) * 1000),
+                )
+            except Exception:
+                logger.exception("Failed to audit confirmation failure")
+            if result["status"] == "executed":
+                result["message"] += f"后续处理失败：{exc.message}"
+            elif result["status"] == "unknown":
+                result["message"] = (
+                    f"调用 QQ 接口时发生错误：{exc.message}。执行状态不确定，请先核对 QQ 实际状态，不要重复操作。"
+                )
+            else:
+                result["message"] = f"确认未执行：{exc.message}"
+            return result
         except Exception:
             logger.exception("Confirmed QQ operation failed unexpectedly")
-            return "确认执行发生内部错误，执行状态不确定；请先核对 QQ 实际状态，不要重复操作。"
+            if result["status"] == "executed":
+                result["message"] += "后续处理发生内部错误，但不要重复操作。"
+            elif result["status"] == "unknown":
+                result["message"] = (
+                    "确认执行发生内部错误，执行状态不确定；请先核对 QQ 实际状态，不要重复操作。"
+                )
+            else:
+                result["message"] = "确认处理发生内部错误，本次未发起 QQ 操作。"
+            return result
         finally:
-            await self.storage.finish_pending(pending_id)
+            try:
+                await self.storage.finish_pending(pending_id)
+            except Exception:
+                logger.exception("Failed to finish confirmation record")
+                result["message"] += "确认记录收尾失败，请勿重复操作。"
 
     async def verify_platform(self, event: Any) -> None:
         """Validate adapter identity and the supported NapCat version range.

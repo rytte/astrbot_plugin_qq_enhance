@@ -1099,10 +1099,91 @@ async def test_destructive_operation_requires_real_user_confirmation(tmp_path) -
     )
     assert first["error"]["code"] == "confirmation_required"
     assert not any(action == "delete_friend" for action, _ in client.calls)
-    text = await runtime.confirm(event, first["pending_id"])
-    assert text.startswith("已确认并执行")
+    result = await runtime.confirm(event, first["pending_id"])
+    assert result["status"] == "executed"
+    assert result["operation"] == "qq_friend_manage.delete"
+    assert result["target"] == {"type": "private", "id": "10001"}
+    assert "待确认：" not in result["message"]
     assert sum(action == "delete_friend" for action, _ in client.calls) == 1
-    assert "不存在" in await runtime.confirm(event, first["pending_id"])
+    repeated = await runtime.confirm(event, first["pending_id"])
+    assert repeated["status"] == "not_executed"
+    assert "不存在" in repeated["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["permission", "upstream", "audit", "finish"])
+async def test_confirmation_reports_execution_state_without_retrying(tmp_path, failure):
+    runtime, client, storage = await make_runtime(tmp_path)
+    event = FakeEvent()
+    pending = json.loads(
+        await runtime.execute(event, "qq_friend_manage", "delete", {"user_id": "10001"})
+    )
+    original_call = client.call_action
+
+    async def call_action(action, **params):
+        if failure == "upstream" and action == "delete_friend":
+            client.calls.append((action, params))
+            raise RuntimeError("connection lost after dispatch")
+        return await original_call(action, **params)
+
+    client.call_action = call_action
+    if failure == "permission":
+        runtime.authorize = AsyncMock(
+            side_effect=QQToolError("permission_denied", "权限已改变")
+        )
+    elif failure == "audit":
+        runtime.audit = AsyncMock(side_effect=[None, RuntimeError("audit unavailable")])
+    elif failure == "finish":
+        storage.finish_pending = AsyncMock(
+            side_effect=RuntimeError("database unavailable")
+        )
+    result = await runtime.confirm(event, pending["pending_id"])
+    assert (
+        result["status"]
+        == {
+            "permission": "not_executed",
+            "upstream": "unknown",
+            "audit": "executed",
+            "finish": "executed",
+        }[failure]
+    )
+    assert "params" not in result and "flag" not in result
+    if failure == "upstream":
+        assert "执行状态不确定" in result["message"]
+    if failure in {"audit", "finish"}:
+        assert "执行成功" in result["message"]
+    repeated = await runtime.confirm(event, pending["pending_id"])
+    assert repeated["status"] == "not_executed"
+    assert sum(action == "delete_friend" for action, _params in client.calls) == (
+        0 if failure == "permission" else 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["invalid_id", "different_user", "different_session", "expired"]
+)
+async def test_confirmation_validation_still_prevents_execution(tmp_path, reason):
+    runtime, client, _storage = await make_runtime(tmp_path)
+    source = FakeEvent()
+    pending = json.loads(
+        await runtime.execute(
+            source, "qq_friend_manage", "delete", {"user_id": "10001"}
+        )
+    )
+    caller = FakeEvent(sender_id="20001") if reason == "different_user" else FakeEvent()
+    pending_id = pending["pending_id"]
+    if reason == "different_session":
+        caller.unified_msg_origin = "platform-a:GroupMessage:30001"
+    elif reason == "invalid_id":
+        pending_id = "not-a-token"
+    with patch(
+        "astrbot_plugin_qq_enhance.storage.time.time",
+        return_value=time.time() + (10000 if reason == "expired" else 0),
+    ):
+        result = await runtime.confirm(caller, pending_id)
+    assert result["status"] == "not_executed"
+    assert not any(action == "delete_friend" for action, _params in client.calls)
 
 
 @pytest.mark.asyncio

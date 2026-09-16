@@ -14,6 +14,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot_plugin_qq_enhance.request_notification import (
+    ConfirmationResultEvent,
     NotificationOnlyTool,
     RequestNotificationEvent,
 )
@@ -116,8 +117,16 @@ async def test_capture_does_not_notify_for_duplicate_or_other_platform() -> None
 
 @pytest.fixture
 def notification_plugin(monkeypatch):
+    from astrbot.core.star.session_llm_manager import SessionServiceManager
     from astrbot.core.star.session_plugin_manager import SessionPluginManager
+    from astrbot.core.utils.metrics import Metric
 
+    monkeypatch.setattr(Metric, "upload", AsyncMock())
+    monkeypatch.setattr(
+        SessionServiceManager,
+        "should_process_llm_request",
+        AsyncMock(return_value=True),
+    )
     monkeypatch.setattr(
         SessionPluginManager,
         "is_plugin_enabled_for_session",
@@ -173,6 +182,168 @@ async def queue_notification(
         }
     )
     return plugin.context.get_event_queue().get_nowait()
+
+
+def confirmation_source(plugin, group_id="", isolated=False):
+    from astrbot.api.message_components import Plain
+    from astrbot.core.platform.astrbot_message import (
+        AstrBotMessage,
+        Group,
+        MessageMember,
+    )
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+
+    message = AstrBotMessage()
+    message.type = MessageType.GROUP_MESSAGE if group_id else MessageType.FRIEND_MESSAGE
+    message.self_id = "90001"
+    message.message_id = "67890"
+    message.sender = MessageMember("10001", "Illidan")
+    message.group = Group(group_id=group_id, group_name="原群聊") if group_id else None
+    message.session_id = f"10001_{group_id}" if isolated else group_id or "10001"
+    message.message_str = "/qq confirm 9f3dfabf"
+    message.message = [Plain(message.message_str)]
+    message.raw_message = {"post_type": "message", "message_id": 67890}
+    platform = plugin.context.get_platform_inst("platform-a")
+    source = AiocqhttpMessageEvent(
+        message.message_str,
+        message,
+        platform.meta(),
+        message.session_id,
+        platform.get_client(),
+    )
+    source.role = "admin"
+    return source
+
+
+async def queue_confirmation(plugin, group_id="", isolated=False):
+    source = confirmation_source(plugin, group_id, isolated)
+    plugin.runtime = SimpleNamespace(
+        confirm=AsyncMock(
+            return_value={
+                "status": "executed",
+                "operation": "qq_friend_manage.delete",
+                "target": {"type": "private", "id": "2569553292"},
+                "message": "QQ 接口已报告执行成功，本次确认已处理，不要再次执行。",
+            }
+        )
+    )
+    outputs = [
+        output async for output in plugin.qq_command(source, "confirm", "9f3dfabf")
+    ]
+    assert outputs == []
+    assert source.is_stopped()
+    return plugin.context.get_event_queue().get_nowait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "group_id, isolated", [("", False), ("30001", False), ("30001", True)]
+)
+async def test_confirmation_result_keeps_original_session_and_is_read_only(
+    notification_plugin, group_id, isolated
+):
+    plugin = notification_plugin
+    plugin.config["request_notifications"]["enabled"] = False
+    event = await queue_confirmation(plugin, group_id, isolated)
+    assert isinstance(event, ConfirmationResultEvent)
+    session_id = f"10001_{group_id}" if isolated else group_id or "10001"
+    message_type = "GroupMessage" if group_id else "FriendMessage"
+    assert event.unified_msg_origin == f"platform-a:{message_type}:{session_id}"
+    event.session_id = f"{event.get_sender_id()}_{group_id}"
+    assert event.session_id == session_id
+    assert event.get_group_id() == group_id
+    assert event.get_sender_id() != "10001"
+    assert not event.is_admin()
+    assert "executed" in event.message_str and "2569553292" in event.message_str
+    assert "待确认：" not in event.message_str
+    plugin.runtime.confirm.assert_awaited_once()
+    plugin.context.llm_generate.assert_not_awaited()
+    plugin.context.send_message.assert_not_awaited()
+    plugin.context.conversation_manager.update_conversation.assert_not_awaited()
+    await plugin.capture_onebot_event(event)
+    plugin.storage.add_event.assert_not_awaited()
+    from astrbot_plugin_qq_enhance.debounce import ArrivalFilter
+
+    assert not ArrivalFilter().filter(event, {})
+    request = ProviderRequest(
+        prompt=event.message_str, conversation=SimpleNamespace(cid="conversation-a")
+    )
+    await plugin.prepare_platform_notification(event, request)
+    plugin.storage.bind_request_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_reply_maps_native_mentions_and_quotes_to_real_user(
+    notification_plugin,
+):
+    from astrbot.api.message_components import At, Plain, Reply
+
+    event = await queue_confirmation(notification_plugin, "30001", True)
+    chain = MessageChain(
+        chain=[
+            At(qq=event.get_sender_id(), name=event.get_sender_name()),
+            Reply(id=event.message_obj.message_id),
+            Plain("已经处理好了。"),
+        ]
+    )
+    await event.send(chain)
+    session, sent = notification_plugin.context.send_message.await_args.args
+    assert str(session) == "platform-a:GroupMessage:10001_30001"
+    assert sent.chain[0].qq == "10001"
+    assert sent.chain[0].name == "Illidan"
+    assert str(sent.chain[1].id) == "67890"
+    assert chain.chain[0].qq == event.get_sender_id()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_retains_authorized_command_whitelist_access(
+    notification_plugin,
+):
+    from astrbot.core.pipeline.whitelist_check.stage import WhitelistCheckStage
+
+    event = await queue_confirmation(notification_plugin)
+    stage = WhitelistCheckStage()
+    stage.enable_whitelist_check = True
+    stage.whitelist = ["unrelated-session"]
+    stage.wl_ignore_admin_on_group = True
+    stage.wl_ignore_admin_on_friend = True
+    stage.wl_log = False
+    await stage.process(event)
+    assert not event.is_stopped()
+    assert not event.is_admin()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["ai_disabled", "external_runner", "queue_failed"])
+async def test_confirmation_reports_known_facts_when_generation_cannot_start(
+    notification_plugin, reason
+):
+    plugin = notification_plugin
+    source = confirmation_source(plugin)
+    plugin.runtime = SimpleNamespace(
+        confirm=AsyncMock(return_value={"status": "executed", "message": "删除成功"})
+    )
+    if reason == "ai_disabled":
+        plugin.context.get_config = lambda **kwargs: {
+            "provider_settings": {"enable": False}
+        }
+    elif reason == "external_runner":
+        plugin.context.get_config = lambda **kwargs: {
+            "agent_runner": {"runner_type": "dify"}
+        }
+    else:
+        plugin.context.get_event_queue = lambda: SimpleNamespace(
+            put=AsyncMock(side_effect=RuntimeError("queue failed"))
+        )
+    outputs = [
+        output async for output in plugin.qq_command(source, "confirm", "9f3dfabf")
+    ]
+    assert len(outputs) == 1
+    assert "无法生成自然语言回复" in outputs[0].get_plain_text()
+    assert "executed" in outputs[0].get_plain_text()
+    plugin.runtime.confirm.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -256,12 +427,17 @@ async def test_notification_send_failure_is_explicit(notification_plugin):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_kind", ["local", "background", "mcp", "handoff"])
+@pytest.mark.parametrize("notification_kind", ["request", "confirmation"])
 async def test_notification_tools_keep_schema_but_cannot_execute(
-    notification_plugin, tool_kind
+    notification_plugin, tool_kind, notification_kind
 ):
     from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 
-    event = await queue_notification(notification_plugin)
+    event = await (
+        queue_notification(notification_plugin)
+        if notification_kind == "request"
+        else queue_confirmation(notification_plugin)
+    )
     original_handler = AsyncMock()
     tool = FunctionTool(
         name="dangerous_operation",
@@ -296,7 +472,7 @@ async def test_notification_tools_keep_schema_but_cannot_execute(
         conversation=SimpleNamespace(cid="conversation-a"),
         func_tool=original,
     )
-    await notification_plugin.prepare_request_notification(event, request)
+    await notification_plugin.prepare_platform_notification(event, request)
     assert request.system_prompt == "原人格与系统提示"
     assert request.contexts == history
     assert request.func_tool.openai_schema() == original.openai_schema()
@@ -318,19 +494,22 @@ async def test_notification_tools_keep_schema_but_cannot_execute(
     original_handler.assert_not_awaited()
     if tool_kind != "mcp":
         assert original.tools[0].handler is original_handler
-    notification_plugin.storage.bind_request_notification.assert_awaited_once_with(
-        23,
-        event.unified_msg_origin,
-        "conversation-a",
-        event.message_str,
-    )
+    if notification_kind == "request":
+        notification_plugin.storage.bind_request_notification.assert_awaited_once_with(
+            23,
+            event.unified_msg_origin,
+            "conversation-a",
+            event.message_str,
+        )
+    else:
+        notification_plugin.storage.bind_request_notification.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_ordinary_request_is_unchanged(notification_plugin):
     request = ProviderRequest(system_prompt="原提示", func_tool=ToolSet())
     tools = request.func_tool
-    await notification_plugin.prepare_request_notification(RequestEvent({}), request)
+    await notification_plugin.prepare_platform_notification(RequestEvent({}), request)
     assert request.func_tool is tools
     assert request.system_prompt == "原提示"
     notification_plugin.storage.bind_request_notification.assert_not_awaited()
@@ -351,7 +530,7 @@ async def test_notification_prepare_failure_stops_pipeline(
     notification_plugin.storage.bind_request_notification.side_effect = RuntimeError(
         "db unavailable"
     )
-    await notification_plugin.prepare_request_notification(event, request)
+    await notification_plugin.prepare_platform_notification(event, request)
     assert event.is_stopped()
 
 
@@ -422,8 +601,9 @@ async def test_multiple_recipients_and_provider_wake_prefix(notification_plugin)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("notification_kind", ["request", "confirmation"])
 async def test_native_pipeline_loads_latest_history_under_session_lock(
-    notification_plugin, monkeypatch, tmp_path
+    notification_plugin, monkeypatch, tmp_path, notification_kind
 ):
     from astrbot.api.star import Context
     from astrbot.core import astr_main_agent
@@ -435,7 +615,11 @@ async def test_native_pipeline_loads_latest_history_under_session_lock(
     from astrbot.core.utils.session_lock import session_lock_manager
 
     plugin = notification_plugin
-    event = await queue_notification(plugin)
+    event = await (
+        queue_notification(plugin)
+        if notification_kind == "request"
+        else queue_confirmation(plugin)
+    )
     context = object.__new__(Context)
     context.__dict__.update(plugin.context.__dict__)
     plugin.context = context
@@ -517,7 +701,7 @@ async def test_native_pipeline_loads_latest_history_under_session_lock(
         if event_type == EventType.OnWaitingLLMRequestEvent:
             waiting.set()
         elif event_type == EventType.OnLLMRequestEvent:
-            await plugin.prepare_request_notification(hook_event, args[0])
+            await plugin.prepare_platform_notification(hook_event, args[0])
         return hook_event.is_stopped()
 
     async def run_agent(runner, *args, **kwargs):
@@ -605,10 +789,17 @@ async def test_notification_cannot_be_captured_as_administrator_follow_up(
 
 
 @pytest.mark.asyncio
-async def test_notification_runtime_rejects_direct_operations(notification_plugin):
+@pytest.mark.parametrize("notification_kind", ["request", "confirmation"])
+async def test_notification_runtime_rejects_direct_operations(
+    notification_plugin, notification_kind
+):
     from astrbot_plugin_qq_enhance.runtime import QQRuntime
 
-    event = await queue_notification(notification_plugin)
+    event = await (
+        queue_notification(notification_plugin)
+        if notification_kind == "request"
+        else queue_confirmation(notification_plugin)
+    )
     runtime = object.__new__(QQRuntime)
     runtime.config = notification_plugin.config
     runtime.verify_platform = AsyncMock()
@@ -618,3 +809,7 @@ async def test_notification_runtime_rejects_direct_operations(notification_plugi
     )
     assert result["error"]["code"] == "permission_denied"
     runtime.verify_platform.assert_not_awaited()
+
+    confirmation = await runtime.confirm(event, "9f3dfabf")
+    assert confirmation["status"] == "not_executed"
+    assert "不具备操作确认授权" in confirmation["message"]

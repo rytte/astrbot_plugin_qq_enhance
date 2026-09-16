@@ -22,6 +22,7 @@ from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
+from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
@@ -47,7 +48,12 @@ from .inbound import (
     get_inbound_component_type,
     is_red_packet_event,
 )
-from .request_notification import NotificationOnlyTool, RequestNotificationEvent
+from .request_notification import (
+    ConfirmationResultEvent,
+    NotificationOnlyTool,
+    PlatformNotificationEvent,
+    RequestNotificationEvent,
+)
 from .runtime import QQRuntime, QQToolError, validate_config
 from .storage import Storage
 from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, WebReader
@@ -225,7 +231,7 @@ class QQEnhancePlugin(Star):
         self.notification_tasks: set[asyncio.Task[None]] = set()
         self.handoff_tasks: set[asyncio.Task[None]] = set()
         self.recall_tasks: set[asyncio.Task[None]] = set()
-        self.notification_events: WeakSet[RequestNotificationEvent] = WeakSet()
+        self.notification_events: WeakSet[PlatformNotificationEvent] = WeakSet()
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
         self.debouncer = MessageDebouncer(self)
         context.register_web_api(
@@ -2014,7 +2020,7 @@ class QQEnhancePlugin(Star):
             event: Incoming adapter event.
         """
 
-        if isinstance(event, RequestNotificationEvent):
+        if isinstance(event, PlatformNotificationEvent):
             return
         if event.get_platform_name() != "aiocqhttp":
             return
@@ -2171,25 +2177,8 @@ class QQEnhancePlugin(Star):
                 request["self_id"],
                 text,
             )
-            config = self.context.get_config(umo=event.unified_msg_origin)
-            if not await SessionPluginManager.is_plugin_enabled_for_session(
-                event.unified_msg_origin, PLUGIN_NAME
-            ):
-                logger.info(
-                    "QQ 申请通知已跳过：目标会话停用了本插件 %s",
-                    event.unified_msg_origin,
-                )
+            if not await self._queue_platform_notification(event):
                 continue
-            if config.get("agent_runner", {}).get("runner_type", "local") != "local":
-                logger.error(
-                    "QQ 申请通知仅支持 AstrBot 本地 Agent：%s", event.unified_msg_origin
-                )
-                continue
-            event.message_str = (
-                config.get("provider_settings", {}).get("wake_prefix", "") + text
-            )
-            self.notification_events.add(event)
-            await self.context.get_event_queue().put(event)
             logger.info(
                 "QQ request notification queued: request_id=%s platform=%s admin=%s",
                 request["request_id"],
@@ -2197,8 +2186,49 @@ class QQEnhancePlugin(Star):
                 admin_user_id,
             )
 
+    async def _queue_platform_notification(
+        self, event: PlatformNotificationEvent
+    ) -> bool:
+        """Queue a read-only event only when native session generation is enabled.
+
+        Args:
+            event: Trusted notification already bound to its destination session.
+
+        Returns:
+            Whether the event was handed to the native pipeline.
+        """
+
+        config = self.context.get_config(umo=event.unified_msg_origin)
+        plugin_set = config.get("plugin_set", ["*"])
+        if (
+            plugin_set != ["*"]
+            and PLUGIN_NAME not in plugin_set
+            or not await SessionPluginManager.is_plugin_enabled_for_session(
+                event.unified_msg_origin, PLUGIN_NAME
+            )
+            or not config.get("provider_settings", {}).get("enable", True)
+            or not await SessionServiceManager.should_process_llm_request(event)
+        ):
+            logger.info(
+                "QQ 平台通知未投递：目标会话未启用插件或 AI %s",
+                event.unified_msg_origin,
+            )
+            return False
+        if config.get("agent_runner", {}).get("runner_type", "local") != "local":
+            logger.error(
+                "QQ 平台通知仅支持 AstrBot 本地 Agent：%s", event.unified_msg_origin
+            )
+            return False
+        event.message_str = (
+            config.get("provider_settings", {}).get("wake_prefix", "")
+            + event.message_str
+        )
+        self.notification_events.add(event)
+        await self.context.get_event_queue().put(event)
+        return True
+
     @filter.on_llm_request(priority=-30000)
-    async def prepare_request_notification(
+    async def prepare_platform_notification(
         self, event: AstrMessageEvent, request: ProviderRequest
     ) -> None:
         """Restrict event execution and bind its persisted conversation input.
@@ -2208,7 +2238,7 @@ class QQEnhancePlugin(Star):
             request: Request assembled from the destination's current conversation.
         """
 
-        if not isinstance(event, RequestNotificationEvent):
+        if not isinstance(event, PlatformNotificationEvent):
             return
         try:
             if not await SessionPluginManager.is_plugin_enabled_for_session(
@@ -2228,16 +2258,17 @@ class QQEnhancePlugin(Star):
                     ]
                 )
             if request.conversation is None:
-                raise RuntimeError("QQ 申请通知缺少目标会话")
-            await self.storage.bind_request_notification(
-                event.request_id,
-                event.unified_msg_origin,
-                request.conversation.cid,
-                request.prompt,
-            )
+                raise RuntimeError("QQ 平台通知缺少目标会话")
+            if isinstance(event, RequestNotificationEvent):
+                await self.storage.bind_request_notification(
+                    event.request_id,
+                    event.unified_msg_origin,
+                    request.conversation.cid,
+                    request.prompt,
+                )
         except Exception:
             event.stop_event()
-            logger.exception("QQ 申请通知准备失败，已停止本轮处理")
+            logger.exception("QQ 平台通知准备失败，已停止本轮处理")
 
     @filter.command("qq")
     async def qq_command(
@@ -2252,7 +2283,23 @@ class QQEnhancePlugin(Star):
 
         action = action.strip().lower()
         if action == "confirm":
-            text = await self.runtime.confirm(event, value.strip().lower())
+            pending_id = value.strip().lower()
+            result = await self.runtime.confirm(event, pending_id)
+            try:
+                platform = self.context.get_platform_inst(event.get_platform_id())
+                if platform is None or platform.meta().name != "aiocqhttp":
+                    raise RuntimeError("确认结果通知的 OneBot 平台不可用")
+                notification = ConfirmationResultEvent(
+                    self.context, platform, event, pending_id, result
+                )
+                if await self._queue_platform_notification(notification):
+                    event.stop_event()
+                    return
+            except Exception:
+                logger.exception("确认结果无法投递到模型；原操作不会重试")
+            text = "无法生成自然语言回复，本次确认的实际处理结果：\n" + json.dumps(
+                result, ensure_ascii=False
+            )
         elif action == "cancel":
             cancelled = await self.storage.cancel_pending(
                 value.strip().lower(),
