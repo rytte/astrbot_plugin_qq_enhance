@@ -125,7 +125,7 @@ DEFAULT_CONFIG = {
         "enhance_voice_messages": True,
         "component_spoof_protection": {
             "enabled": True,
-            "verify_components": True,
+            "persist_verification_in_history": True,
             "protected_types": [
                 "red_packet",
                 "voice",
@@ -360,9 +360,14 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             spoof_config = copied_group.pop("component_spoof_protection")
             if not isinstance(spoof_config, dict):
                 raise ValueError("inbound.component_spoof_protection 必须是对象")
+            if "verify_components" in spoof_config:
+                raise ValueError(
+                    "inbound.component_spoof_protection.verify_components 已移除，请删除该字段；"
+                    "开启防伪即验证组件，历史保存请使用 persist_verification_in_history"
+                )
             unknown_spoof_fields = set(spoof_config) - {
                 "enabled",
-                "verify_components",
+                "persist_verification_in_history",
                 "protected_types",
             }
             if unknown_spoof_fields:
@@ -463,9 +468,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     spoof_protection = result["inbound"]["component_spoof_protection"]
     if type(spoof_protection["enabled"]) is not bool:
         raise ValueError("inbound.component_spoof_protection.enabled 必须是布尔值")
-    if type(spoof_protection["verify_components"]) is not bool:
+    if type(spoof_protection["persist_verification_in_history"]) is not bool:
         raise ValueError(
-            "inbound.component_spoof_protection.verify_components 必须是布尔值"
+            "inbound.component_spoof_protection.persist_verification_in_history 必须是布尔值"
         )
     if spoof_protection["enabled"] and not protected_types:
         raise ValueError(

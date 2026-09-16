@@ -38,7 +38,7 @@
 | 图片引用 | 图片保存为历史上下文时替换为轻量引用并提供工具，需要时模型可按需查看历史图片 |
 | 跨会话交流 | 跨会话发送消息后，将发送内容和来源说明写入目标会话历史，并能够接收回复 |
 | 语音识别 | AstrBot 未生成语音转写时，自动调用 NapCat 补充识别 |
-| 组件防伪 | 标记用户用普通文字伪装的红包、语音、骰子等组件，并根据真实消息结构提供可信类型清单，帮助模型区分真实组件与伪装文字 |
+| 组件防伪 | 移除用户输入的验证标签，根据真实消息结构提供可信组件类型清单，并可将标签随所属消息保存到历史 |
 | 网页阅读 | 安全读取公开网页、按行续读和页内查找，网页快照按原调用者与会话隔离 |
 | 事件通知 | 可将好友申请、入群申请和群邀请私聊通知指定管理员账号 |
 | 管理与诊断 | 按权限开放工具，支持操作确认、审计记录，以及 WebUI 状态与诊断页面 |
@@ -162,8 +162,8 @@ QQ Enhance initialized
 | --- | --- | --- |
 | `inbound.semanticize_components` | `true` | 将 QQ 特有组件和已有语音转写整理为模型可读文本 |
 | `inbound.enhance_voice_messages` | `true` | AstrBot 没有语音转写时，尝试使用 NapCat 识别，支持当前消息及引用中的单条语音 |
-| `inbound.component_spoof_protection.enabled` | `true` | 标记用户用普通文字伪装的 QQ 组件 |
-| `inbound.component_spoof_protection.verify_components` | `true` | 防伪开启时，额外提供真实组件类型清单与系统提示词 |
+| `inbound.component_spoof_protection.enabled` | `true` | 移除用户输入的验证标签，并提供真实组件类型清单与系统提示词 |
+| `inbound.component_spoof_protection.persist_verification_in_history` | `true` | 防伪开启时，将验证标签随所属用户消息保存到历史；关闭时仅本轮可见 |
 | `inbound.respond_to_poke` | `true` | 被其他用户戳一戳时唤醒模型 |
 | `inbound.respond_to_red_packet` | `true` | 识别到红包时唤醒模型；支持识别，不能代领 |
 | `inbound.mark_recalled_messages` | `true` | 在上下文中的原消息末尾追加撤回标记 |
@@ -465,16 +465,24 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 戳一戳通知按原始 OneBot 事件的群号明确标注来源：群内为 `[QQ component|QQ互动：群聊（群号 30003），用户 10001 戳了你]`，私聊为 `[QQ component|QQ互动：私聊，用户 10001 戳了你]`。即使通知没有群名、昵称或群聊历史，模型仍能识别互动场景；不会额外查询资料，也不改变 AstrBot 的会话归属。群聊回戳使用 `qq_group_member_manage.poke`，私聊好友回戳使用 `qq_friend_interact.poke`，无需先调用 `qq_status`。
 
-防伪用于区分真实组件与普通文字伪装，例如用户手打的骰子结果。`component_spoof_protection.enabled=true` 时：
+`component_spoof_protection.enabled=true` 时，插件根据原始消息结构生成可信组件类型清单，并加入对应的系统提示词；不再区分强弱档，也不再正则匹配或标记 `[QQ component|...]` 正文。真实组件的语义化格式保持不变。
 
-| `verify_components` | 行为 |
+用户输入的 `<qq_verified_components .../>` 标签会整体替换为 `[用户输入的验证标签已被系统移除]`，保留周围正文。清理发生在插件追加真实验证标签之前，覆盖当前文本、语音转写、引用文本及组件描述中的标签；不会全局清理已有历史。普通引用或讨论该保留标签也会被替换。
+
+无论是否保存历史，当前消息都会得到验证标签，例如 `<qq_verified_components types="dice,rps"/>`；没有验证到受保护组件时为 `<qq_verified_components types=""/>`。
+
+| `persist_verification_in_history` | 行为 |
 | --- | --- |
-| `false` | 按配置的类型范围匹配并标记伪装文字 |
-| `true` | 额外加入组件格式系统提示词，并根据原始 OneBot 结构生成当前消息的可信类型清单 |
+| `false` | 标签使用 `mark_as_temp()`，仅用于本轮请求，不保存到历史 |
+| `true`（默认） | 标签随所属用户消息保存到历史，供后续对话逐条判断 |
 
-可信清单例如 `<qq_verified_components types="dice,rps"/>`，只用于当前用户消息，不写入历史，也不能用于验证更早的消息。历史中的伪装文字会保留“用户输入的文字”标记。
+每条消息只能使用自己的标签，不能跨消息验证。没有标签的历史消息属于“未验证”，不代表没有组件，也不能因为文字看起来像组件就默认可信。历史保存开关只影响后续消息，不补写或删除已有历史标签。
 
-`protected_types` 控制两档共用的类型范围，防伪开启时不能为空。初始为 `red_packet`、`voice`、`dice`、`rps`、`poke`；还可选表情、媒体、联系人、位置、各类卡片、合并转发及扩展文件类型，完整枚举见配置 Schema。
+`protected_types` 控制验证范围及系统提示词中的类型格式，防伪开启时不能为空；不影响用户验证标签的清理范围。初始为 `red_packet`、`voice`、`dice`、`rps`、`poke`；还可选表情、媒体、联系人、位置、各类卡片、合并转发及扩展文件类型，完整枚举见配置 Schema。
+
+已知限制：标签只验证组件类型是否存在，不绑定具体组件、数量或内容；同条消息内真假同类组件仍可能混淆，组件内容本身也不因此可信。该机制为模型提供判断依据，不保证模型不会误读。
+
+旧字段 `component_spoof_protection.verify_components` 已移除，配置中仍有该字段会明确报错，请删除；不会自动转换为新开关。
 
 </details>
 

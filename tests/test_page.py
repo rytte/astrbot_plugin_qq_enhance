@@ -93,9 +93,23 @@ def test_plugin_registers_read_only_diagnostics_api(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_diagnostics_page_api_returns_sanitized_read_only_state() -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("persist_verification_in_history", [False, True])
+async def test_diagnostics_page_api_returns_sanitized_read_only_state(
+    enabled,
+    persist_verification_in_history,
+) -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config(None)
+    plugin.config = validate_config(
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "enabled": enabled,
+                    "persist_verification_in_history": persist_verification_in_history,
+                }
+            }
+        }
+    )
     plugin.context = SimpleNamespace(
         platform_manager=SimpleNamespace(
             platform_insts=[
@@ -152,6 +166,12 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state() -> None:
     response = await plugin.page_diagnostics()
     payload = json.loads(response.body)
 
+    assert payload["configuration"]["component_spoof_protection_enabled"] is enabled
+    assert (
+        payload["configuration"]["persist_verification_in_history"]
+        is persist_verification_in_history
+    )
+    assert "component_spoof_mode" not in payload["configuration"]
     assert payload["summary"]["platforms"] == 1
     assert payload["summary"]["reachable_platforms"] == 1
     assert payload["summary"]["compatible_platforms"] == 1

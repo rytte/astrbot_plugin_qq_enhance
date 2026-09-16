@@ -208,26 +208,26 @@
       },
       "component_spoof_protection": {
         "type": "object",
-        "description": "QQ 组件文字防伪",
-        "hint": "仅依据原始 OneBot 组件确认真实性；用户输入的保留格式 [QQ component|...] 会被明确标注。",
+        "description": "QQ 组件防伪",
+        "hint": "根据真实消息结构生成组件类型验证标签；用户输入的验证标签会被移除",
         "default": {},
         "items": {
           "enabled": {
             "type": "bool",
-            "description": "启用 QQ 组件文字防伪",
+            "description": "启用 QQ 组件防伪验证",
             "hint": "开启前必须同时开启 inbound.semanticize_components。",
             "default": true
           },
-          "verify_components": {
+          "persist_verification_in_history": {
             "type": "bool",
-            "description": "启用真实组件强验证",
-            "hint": "开启后追加组件格式系统提示词和临时 qq_verified_components 可信标签；关闭时仅正则标记伪装文字。",
+            "description": "将组件验证标签保存到历史",
+            "hint": "仅在防伪开启时生效。开启后标签随所属用户消息保存；关闭时标签仅本轮可见。只影响后续消息，不补写或删除已有历史标签。",
             "default": true
           },
           "protected_types": {
             "type": "list",
             "description": "需要防伪的 QQ 组件类型",
-            "hint": "按此列表动态组装正则，verify_components开启时还按此列表验证真实结构。允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；防伪开启时不能为空。",
+            "hint": "按此列表验证真实组件类型并生成系统提示词，不影响用户验证标签的移除范围。允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；防伪开启时不能为空。",
             "default": ["red_packet", "voice", "dice", "rps", "poke"]
           }
         }

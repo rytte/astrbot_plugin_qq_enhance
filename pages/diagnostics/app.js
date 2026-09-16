@@ -138,7 +138,6 @@ function renderPlatforms(platforms) {
 }
 
 function renderConfiguration(config) {
-  const spoofLabels = { off: "关闭", weak: "弱档", strong: "强档" };
   const items = [
     ["绑定平台", config.platform_id || "全部 aiocqhttp"],
     ["工具暴露模式", config.exposure_mode],
@@ -146,7 +145,8 @@ function renderConfiguration(config) {
     ["显式禁用操作", config.disabled_operations],
     ["组件语义化", config.semanticize_components ? "开启" : "关闭"],
     ["NapCat 语音增强", config.enhance_voice_messages ? "开启" : "关闭"],
-    ["组件防伪", spoofLabels[config.component_spoof_mode] || config.component_spoof_mode],
+    ["组件防伪", config.component_spoof_protection_enabled ? "开启" : "关闭"],
+    ["验证标签保存到历史", config.persist_verification_in_history ? "开启" : "关闭"],
     ["防伪类型", config.protected_types.join(", ")],
     ["戳一戳响应", config.respond_to_poke ? "开启" : "关闭"],
     ["红包响应", config.respond_to_red_packet ? "开启" : "关闭"],

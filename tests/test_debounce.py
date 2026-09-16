@@ -190,11 +190,7 @@ class Harness:
                     if added_contexts:
                         req.contexts.extend(deepcopy(added_contexts))
                     # Use AstrBot's real message assembly and history serialization.
-                    req.extra_user_content_parts.append(
-                        TextPart(
-                            text='<qq_verified_components types="voice"/>'
-                        ).mark_as_temp()
-                    )
+                    await self.plugin.add_verified_component_signal(event, req)
                     await self.plugin.track_context_message(event, req)
                     await self.plugin.bind_debounce_request(event, req)
                     current = await req.assemble_context()
@@ -203,6 +199,10 @@ class Harness:
                     messages = bind_checkpoint_messages(req.contexts) + [
                         Message.model_validate(current)
                     ]
+                    if req.system_prompt:
+                        messages.insert(
+                            0, Message(role="system", content=req.system_prompt)
+                        )
                     event.runtime = SimpleNamespace(messages=messages)
                     if streaming:
                         event.result = SimpleNamespace(
@@ -210,7 +210,15 @@ class Harness:
                         )
                     await self.plugin.snapshot_debounce_input(event, event.runtime)
                     self.requests.append(
-                        deepcopy(dump_messages_with_checkpoints(messages))
+                        deepcopy(
+                            dump_messages_with_checkpoints(
+                                [
+                                    message
+                                    for message in messages
+                                    if message.role != "system"
+                                ]
+                            )
+                        )
                     )
                     if tool:
                         await self.plugin.protect_debounce_tool(event, None, {})
@@ -226,7 +234,13 @@ class Harness:
                     await self.manager.update_conversation(
                         event.unified_msg_origin,
                         conversation.cid,
-                        history=dump_messages_with_checkpoints(messages),
+                        history=dump_messages_with_checkpoints(
+                            [
+                                message
+                                for message in messages
+                                if message.role != "system"
+                            ]
+                        ),
                     )
             finally:
                 event.cleaned_files.extend(event._temporary_local_files)
@@ -258,8 +272,14 @@ def texts(history):
 
 
 @pytest.mark.asyncio
-async def test_three_inputs_remain_separate_and_unanswered_until_final_reply():
+@pytest.mark.parametrize("persist_verification_in_history", [False, True])
+async def test_three_inputs_remain_separate_and_unanswered_until_final_reply(
+    persist_verification_in_history,
+):
     harness = Harness()
+    harness.plugin.config["inbound"]["component_spoof_protection"][
+        "persist_verification_in_history"
+    ] = persist_verification_in_history
     try:
         events = [
             Event(text, i)
@@ -291,9 +311,25 @@ async def test_three_inputs_remain_separate_and_unanswered_until_final_reply():
             "reply",
         ]
         assert all(task.cancelled() for task in harness.tasks[:-1])
-        assert "qq_verified_components" not in json.dumps(
-            harness.manager.history(events[-1])
+        tag_counts = [
+            json.dumps(message).count("qq_verified_components")
+            for message in harness.requests[-1]
+        ]
+        assert tag_counts == (
+            [1, 1, 1] if persist_verification_in_history else [0, 0, 0]
         )
+        final_user = events[-1].runtime.messages[-2]
+        assert final_user.role == "user"
+        assert any(
+            getattr(part, "text", "") == '<qq_verified_components types=""/>'
+            for part in final_user.content
+        )
+        history = harness.manager.history(events[-1])
+        for message in history[:-1]:
+            assert json.dumps(message).count("qq_verified_components") == int(
+                persist_verification_in_history
+            )
+        assert "qq_verified_components" not in json.dumps(history[-1])
     finally:
         await harness.finish()
 

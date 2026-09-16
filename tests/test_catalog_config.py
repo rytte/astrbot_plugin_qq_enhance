@@ -184,7 +184,13 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"inbound": {"enhance_voice_messages": 1}},
         {"inbound": {"component_spoof_protection": True}},
         {"inbound": {"component_spoof_protection": {"enabled": "true"}}},
-        {"inbound": {"component_spoof_protection": {"verify_components": "true"}}},
+        {
+            "inbound": {
+                "component_spoof_protection": {
+                    "persist_verification_in_history": "true"
+                }
+            }
+        },
         {"inbound": {"component_spoof_protection": {"unknown": True}}},
         {"inbound": {"component_spoof_protection": {"protected_types": "voice"}}},
         {
@@ -245,7 +251,7 @@ def test_valid_config_preserves_explicit_values() -> None:
         "enhance_voice_messages": True,
         "component_spoof_protection": {
             "enabled": True,
-            "verify_components": True,
+            "persist_verification_in_history": True,
             "protected_types": [
                 "red_packet",
                 "voice",
@@ -271,13 +277,29 @@ def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
 
     assert result["inbound"]["component_spoof_protection"] == {
         "enabled": True,
-        "verify_components": True,
+        "persist_verification_in_history": True,
         "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
     }
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("verify_components", [False, True, None])
+def test_removed_verify_components_is_rejected(enabled, verify_components) -> None:
+    with pytest.raises(ValueError, match="verify_components 已移除，请删除该字段"):
+        validate_config(
+            {
+                "inbound": {
+                    "component_spoof_protection": {
+                        "enabled": enabled,
+                        "verify_components": verify_components,
+                    }
+                }
+            }
+        )
+
+
 def test_component_spoof_protection_requires_semanticization() -> None:
-    for verify_components in (False, True):
+    for persist_verification_in_history in (False, True):
         with pytest.raises(
             ValueError,
             match=(
@@ -291,14 +313,14 @@ def test_component_spoof_protection_requires_semanticization() -> None:
                         "semanticize_components": False,
                         "component_spoof_protection": {
                             "enabled": True,
-                            "verify_components": verify_components,
+                            "persist_verification_in_history": persist_verification_in_history,
                         },
                     }
                 }
             )
 
 
-def test_weak_component_spoof_protection_requires_protected_types() -> None:
+def test_component_spoof_protection_requires_protected_types() -> None:
     with pytest.raises(
         ValueError,
         match=(
@@ -310,7 +332,6 @@ def test_weak_component_spoof_protection_requires_protected_types() -> None:
                 "inbound": {
                     "component_spoof_protection": {
                         "enabled": True,
-                        "verify_components": False,
                         "protected_types": [],
                     }
                 }
