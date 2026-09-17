@@ -553,6 +553,9 @@ async def test_notification_stops_on_termination(notification_plugin):
     plugin.recall_messages = {}
     plugin.cleanup_task = None
     plugin.web_reader = SimpleNamespace(close=AsyncMock())
+    from astrbot_plugin_qq_enhance.notice_context import NoticeContext
+
+    plugin.notice_context = NoticeContext(plugin)
     await plugin.terminate()
     assert event.is_stopped()
     assert not plugin.notification_events

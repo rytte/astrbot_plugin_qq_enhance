@@ -259,6 +259,292 @@
       }
     }
   },
+  "notice_events": {
+    "type": "object",
+    "description": "平台事件感知",
+    "hint": "原有 11 类默认 context，新增灰条、输入状态、文件和掉线共 6 类默认 off。context 仅向已有会话追加背景，不唤醒模型，并参与后续防抖上下文。",
+    "default": {},
+    "items": {
+      "friend_add": {
+        "type": "object",
+        "description": "好友添加成功",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_increase": {
+        "type": "object",
+        "description": "成员进群",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_decrease": {
+        "type": "object",
+        "description": "成员退群、被踢或群解散",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_admin": {
+        "type": "object",
+        "description": "管理员变更",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_ban": {
+        "type": "object",
+        "description": "禁言状态变化",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_card": {
+        "type": "object",
+        "description": "群名片变化",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "notify/group_name": {
+        "type": "object",
+        "description": "群名称变化",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "notify/title": {
+        "type": "object",
+        "description": "群头衔变化",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "essence": {
+        "type": "object",
+        "description": "精华消息变化",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "group_msg_emoji_like": {
+        "type": "object",
+        "description": "群消息表情回应",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "notify/profile_like": {
+        "type": "object",
+        "description": "QQ 资料卡获赞",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
+      "notify/gray_tip": {
+        "type": "object",
+        "description": "未知群灰条",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "notify/input_status": {
+        "type": "object",
+        "description": "私聊输入状态",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "group_upload": {
+        "type": "object",
+        "description": "群文件上传",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "online_file_receive": {
+        "type": "object",
+        "description": "在线文件传输取消",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "online_file_send": {
+        "type": "object",
+        "description": "在线文件接收或拒绝",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "bot_offline": {
+        "type": "object",
+        "description": "机器人账号掉线",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "off"
+          },
+          "admin_user_ids": {
+            "type": "list",
+            "description": "掉线背景接收者 QQ 号",
+            "hint": "mode=context 时必填。仅写入这些账号在当前平台的已有私聊，不唤醒、不发送消息，与申请通知接收者独立。",
+            "default": []
+          }
+        }
+      }
+    }
+  },
   "events": {
     "type": "object",
     "description": "事件记录",

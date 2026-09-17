@@ -37,6 +37,7 @@ from .catalog import (
     OperationSpec,
 )
 from .context_images import ContextImageError, ContextImageManager
+from .notice_context import DEFAULT_NOTICE_POLICIES
 from .request_notification import PlatformNotificationEvent
 from .storage import Storage
 
@@ -107,6 +108,7 @@ DEFAULT_CONFIG = {
         "max_concurrent_requests": 2,
     },
     "events": {"enabled_types": [], "retention_days": 15},
+    "notice_events": DEFAULT_NOTICE_POLICIES,
     "request_notifications": {
         "enabled": False,
         "admin_user_ids": [],
@@ -357,6 +359,20 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         if unknown:
             raise ValueError(f"未知配置字段 {group}: {', '.join(sorted(unknown))}")
         copied_group = deepcopy(raw_group)
+        if group == "notice_events":
+            for kind, policy in copied_group.items():
+                allowed_fields = set(DEFAULT_NOTICE_POLICIES[kind])
+                if not isinstance(policy, dict) or set(policy) - allowed_fields:
+                    raise ValueError(
+                        f"notice_events.{kind} 必须是仅含 {', '.join(sorted(allowed_fields))} 的对象"
+                    )
+                mode = policy.get("mode", DEFAULT_NOTICE_POLICIES[kind]["mode"])
+                if mode not in ("off", "context"):
+                    raise ValueError(
+                        f"notice_events.{kind}.mode 只支持 off、context；尚不支持主动响应"
+                    )
+                result[group][kind].update(policy)
+            continue
         if group == "inbound" and "component_spoof_protection" in copied_group:
             spoof_config = copied_group.pop("component_spoof_protection")
             if not isinstance(spoof_config, dict):
@@ -535,6 +551,25 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         )
     if result["request_notifications"]["enabled"] and not admin_user_ids:
         raise ValueError("request_notifications.enabled=true 时必须填写 admin_user_ids")
+
+    offline = result["notice_events"]["bot_offline"]
+    offline_admins = offline["admin_user_ids"]
+    if (
+        not isinstance(offline_admins, list)
+        or any(
+            not isinstance(user_id, str)
+            or re.fullmatch(r"[1-9][0-9]{0,18}", user_id) is None
+            for user_id in offline_admins
+        )
+        or len(offline_admins) != len(set(offline_admins))
+    ):
+        raise ValueError(
+            "notice_events.bot_offline.admin_user_ids 必须是不重复的正整数 QQ 号字符串列表"
+        )
+    if offline["mode"] == "context" and not offline_admins:
+        raise ValueError(
+            "notice_events.bot_offline.mode=context 时必须填写 admin_user_ids"
+        )
 
     resolved_roots = []
     for raw_path in result["files"]["allowed_roots"]:

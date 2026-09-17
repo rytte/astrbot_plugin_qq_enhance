@@ -13,6 +13,7 @@ from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.utils.session_lock import session_lock_manager
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin, RECALL_EXCERPT_MAX_CHARS
 from astrbot_plugin_qq_enhance.runtime import validate_config
+from astrbot_plugin_qq_enhance.notice_context import NoticeContext
 
 
 class RecallEvent:
@@ -450,6 +451,7 @@ async def test_termination_cancels_pending_recall_writes():
     plugin.handoff_tasks = set()
     plugin.cleanup_task = None
     plugin.web_reader = SimpleNamespace(close=AsyncMock())
+    plugin.notice_context = NoticeContext(plugin)
     source, notice = await track_message(plugin, conversation)
     async with session_lock_manager.acquire_lock(source.unified_msg_origin):
         await plugin.mark_recalled_message(notice)

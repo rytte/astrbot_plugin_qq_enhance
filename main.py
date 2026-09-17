@@ -42,6 +42,7 @@ from .catalog import (
 )
 from .context_images import ContextImageError
 from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
+from .notice_context import NoticeContext
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -234,6 +235,7 @@ class QQEnhancePlugin(Star):
         self.notification_events: WeakSet[PlatformNotificationEvent] = WeakSet()
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
         self.debouncer = MessageDebouncer(self)
+        self.notice_context = NoticeContext(self)
         context.register_web_api(
             f"/{PLUGIN_NAME}/diagnostics",
             self.page_diagnostics,
@@ -960,6 +962,12 @@ class QQEnhancePlugin(Star):
             event: Enriched QQ message or targeted poke event.
         """
         await self.debouncer.capture(event)
+        await self.notice_context.wait_before(event)
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def capture_notice_context(self, event: AstrMessageEvent) -> None:
+        """Deliver configured platform notices as passive conversation facts."""
+        await self.notice_context.capture(event)
 
     @filter.on_llm_request(priority=-20000)
     async def bind_debounce_request(
@@ -2766,6 +2774,7 @@ class QQEnhancePlugin(Star):
             await asyncio.gather(*notification_tasks, return_exceptions=True)
         self.notification_tasks.clear()
         await self.web_reader.close()
+        await self.notice_context.close()
         if hasattr(self, "debouncer"):
             await self.debouncer.close()
         for task in handoff_tasks:

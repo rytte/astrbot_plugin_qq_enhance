@@ -14,6 +14,7 @@ from astrbot_plugin_qq_enhance.debounce import (
     MessageDebouncer,
 )
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.notice_context import NoticeContext
 from astrbot_plugin_qq_enhance.runtime import validate_config
 
 from astrbot.core.agent.message import (
@@ -150,6 +151,7 @@ class Harness:
             mark_current_request_images=lambda _event, _run_context: None
         )
         self.plugin.debouncer = MessageDebouncer(self.plugin)
+        self.plugin.notice_context = NoticeContext(self.plugin)
         self.tasks = []
         self.requests = []
 
@@ -254,6 +256,7 @@ class Harness:
                 task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         await self.plugin.debouncer.close()
+        await self.plugin.notice_context.close()
         recalls = list(self.plugin.recall_tasks)
         for task in recalls:
             task.cancel()
@@ -277,6 +280,251 @@ def texts(history):
         else item["content"]
         for item in history
     ]
+
+
+@pytest.fixture
+def allow_context_notices(monkeypatch):
+    monkeypatch.setattr(
+        "astrbot.core.star.session_plugin_manager.SessionPluginManager.is_plugin_enabled_for_session",
+        AsyncMock(return_value=True),
+    )
+
+
+def context_notice():
+    event = Event(
+        "",
+        None,
+        group=300,
+        raw={
+            "post_type": "notice",
+            "notice_type": "group_card",
+            "self_id": 99,
+            "time": 1001,
+            "group_id": 300,
+            "user_id": 7,
+            "card_old": "小王",
+            "card_new": "王同学",
+        },
+    )
+    event.is_at_or_wake_command = False
+    return event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender", [7, 8])
+async def test_context_notice_joins_debounced_successor_without_triggering_generation(
+    allow_context_notices, sender
+):
+    harness = Harness()
+    first = Event("前一条消息", 1, group=300)
+    second = Event("后一条消息", 2, sender=sender, group=300)
+    notice = context_notice()
+    try:
+        first_task = harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.capture_notice_context(notice)
+        await asyncio.sleep(0)
+        assert not first_task.done()
+        assert not first.stopped
+        assert len(harness.requests) == 1
+        assert not notice.is_at_or_wake_command
+        assert not ArrivalFilter().filter(notice, {})
+        second_task = harness.start(second)
+        await wait(second.prepared)
+        assert first_task.cancelled()
+        request_texts = texts(harness.requests[-1])
+        assert request_texts[0] == "前一条消息"
+        assert "group_card" in request_texts[1]
+        assert request_texts[2] == "后一条消息"
+        second.allow_reply.set()
+        await second_task
+        assert texts(harness.manager.history(second)) == [*request_texts, "reply"]
+        assert not harness.plugin.notice_context.pending
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_context_notice_during_preprocessing_does_not_wait_on_its_own_input(
+    allow_context_notices,
+):
+    harness = Harness()
+    release = asyncio.Event()
+    first = Event("尚在预处理", 1, group=300)
+    second = Event("接续消息", 2, group=300)
+    try:
+        harness.start(first, preprocess=release)
+        await wait(first.entered)
+        await harness.plugin.capture_notice_context(context_notice())
+        harness.start(second)
+        release.set()
+        await wait(second.prepared)
+        assert texts(harness.requests[-1])[0] == "尚在预处理"
+        assert "group_card" in texts(harness.requests[-1])[1]
+        assert texts(harness.requests[-1])[2] == "接续消息"
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,details,group",
+    [
+        (
+            "notify/gray_tip",
+            {"message_id": 123, "busi_id": "unknown", "content": "灰条文本"},
+            300,
+        ),
+        (
+            "notify/input_status",
+            {"event_type": 2, "status_text": "对方正在输入..."},
+            "",
+        ),
+        (
+            "group_upload",
+            {"file": {"id": "file-1", "name": "test.txt", "size": 10, "busid": 102}},
+            300,
+        ),
+        ("online_file_receive", {"peer_id": 7, "sub_type": "cancel"}, ""),
+        ("online_file_send", {"peer_id": 7, "sub_type": "refuse"}, ""),
+        ("bot_offline", {"user_id": 99, "tag": "offline", "message": "reason"}, ""),
+    ],
+)
+async def test_new_notice_types_use_the_same_passive_debounce_flow(
+    allow_context_notices, kind, details, group
+):
+    harness = Harness()
+    harness.plugin.config["notice_events"][kind]["mode"] = "context"
+    if kind == "bot_offline":
+        harness.plugin.config["notice_events"][kind]["admin_user_ids"] = ["7"]
+    notice_type, _, subtype = kind.partition("/")
+    raw = {
+        "post_type": "notice",
+        "notice_type": notice_type,
+        "self_id": 99,
+        "user_id": 7,
+        "time": 1001,
+    }
+    if subtype:
+        raw["sub_type"] = subtype
+    if group:
+        raw["group_id"] = group
+    elif kind == "notify/input_status":
+        raw["group_id"] = 0
+    if kind in {"online_file_receive", "online_file_send"}:
+        raw.pop("user_id")
+    raw.update(details)
+    notice = Event("", None, group=group, raw=raw)
+    notice.is_at_or_wake_command = False
+    first, second = Event("先前输入", 1, group=group), Event("后续输入", 2, group=group)
+    try:
+        first_task = harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.capture_notice_context(notice)
+        await asyncio.sleep(0)
+        assert not first_task.done()
+        assert len(harness.requests) == 1
+        assert not notice.is_at_or_wake_command
+        second_task = harness.start(second)
+        await wait(second.prepared)
+        history = texts(harness.requests[-1])
+        assert history[0] == "先前输入"
+        assert f"QQ 平台事件|{kind}|" in history[1]
+        assert history[2] == "后续输入"
+        second.allow_reply.set()
+        await second_task
+        assert texts(harness.manager.history(second)) == [*history, "reply"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_context_notice_after_two_preprocessing_inputs_has_no_circular_wait(
+    allow_context_notices,
+):
+    harness = Harness()
+    release = asyncio.Event()
+    first = Event("第一条预处理", 1, group=300)
+    second = Event("第二条预处理", 2, group=300)
+    third = Event("接续消息", 3, group=300)
+    try:
+        harness.start(first, preprocess=release)
+        await wait(first.entered)
+        harness.start(second, preprocess=release)
+        await wait(second.entered)
+        await harness.plugin.capture_notice_context(context_notice())
+        release.set()
+        await wait(second.prepared)
+        harness.start(third)
+        await wait(third.prepared)
+        history = texts(harness.requests[-1])
+        assert history[:2] == ["第一条预处理", "第二条预处理"]
+        assert "group_card" in history[2]
+        assert history[3] == "接续消息"
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_context_notice_waits_for_current_reply_when_no_successor_exists(
+    allow_context_notices, enabled
+):
+    harness = Harness({"enabled": enabled, "initial_window_seconds": 0.02})
+    first = Event("当前消息", 1, group=300)
+    try:
+        task = harness.start(first)
+        await wait(first.entered)
+        await harness.plugin.capture_notice_context(context_notice())
+        await wait(first.prepared)
+        assert len(harness.requests) == 1
+        assert not first.stopped
+        first.allow_reply.set()
+        await task
+        pending = [item.task for item in harness.plugin.notice_context.pending.values()]
+        await asyncio.wait_for(asyncio.gather(*pending), 3)
+        history = texts(harness.manager.history(first))
+        assert history[:2] == ["当前消息", "reply"]
+        assert "group_card" in history[2]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_context_notice_received_during_cancelled_input_save_keeps_arrival_order(
+    allow_context_notices,
+):
+    harness = Harness()
+    first = Event("第一条", 1, group=300)
+    second = Event("第二条", 2, group=300)
+    third = Event("第三条", 3, group=300)
+    saving, release = asyncio.Event(), asyncio.Event()
+    original_update = harness.manager.update_conversation
+
+    async def update(umo, cid, **kwargs):
+        if not saving.is_set():
+            saving.set()
+            await release.wait()
+        await original_update(umo, cid, **kwargs)
+
+    harness.manager.update_conversation = update
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.start(second)
+        await wait(saving)
+        await harness.plugin.capture_notice_context(context_notice())
+        release.set()
+        await wait(second.prepared)
+        harness.start(third)
+        await wait(third.prepared)
+        request_texts = texts(harness.requests[-1])
+        assert request_texts[:2] == ["第一条", "第二条"]
+        assert "group_card" in request_texts[2]
+        assert request_texts[3] == "第三条"
+    finally:
+        release.set()
+        await harness.finish()
 
 
 @pytest.mark.asyncio

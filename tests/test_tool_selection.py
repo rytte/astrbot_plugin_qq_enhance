@@ -238,6 +238,7 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin.recall_messages = {}
     plugin.recall_tasks = set()
     plugin.web_reader = SimpleNamespace(cleanup=lambda: None, close=AsyncMock())
+    plugin.notice_context = SimpleNamespace(close=AsyncMock())
 
     await plugin.initialize()
 
