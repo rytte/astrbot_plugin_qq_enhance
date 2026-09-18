@@ -189,6 +189,67 @@ def test_json_card_uses_allowlist_and_strips_url_secrets() -> None:
     assert "token=secret" not in result
 
 
+def test_bilibili_miniapp_exposes_link_and_bvid_from_detail_card() -> None:
+    card = {
+        "app": "com.tencent.miniapp",
+        "prompt": "[QQ小程序]欢 迎 来 到 A G I 时 代",
+        "meta": {
+            "detail_1": {
+                "title": "哔哩哔哩",
+                "desc": "欢 迎 来 到 A G I 时 代",
+                "qqdocurl": (
+                    "https://www.bilibili.com/video/BV0000000000?"
+                    "share_source=qq&token=must-not-leak"
+                ),
+            }
+        },
+    }
+
+    result = describe(
+        {
+            "post_type": "message",
+            "message": [{"type": "miniapp", "data": {"data": json.dumps(card)}}],
+        }
+    )
+
+    assert "提示：[QQ小程序]欢 迎 来 到 A G I 时 代" in result
+    assert "标题：哔哩哔哩" in result
+    assert "说明：欢 迎 来 到 A G I 时 代" in result
+    assert "https://www.bilibili.com/video/BV0000000000" in result
+    assert "BV号：BV0000000000" in result
+    assert "share_source=qq" not in result
+    assert "must-not-leak" not in result
+
+
+def test_acfun_card_preserves_video_id_without_share_token() -> None:
+    card = {
+        "app": "com.tencent.tuwen.lua",
+        "bizsrc": "qqconnect.sdkshare",
+        "meta": {
+            "news": {
+                "desc": "——查看更多精彩内容，欢迎来A站一起体验！",
+                "jumpUrl": (
+                    "https://m.acfun.cn/v/?ac=47029075&sid=defa6fcdd1371bf7"
+                ),
+                "tag": "AcFun",
+                "title": "AcFun出品: 今晚8点，记得来快手虚拟偶像AC娘直播间",
+            }
+        },
+        "prompt": "[分享]AcFun出品: 今晚8点，记得来快手虚拟偶像AC娘直播间",
+        "view": "news",
+    }
+
+    result = describe(
+        {
+            "post_type": "message",
+            "message": [{"type": "json", "data": {"data": card}}],
+        }
+    )
+
+    assert "https://m.acfun.cn/v/?ac=47029075" in result
+    assert "sid=defa6fcdd1371bf7" not in result
+
+
 def test_json_contact_cards_expose_only_validated_identity() -> None:
     group_card = {
         "app": "com.tencent.contact.lua",

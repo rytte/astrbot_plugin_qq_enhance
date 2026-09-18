@@ -5,13 +5,30 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .face_names import QQ_FACE_NAMES
 
 _FIELD_CHAR_LIMIT = 300
 _JSON_INPUT_LIMIT = 65536
 _RAW_SCAN_LIMIT = 256
+_CARD_URL_KEYS = (
+    "jumpUrl",
+    "jump_url",
+    "url",
+    "qqdocurl",
+    "qqdocUrl",
+    "source_url",
+    "sourceUrl",
+    "web_url",
+    "webUrl",
+    "link",
+    "href",
+)
+_BILIBILI_BVID_RE = re.compile(
+    r"(?<![A-Za-z0-9])BV[0-9A-Za-z]{10}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 _XML_TEXT_RE = re.compile(
     r"(?:brief|summary|title|name|desc)\s*=\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
@@ -74,7 +91,42 @@ def _display_url(value: Any) -> str:
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
     netloc = f"{hostname}:{port}" if port else hostname
-    return _clean_text(urlunsplit((parsed.scheme, netloc, parsed.path, "", "")))
+    query = ""
+    if hostname.lower().rstrip(".") in {"acfun.cn", "m.acfun.cn", "www.acfun.cn"}:
+        try:
+            params = parse_qs(
+                parsed.query,
+                keep_blank_values=False,
+                max_num_fields=32,
+            )
+        except ValueError:
+            params = {}
+        ac_id = params.get("ac", [""])[0]
+        if ac_id.isdecimal() and 0 < len(ac_id) <= 20 and int(ac_id) > 0:
+            query = urlencode({"ac": ac_id})
+    return _clean_text(urlunsplit((parsed.scheme, netloc, parsed.path, query, "")))
+
+
+def _extract_bilibili_bvid(value: Any) -> str:
+    """Extract one Bilibili BV identifier from an already allowlisted field.
+
+    Only a bounded scalar is inspected.  The caller decides which card fields are
+    allowlisted, so arbitrary nested card data is never searched or exposed.
+    """
+
+    text = _clean_text(value, 4096)
+    try:
+        hostname = (urlsplit(text).hostname or "").lower()
+    except ValueError:
+        return ""
+    if not (
+        hostname == "b23.tv"
+        or hostname.endswith(".bilibili.com")
+        or hostname == "bilibili.com"
+    ):
+        return ""
+    match = _BILIBILI_BVID_RE.search(text)
+    return f"BV{match.group(0)[2:]}" if match else ""
 
 
 def _decode_card_payload(value: Any) -> Mapping[str, Any] | None:
@@ -166,6 +218,7 @@ def _describe_card(value: Any, default_label: str) -> str:
         ("内容", payload.get("content")),
         ("名称", payload.get("name")),
     ]
+    fields.extend(("链接", payload.get(key)) for key in _CARD_URL_KEYS)
     meta = payload.get("meta")
     if isinstance(meta, Mapping):
         for item in list(meta.values())[:8]:
@@ -237,22 +290,36 @@ def _describe_card(value: Any, default_label: str) -> str:
                     ("内容", item.get("content")),
                     ("名称", item.get("name")),
                     ("标签", item.get("tag")),
-                    ("链接", item.get("jumpUrl") or item.get("url")),
+                    *(("链接", item.get(key)) for key in _CARD_URL_KEYS),
                 )
             )
 
     details = []
     seen = set()
+    link_details = []
+    link_seen = set()
+    bvids = []
     for field_label, raw_value in fields:
-        text = (
-            _display_url(raw_value) if field_label == "链接" else _clean_text(raw_value)
-        )
+        if field_label == "链接":
+            text = _display_url(raw_value)
+            if text and text not in link_seen:
+                link_seen.add(text)
+                link_details.append(f"链接：{text}")
+            bvid = _extract_bilibili_bvid(raw_value) if text else ""
+            if bvid and bvid not in bvids:
+                bvids.append(bvid)
+            continue
+        text = _clean_text(raw_value)
         if not text or text in seen:
             continue
         seen.add(text)
-        details.append(f"{field_label}：{text}")
-        if len(details) == 8:
-            break
+        if len(details) < 8:
+            details.append(f"{field_label}：{text}")
+    if link_details:
+        details = details[:7]
+        details.append(link_details[0])
+    if bvids and len(details) < 8:
+        details.append(f"BV号：{bvids[0]}")
     content = f"{label}：{'；'.join(details)}" if details else label
     return format_component_semantics(content)
 
