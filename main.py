@@ -14,7 +14,7 @@ from mcp.types import CallToolResult, TextContent
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Plain, Record, Reply
+from astrbot.api.message_components import File, Image, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import json_response
@@ -41,6 +41,7 @@ from .catalog import (
     TOOL_OPERATIONS,
 )
 from .context_images import ContextImageError
+from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
 from .notice_context import NoticeContext
 from .inbound import (
@@ -1218,6 +1219,73 @@ class QQEnhancePlugin(Star):
         if targeted_poke or red_packet:
             event.is_wake = True
             event.is_at_or_wake_command = True
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=900)
+    async def cache_group_context_images(self, event: AstrMessageEvent) -> None:
+        """Retain prepared group images before core recording and event cleanup.
+
+        Args:
+            event: Preprocessed incoming QQ event.
+        """
+        settings = self.config["context_images"]
+        if not settings["enabled"] or not settings["group_cache_enabled"]:
+            return
+        if event.get_platform_name() != "aiocqhttp" or not event.get_group_id():
+            return
+        configured_id = self.config["platform"]["platform_id"]
+        if configured_id and event.get_platform_id() != configured_id:
+            return
+        if event.get_extra(GROUP_IMAGES_EXTRA) or event.get_extra(
+            "handlers_parsed_params", {}
+        ):
+            return
+        images = []
+        for component in event.get_messages():
+            if isinstance(component, Image):
+                images.append(component)
+            elif isinstance(component, Reply):
+                images.extend(
+                    part for part in component.chain or [] if isinstance(part, Image)
+                )
+        if not images:
+            return
+        config = self.context.get_config(umo=event.unified_msg_origin)
+        if not config["provider_ltm_settings"]["group_icl_enable"]:
+            return
+        conversation_id = (
+            await self.context.conversation_manager.get_curr_conversation_id(
+                event.unified_msg_origin
+            )
+        )
+        cached = []
+        for component in images[: self.config["limits"]["max_components"]]:
+            source = str(component.path or component.url or component.file or "")
+            try:
+                record = await self.context_images.group_cache.put(
+                    source,
+                    str(event.get_platform_id()),
+                    str(event.unified_msg_origin),
+                    str(conversation_id or ""),
+                )
+            except Exception as exc:
+                logger.warning("Unable to retain group image: %s", type(exc).__name__)
+                continue
+            if any(item["image_ref"] == record["image_ref"] for item in cached):
+                # The same bytes can occur twice in a message, but need one reference.
+                cached.append({**record, "source": source, "text": ""})
+                continue
+            text = (
+                f"[QQ ImageRef image_ref={record['image_ref']}, "
+                f"{record['width']}x{record['height']}；群聊短期缓存，可能过期或被淘汰；"
+                '如需查看图片，调用 qq_media(operation="inspect", '
+                f'params={{"image_ref":"{record["image_ref"]}"}})]'
+            )
+            cached.append({**record, "source": source, "text": text})
+            event.message_obj.message.append(Plain(text))
+            event.message_str = f"{event.message_str}\n{text}".strip()
+            event.message_obj.message_str = event.message_str
+        if cached:
+            event.set_extra(GROUP_IMAGES_EXTRA, cached)
 
     @filter.on_llm_request(priority=-1000)
     async def add_verified_component_signal(

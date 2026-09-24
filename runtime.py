@@ -37,6 +37,7 @@ from .catalog import (
     OperationSpec,
 )
 from .context_images import ContextImageError, ContextImageManager
+from .group_image_cache import GroupImageCache
 from .notice_context import DEFAULT_NOTICE_POLICIES
 from .request_notification import PlatformNotificationEvent
 from .storage import Storage
@@ -86,6 +87,9 @@ DEFAULT_CONFIG = {
     },
     "context_images": {
         "enabled": True,
+        "group_cache_enabled": True,
+        "group_cache_max_mb": 256,
+        "group_cache_ttl_hours": 24,
         "orphan_grace_days": 3,
         "retention_days": 30,
         "max_storage_mb": 2048,
@@ -463,6 +467,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "allow_private_network"),
         ("web_reader", "enabled"),
         ("context_images", "enabled"),
+        ("context_images", "group_cache_enabled"),
         ("cross_session_handoff", "enabled"),
         ("request_notifications", "enabled"),
         ("debounce", "enabled"),
@@ -516,6 +521,8 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("files", "cleanup_interval_seconds"): (60, 86400),
         ("context_images", "orphan_grace_days"): (1, 30),
         ("context_images", "max_storage_mb"): (64, 10240),
+        ("context_images", "group_cache_max_mb"): (1, 10240),
+        ("context_images", "group_cache_ttl_hours"): (1, 168),
         ("network", "timeout_seconds"): (3, 180),
         ("network", "max_download_size_mb"): (1, 2048),
         ("events", "retention_days"): (1, 365),
@@ -623,6 +630,12 @@ class QQRuntime:
             config["context_images"]["retention_days"],
             config["context_images"]["max_storage_mb"],
             config["files"]["max_base64_size_mb"],
+            GroupImageCache(
+                self.data_dir / "group_image_cache",
+                config["context_images"]["group_cache_max_mb"],
+                config["context_images"]["group_cache_ttl_hours"],
+                config["files"]["max_base64_size_mb"],
+            ),
         )
         self._last_context_image_cleanup_day: tuple[int, int, int] | None = None
         self._verified_platforms: dict[str, tuple[int, int, int]] = {}
@@ -3181,6 +3194,7 @@ class QQRuntime:
     async def cleanup(self) -> None:
         """Remove expired plugin-owned files and retained metadata."""
 
+        await self.context_images.group_cache.cleanup()
         if self.config["context_images"]["enabled"]:
             local_time = time.localtime()
             current_day = (local_time.tm_year, local_time.tm_mon, local_time.tm_mday)

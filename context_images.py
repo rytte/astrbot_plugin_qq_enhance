@@ -20,10 +20,15 @@ from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.utils.media_utils import MediaResolver
 
 from .storage import Storage
+from .group_image_cache import (
+    GROUP_IMAGES_EXTRA,
+    GROUP_IMAGE_REF_PATTERN,
+    GroupImageCache,
+)
 
 CONVERSATION_ID_EXTRA = "_qq_enhance_conversation_id"
 REQUEST_IMAGE_COUNT_EXTRA = "_qq_enhance_request_image_count"
-IMAGE_REF_PATTERN = re.compile(r"img_[0-9a-f]{24}")
+IMAGE_REF_PATTERN = re.compile(r"(?:img|gimg)_[0-9a-f]{24}")
 HISTORY_IMAGE_REF_PATTERN = re.compile(r"\[QQ ImageRef image_ref=(img_[0-9a-f]{24}),")
 CORE_IMAGE_ATTACHMENT_PREFIXES = (
     "[Image Attachment: path ",
@@ -57,6 +62,7 @@ class ContextImageManager:
         retention_days: Maximum local calendar days to retain every image, or zero.
         max_storage_mb: Total storage budget for persistent context images.
         max_inspect_mb: Largest image that may be loaded into one tool result.
+        group_cache: Bounded cache for images collected from group messages.
     """
 
     def __init__(
@@ -68,6 +74,7 @@ class ContextImageManager:
         retention_days: int,
         max_storage_mb: int,
         max_inspect_mb: int,
+        group_cache: GroupImageCache,
     ) -> None:
         self.context = context
         self.storage = storage
@@ -76,6 +83,7 @@ class ContextImageManager:
         self.retention_days = retention_days
         self.max_storage_bytes = max_storage_mb * 1024 * 1024
         self.max_inspect_bytes = max_inspect_mb * 1024 * 1024
+        self.group_cache = group_cache
         self.root.mkdir(parents=True, exist_ok=True)
 
     async def prepare_request(self, event: Any, request: Any) -> None:
@@ -96,6 +104,30 @@ class ContextImageManager:
 
         inference_sources = list(getattr(request, "image_urls", None) or [])
         event.set_extra(REQUEST_IMAGE_COUNT_EXTRA, len(inference_sources))
+        cached_images = event.get_extra(GROUP_IMAGES_EXTRA, [])
+        cached_sources = {item["source"] for item in cached_images}
+        # Bind only references present in this request; do not claim other pending
+        # group images when a new conversation is created.
+        reference_text = "\n".join(
+            [request.prompt or ""]
+            + [
+                part.text
+                for part in request.extra_user_content_parts
+                if isinstance(part, TextPart)
+            ]
+        )
+        refs = set(GROUP_IMAGE_REF_PATTERN.findall(reference_text))
+        refs.update(item["image_ref"] for item in cached_images)
+        await self.group_cache.bind(
+            refs,
+            str(event.get_platform_id()),
+            str(event.unified_msg_origin),
+            conversation_id,
+        )
+        for item in cached_images:
+            if item["text"] and item["image_ref"] not in reference_text:
+                request.extra_user_content_parts.append(TextPart(text=item["text"]))
+                reference_text += item["text"]
         sources: list[str] = []
         components = list(
             getattr(getattr(event, "message_obj", None), "message", []) or []
@@ -116,6 +148,13 @@ class ContextImageManager:
                 str(source) for source in inference_sources[-remaining_count:]
             )
 
+        if cached_sources:
+            for part in request.extra_user_content_parts:
+                if isinstance(part, TextPart) and part.text.startswith(
+                    CORE_IMAGE_ATTACHMENT_PREFIXES
+                ):
+                    part.mark_as_temp()
+        sources = [source for source in sources if source not in cached_sources]
         if not sources:
             return
         if not conversation_id:
@@ -287,6 +326,36 @@ class ContextImageManager:
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ContextImageError(
                 "conversation_unavailable", "无法确定当前 AstrBot 会话"
+            )
+        if GROUP_IMAGE_REF_PATTERN.fullmatch(image_ref):
+            try:
+                cached = await self.group_cache.read(
+                    image_ref,
+                    str(event.get_platform_id()),
+                    str(event.unified_msg_origin),
+                    conversation_id,
+                )
+            except ValueError as exc:
+                raise ContextImageError(
+                    "file_too_large", "图片超过单次视觉检查大小上限"
+                ) from exc
+            if cached is None:
+                raise ContextImageError(
+                    "target_not_found", "群聊图片缓存已过期、被淘汰或不属于当前会话"
+                )
+            payload, mime_type = cached
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=f"已加载 image_ref={image_ref}，图片仅供本轮视觉检查。",
+                    ),
+                    ImageContent(
+                        type="image",
+                        data=base64.b64encode(payload).decode(),
+                        mimeType=mime_type,
+                    ),
+                ]
             )
         record = await self.storage.resolve_context_image(
             image_ref,

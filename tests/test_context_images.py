@@ -26,6 +26,7 @@ from astrbot_plugin_qq_enhance.context_images import (
 )
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.storage import Storage
+from astrbot_plugin_qq_enhance.group_image_cache import GroupImageCache
 
 
 class Conversations:
@@ -79,6 +80,7 @@ async def build_manager(
         retention_days=30,
         max_storage_mb=64,
         max_inspect_mb=10,
+        group_cache=GroupImageCache(tmp_path / "group-images", 256, 24, 10),
     )
     return manager, storage, conversations
 
@@ -236,7 +238,10 @@ async def test_inspect_returns_original_only_inside_exact_conversation_scope(
         await manager.inspect(event, "../original.png")
 
 
-def test_inspect_tool_images_and_cache_paths_are_not_persisted(tmp_path: Path) -> None:
+@pytest.mark.parametrize("prefix", ["img", "gimg"])
+def test_inspect_tool_images_and_cache_paths_are_not_persisted(
+    tmp_path: Path, prefix: str
+) -> None:
     manager = ContextImageManager(
         SimpleNamespace(),
         SimpleNamespace(),
@@ -245,8 +250,9 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(tmp_path: Path) -
         retention_days=30,
         max_storage_mb=64,
         max_inspect_mb=10,
+        group_cache=GroupImageCache(tmp_path / "group-images", 256, 24, 10),
     )
-    image_ref = "img_0123456789abcdef01234567"
+    image_ref = f"{prefix}_0123456789abcdef01234567"
     assistant = Message(
         role="assistant",
         content=None,
