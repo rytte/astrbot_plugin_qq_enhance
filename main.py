@@ -1162,9 +1162,9 @@ class QQEnhancePlugin(Star):
         """
         self.debouncer.protect(event)
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def enrich_inbound_qq_components(self, event: AstrMessageEvent) -> None:
-        """Enhance QQ voice and append bounded semantics after preprocessing.
+        """Enhance QQ voice and append bounded semantics before core recording.
 
         Args:
             event: Current message or notice event.
@@ -1204,6 +1204,11 @@ class QQEnhancePlugin(Star):
         enriched = f"{current}\n{semantics}" if current else semantics
         event.message_str = enriched
         event.message_obj.message_str = enriched
+        if event.get_group_id():
+            # AstrBot's group-context recorder inspects structured components,
+            # not message_str. Preserve semantics for later requests and create
+            # the native context cursor when this message wakes the model.
+            event.message_obj.message.append(Plain(semantics))
         targeted_poke = (
             isinstance(raw, dict)
             and raw.get("post_type") == "notice"

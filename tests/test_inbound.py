@@ -228,9 +228,7 @@ def test_acfun_card_preserves_video_id_without_share_token() -> None:
         "meta": {
             "news": {
                 "desc": "——查看更多精彩内容，欢迎来A站一起体验！",
-                "jumpUrl": (
-                    "https://m.acfun.cn/v/?ac=47029075&sid=defa6fcdd1371bf7"
-                ),
+                "jumpUrl": ("https://m.acfun.cn/v/?ac=47029075&sid=defa6fcdd1371bf7"),
                 "tag": "AcFun",
                 "title": "AcFun出品: 今晚8点，记得来快手虚拟偶像AC娘直播间",
             }
@@ -480,6 +478,9 @@ class FakeEvent:
 
     def get_self_id(self) -> str:
         return "20002"
+
+    def get_group_id(self) -> str:
+        return str(self.message_obj.raw_message.get("group_id") or "")
 
     def get_messages(self) -> list:
         return self.message_obj.message
