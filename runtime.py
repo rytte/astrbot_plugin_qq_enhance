@@ -1474,7 +1474,11 @@ class QQRuntime:
                             "target_not_found", "目标群不在机器人群列表中"
                         )
         elif target_kind == "private":
-            cross_session = not is_private or target_id != caller_id
+            cross_session = (
+                params.get("target", {}).get("type") == "temporary"
+                or not is_private
+                or target_id != caller_id
+            )
             if cross_session:
                 if spec.operation_id == "qq_user_info.stranger":
                     allowed = is_admin and (
@@ -1507,7 +1511,19 @@ class QQRuntime:
                             "跨好友操作仅允许开启该权限的 AstrBot 管理员发起；"
                             "普通用户仅可在配置允许时私聊 AstrBot 管理员",
                         )
-                    if not await self.target_exists(event, "private", target_id):
+                    if params.get("target", {}).get("type") == "temporary":
+                        group_id = str(params["target"].get("group_id") or "")
+                        if not group_id.isdecimal() or int(group_id) <= 0:
+                            raise QQToolError(
+                                "invalid_parameters",
+                                "temporary target.group_id 必须是正整数",
+                            )
+                        if not await self.target_exists(event, "group", group_id):
+                            raise QQToolError(
+                                "target_not_found", "临时会话所属群不在机器人群列表中"
+                            )
+                        await self.group_role(event, int(group_id), int(target_id))
+                    elif not await self.target_exists(event, "private", target_id):
                         raise QQToolError(
                             "target_not_found", "目标用户不在机器人好友列表中"
                         )

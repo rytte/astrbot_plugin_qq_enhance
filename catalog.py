@@ -818,6 +818,8 @@ OPERATION_PARAMETERS = {
             "target 和 components 必须位于 params 内。"
             'target 优先使用 {"type":"current"}；跨会话使用 '
             '{"type":"group","id":正整数} 或 {"type":"private","id":正整数}。'
+            "向非好友群成员发临时会话消息时使用 "
+            '{"type":"temporary","id":成员QQ号,"group_id":共同群号}。'
             "组件字段必须直接放在对象中，"
             '不得使用 data 包装。常用组件：{"type":"text","text":"..."}、'
             '{"type":"face","id":14}、{"type":"at","id":正整数}、'

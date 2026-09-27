@@ -26,12 +26,15 @@ class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.roles = {10001: "admin", 20001: "member", 99999: "owner"}
+        self.missing_members: set[tuple[int, int]] = set()
 
     async def call_action(self, action: str, **params):
         self.calls.append((action, params))
         if action == "get_version_info":
             return {"app_name": "NapCat.Onebot", "app_version": "4.18.19"}
         if action == "get_group_member_info":
+            if (params["group_id"], params["user_id"]) in self.missing_members:
+                raise RuntimeError("group member not found")
             return {"role": self.roles.get(int(params["user_id"]), "member")}
         if action == "get_group_list":
             return [{"group_id": 30001, "group_name": "test"}]
@@ -748,6 +751,103 @@ async def test_group_astrbot_admin_can_send_cross_private_message(tmp_path) -> N
             "message": [{"type": "text", "data": {"text": "hello"}}],
         },
     ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_cross_temporary_sends_to_group_member_without_friendship(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001", admin=True),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "temporary", "id": 30003, "group_id": 30001},
+                "components": [{"type": "text", "text": "hello"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert ("get_group_list", {}) in client.calls
+    assert (
+        "get_group_member_info",
+        {"group_id": 30001, "user_id": 30003, "no_cache": True},
+    ) in client.calls
+    assert not any(action == "get_friend_list" for action, _ in client.calls)
+    assert (
+        "send_private_msg",
+        {
+            "user_id": 30003,
+            "group_id": 30001,
+            "message": [{"type": "text", "data": {"text": "hello"}}],
+        },
+    ) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_cross_temporary_requires_admin_switch_group_and_member(tmp_path) -> None:
+    params = {
+        "target": {"type": "temporary", "id": 30003, "group_id": 30001},
+        "components": [{"type": "text", "text": "hello"}],
+    }
+    disabled, disabled_client, _ = await make_runtime(
+        tmp_path / "disabled", {"permissions": {"allow_cross_private": False}}
+    )
+    denied = json.loads(
+        await disabled.execute(FakeEvent(admin=True), "qq_send_message", "send", params)
+    )
+    assert denied["error"]["code"] == "permission_denied"
+    assert not any(action == "send_private_msg" for action, _ in disabled_client.calls)
+
+    runtime, client, _ = await make_runtime(tmp_path / "enabled")
+    self_target = json.loads(
+        await runtime.execute(
+            FakeEvent(sender_id="30003", admin=False),
+            "qq_send_message",
+            "send",
+            params,
+        )
+    )
+    assert self_target["error"]["code"] == "permission_denied"
+
+    missing_group = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_send_message",
+            "send",
+            {**params, "target": {**params["target"], "group_id": 30002}},
+        )
+    )
+    assert missing_group["error"]["code"] == "target_not_found"
+
+    client.missing_members.add((30001, 30003))
+    missing_member = json.loads(
+        await runtime.execute(FakeEvent(admin=True), "qq_send_message", "send", params)
+    )
+    assert missing_member["error"]["code"] == "protocol_rejected"
+    assert not any(action == "send_private_msg" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_cross_temporary_rejects_missing_group_id(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(admin=True),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "temporary", "id": 30003},
+                "components": [{"type": "text", "text": "hello"}],
+            },
+        )
+    )
+    assert result["error"]["code"] == "invalid_parameters"
+    assert not any(action == "send_private_msg" for action, _ in client.calls)
 
 
 @pytest.mark.asyncio

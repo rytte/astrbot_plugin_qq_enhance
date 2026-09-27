@@ -498,6 +498,8 @@ assistant：……
 
 **普通用户向管理员转达**：`permissions.allow_cross_private_to_admin` 仅放宽 `qq_send_message.send` 的私聊目标，目标必须是同平台、机器人好友列表中的 AstrBot 管理员；不放宽跨群、临时会话、合并转发或其他跨好友操作。实际发送时仍根据 AstrBot 当前 `admins_id` 重新校验目标身份。
 
+**群临时会话**：AstrBot 管理员开启 `permissions.allow_cross_private` 后，可用 `qq_send_message.send` 的 `target={"type":"temporary","id":成员QQ号,"group_id":共同群号}` 给非好友群成员发送消息。插件会验证机器人在该群内、目标用户属于该群，再通过 `send_private_msg` 携带 `group_id` 发送。群临时会话没有可确定的 AstrBot 目标会话，因此不会写入跨会话历史衔接。
+
 调用者权限及二次确认流程见 [权限与确认](#permissions)。`network.allow_private_network` 的 WebUI 和运行时默认值均为 `false`；已有安装如果显式保存了 `true`，需要在 WebUI 改为 `false` 后重载插件，才会禁止私网访问。
 
 <details>
