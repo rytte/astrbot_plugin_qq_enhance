@@ -150,7 +150,7 @@ function renderConfiguration(config) {
     ["防伪类型", config.protected_types.join(", ")],
     ["戳一戳响应", config.respond_to_poke ? "开启" : "关闭"],
     ["红包响应", config.respond_to_red_packet ? "开启" : "关闭"],
-    ["撤回感知", config.mark_recalled_messages ? "开启" : "关闭"],
+    ["撤回感知", config.message_recall_mode === "context" ? "context（不唤醒模型）" : "off"],
     ["消息防抖", config.debounce_enabled ? "开启" : "关闭"],
     ["首条等待窗口", `${config.debounce_initial_window_seconds ?? 0} 秒`],
     ["后续等待窗口", `${config.debounce_followup_window_seconds ?? 0} 秒`],

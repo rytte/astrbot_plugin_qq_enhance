@@ -469,7 +469,7 @@ def test_notice_policies_preserve_per_event_defaults_and_allow_individual_off():
     result = validate_config({"notice_events": {"group_increase": {"mode": "off"}}})
     expected = deepcopy(DEFAULT_NOTICE_POLICIES)
     expected["group_increase"]["mode"] = "off"
-    assert result["notice_events"] == expected
+    assert result["notice_events"] == {"message_recall": {"mode": "context"}, **expected}
     assert len(expected) == 17
     assert (
         sum(policy["mode"] == "off" for policy in DEFAULT_NOTICE_POLICIES.values()) == 6
@@ -477,6 +477,16 @@ def test_notice_policies_preserve_per_event_defaults_and_allow_individual_off():
     assert validate_config({"notice_events": {"group_increase": {}}})["notice_events"][
         "group_increase"
     ] == {"mode": "context"}
+
+
+def test_message_recall_policy_is_separate_from_normal_notice_types():
+    assert validate_config(None)["notice_events"]["message_recall"] == {
+        "mode": "context"
+    }
+    assert validate_config(
+        {"notice_events": {"message_recall": {"mode": "off"}}}
+    )["notice_events"]["message_recall"] == {"mode": "off"}
+    assert normalize_notice(payload("message_recall")) is None
 
 
 @pytest.mark.parametrize(

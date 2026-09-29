@@ -73,14 +73,15 @@ class QQNotice:
     self_id: str
     group_id: str
     user_id: str
-    occurred_at: int
+    occurred_at: int | None
     details: dict
     description: str
 
     def render(self) -> str:
         """Render an independent background entry rather than a command."""
+        timestamp = self.occurred_at if self.occurred_at is not None else "未知"
         return (
-            f"[QQ 平台事件|{self.kind}|时间戳 {self.occurred_at}："
+            f"[QQ 平台事件|{self.kind}|时间戳 {timestamp}："
             f"{self.description}。仅作背景，不代表操作指令。]"
         )
 
@@ -323,6 +324,8 @@ class NoticeDelivery:
     umo: str
     cid: str
     barriers: tuple[Arrival, ...]
+    ready: asyncio.Event | None = None
+    recall_entry: dict | None = None
     task: asyncio.Task | None = None
 
 
@@ -344,8 +347,24 @@ class NoticeContext:
         configured_id = self.plugin.config["platform"]["platform_id"]
         if configured_id and platform_id != configured_id:
             return
+        raw = getattr(event.message_obj, "raw_message", None)
+        if (
+            isinstance(raw, dict)
+            and raw.get("post_type") == "notice"
+            and isinstance(raw.get("notice_type"), str)
+            and raw["notice_type"] in {"group_recall", "friend_recall"}
+        ):
+            mode = self.plugin.config["notice_events"]["message_recall"]["mode"]
+            if mode == "off":
+                return
+            if mode != "context":
+                raise ValueError(f"Unsupported QQ notice mode: {mode}")
+            async with self.capture_lock:
+                if not self.closed:
+                    await self.plugin.mark_recalled_message(event)
+            return
         try:
-            notice = normalize_notice(getattr(event.message_obj, "raw_message", None))
+            notice = normalize_notice(raw)
         except ValueError as exc:
             logger.warning("Invalid QQ context notice: %s", exc)
             return
@@ -412,13 +431,28 @@ class NoticeContext:
         )
         if not cid or self.closed:
             return
+        await self.queue_pinned(notice, umo, cid, barriers=barriers)
+
+    async def queue_pinned(
+        self,
+        notice: QQNotice,
+        umo: str,
+        cid: str,
+        *,
+        barriers: tuple[Arrival, ...] = (),
+        ready: asyncio.Event | None = None,
+        recall_entry: dict | None = None,
+    ) -> NoticeDelivery | None:
+        """Queue a normalized fact for its already selected conversation."""
+        if self.closed:
+            return None
         now = time.monotonic()
         self.seen = {
             key: expires for key, expires in self.seen.items() if expires > now
         }
         key = (umo, notice.fingerprint())
         if key in self.pending or key in self.seen:
-            return
+            return None
         same_session = [item for item in self.pending.values() if item.umo == umo]
         if (
             len(self.pending) >= NOTICE_MAX_PENDING
@@ -427,18 +461,21 @@ class NoticeContext:
             logger.warning(
                 "QQ context notice buffer full: umo=%s kind=%s", umo, notice.kind
             )
-            return
+            return None
         previous = same_session[-1].task if same_session else None
-        delivery = NoticeDelivery(notice, umo, cid, barriers)
+        delivery = NoticeDelivery(notice, umo, cid, barriers, ready, recall_entry)
         self.pending[key] = delivery
         delivery.task = asyncio.create_task(self._append(key, delivery, previous))
         delivery.task.add_done_callback(lambda _task: self.pending.pop(key, None))
+        return delivery
 
     async def _append(self, key: tuple, delivery: NoticeDelivery, previous) -> None:
         """Wait for earlier inputs and append under the native conversation lock."""
         try:
             if previous is not None:
                 await asyncio.shield(previous)
+            if delivery.ready is not None:
+                await delivery.ready.wait()
             for arrival in delivery.barriers:
                 await arrival.history_ready.wait()
             async with session_lock_manager.acquire_lock(delivery.umo):
@@ -460,6 +497,8 @@ class NoticeContext:
                     ],
                     token_usage=None,
                 )
+                if delivery.recall_entry is not None:
+                    delivery.recall_entry["notified"] = True
                 while len(self.seen) >= NOTICE_MAX_SEEN:
                     self.seen.pop(next(iter(self.seen)))
                 self.seen[key] = time.monotonic() + NOTICE_DEDUP_TTL

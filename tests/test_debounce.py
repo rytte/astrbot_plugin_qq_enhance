@@ -784,7 +784,7 @@ async def test_recall_appends_one_event_for_identical_inputs_after_history_save(
             },
         )
         await harness.plugin.mark_recalled_message(notice)
-        assert "[QQ 撤回事件:" not in json.dumps(
+        assert "[QQ 平台事件|message_recall|" not in json.dumps(
             dump_messages_with_checkpoints(second.runtime.messages), ensure_ascii=False
         )
         second.allow_reply.set()
@@ -823,7 +823,7 @@ async def test_early_recall_is_retained_when_generation_is_superseded():
         harness.start(second)
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "将撤回"
-        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
+        assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
         assert texts(harness.requests[-1])[-1] == "新的输入"
     finally:
         await harness.finish()
@@ -993,7 +993,7 @@ async def test_recall_during_persistence_is_not_lost():
         release.set()
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "early recall"
-        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
+        assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
     finally:
         release.set()
         await harness.finish()
@@ -1116,7 +1116,7 @@ async def test_recall_before_preprocessing_finishes_is_appended_after_original_i
         gate.set()
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "slow voice"
-        assert "[QQ 撤回事件:" in harness.requests[-1][1]["content"]
+        assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
         assert not harness.plugin.debouncer.early_recalls
     finally:
         gate.set()
@@ -1254,15 +1254,22 @@ async def test_failed_persistence_is_retried_before_next_generation(recalled):
             assert harness.plugin.recall_tasks
         harness.start(third)
         await wait(third.prepared)
-        assert texts(harness.requests[-1]) == ["first", "third"]
+        request_texts = texts(harness.requests[-1])
+        if recalled:
+            assert request_texts[0] == "first"
+            assert request_texts[1].startswith("[QQ 平台事件|message_recall|")
+            assert request_texts[2] == "third"
+        else:
+            assert request_texts == ["first", "third"]
         assert not harness.plugin.debouncer.failed
         if recalled:
             third.allow_reply.set()
             await harness.tasks[-1]
             await harness.drain_recalls()
             history = harness.manager.history(third)
-            assert texts(history[:3]) == ["first", "third", "reply"]
-            assert "[QQ 撤回事件:" in history[-1]["content"]
+            assert texts(history)[0] == "first"
+            assert texts(history)[1].startswith("[QQ 平台事件|message_recall|")
+            assert texts(history)[2:] == ["third", "reply"]
     finally:
         await harness.finish()
 
@@ -1328,8 +1335,8 @@ async def test_pure_image_without_prompt_is_retained_and_recallable():
         await harness.tasks[-1]
         await harness.drain_recalls()
         history = harness.manager.history(second)
-        assert "[QQ 撤回事件:" not in json.dumps(history[0], ensure_ascii=False)
-        assert "[QQ 撤回事件:" in history[-1]["content"]
+        assert "[QQ 平台事件|message_recall|" not in json.dumps(history[0], ensure_ascii=False)
+        assert "[QQ 平台事件|message_recall|" in history[-1]["content"]
         assert "[非文本消息]" in history[-1]["content"]
         assert any(
             part.get("image_url", {}).get("url") == image["image_url"]["url"]

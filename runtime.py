@@ -112,7 +112,10 @@ DEFAULT_CONFIG = {
         "max_concurrent_requests": 2,
     },
     "events": {"enabled_types": [], "retention_days": 15},
-    "notice_events": DEFAULT_NOTICE_POLICIES,
+    "notice_events": {
+        "message_recall": {"mode": "context"},
+        **DEFAULT_NOTICE_POLICIES,
+    },
     "request_notifications": {
         "enabled": False,
         "admin_user_ids": [],
@@ -141,10 +144,11 @@ DEFAULT_CONFIG = {
                 "poke",
             ],
         },
+        "max_semantic_chars": 2000,
+    },
+    "interaction_response": {
         "respond_to_poke": True,
         "respond_to_red_packet": True,
-        "mark_recalled_messages": True,
-        "max_semantic_chars": 2000,
     },
     "audit": {"retention_days": 30},
 }
@@ -365,12 +369,13 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         copied_group = deepcopy(raw_group)
         if group == "notice_events":
             for kind, policy in copied_group.items():
-                allowed_fields = set(DEFAULT_NOTICE_POLICIES[kind])
+                default_policy = DEFAULT_CONFIG["notice_events"][kind]
+                allowed_fields = set(default_policy)
                 if not isinstance(policy, dict) or set(policy) - allowed_fields:
                     raise ValueError(
                         f"notice_events.{kind} 必须是仅含 {', '.join(sorted(allowed_fields))} 的对象"
                     )
-                mode = policy.get("mode", DEFAULT_NOTICE_POLICIES[kind]["mode"])
+                mode = policy.get("mode", default_policy["mode"])
                 if mode not in ("off", "context"):
                     raise ValueError(
                         f"notice_events.{kind}.mode 只支持 off、context；尚不支持主动响应"
@@ -474,9 +479,8 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
         ("inbound", "enhance_voice_messages"),
-        ("inbound", "respond_to_poke"),
-        ("inbound", "respond_to_red_packet"),
-        ("inbound", "mark_recalled_messages"),
+        ("interaction_response", "respond_to_poke"),
+        ("interaction_response", "respond_to_red_packet"),
     )
     for group, key in bool_fields:
         if type(result[group][key]) is not bool:

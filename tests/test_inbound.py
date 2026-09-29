@@ -994,6 +994,31 @@ async def test_plugin_handler_explicitly_wakes_for_targeted_group_poke() -> None
 
 
 @pytest.mark.asyncio
+async def test_disabled_poke_response_does_not_add_semantics_or_wake() -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {"interaction_response": {"respond_to_poke": False}}
+    )
+    event = FakeEvent(
+        {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "user_id": 10001,
+            "target_id": 20002,
+            "group_id": 30003,
+        }
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.message_str == ""
+    assert event.is_wake is False
+    assert event.is_at_or_wake_command is False
+    assert event.get_extra("_qq_enhance_verified_component_types") == ["poke"]
+
+
+@pytest.mark.asyncio
 async def test_plugin_handler_explicitly_wakes_for_group_red_packet() -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
@@ -1052,9 +1077,9 @@ async def test_disabled_red_packet_response_does_not_force_minimum_semantics() -
         {
             "inbound": {
                 "semanticize_components": False,
-                "respond_to_red_packet": False,
                 "component_spoof_protection": {"enabled": False},
-            }
+            },
+            "interaction_response": {"respond_to_red_packet": False},
         }
     )
     event = FakeEvent(
@@ -1078,6 +1103,35 @@ async def test_disabled_red_packet_response_does_not_force_minimum_semantics() -
 
 
 @pytest.mark.asyncio
+async def test_disabled_red_packet_response_keeps_component_semantics() -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {"interaction_response": {"respond_to_red_packet": False}}
+    )
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 30003,
+            "message": [],
+            "raw": {
+                "msgType": 10,
+                "elements": [{"elementType": 9, "walletElement": {}}],
+            },
+        }
+    )
+
+    await plugin.enrich_inbound_qq_components(event)
+
+    assert event.message_str == "[QQ component|QQ红包消息（仅识别，不能代领）]"
+    assert event.is_wake is False
+    assert event.is_at_or_wake_command is False
+    assert event.get_extra("_qq_enhance_verified_component_types") == [
+        "red_packet"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_plugin_handler_honors_platform_and_feature_config() -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
@@ -1085,9 +1139,9 @@ async def test_plugin_handler_honors_platform_and_feature_config() -> None:
             "platform": {"platform_id": "platform-b"},
             "inbound": {
                 "semanticize_components": False,
-                "respond_to_poke": False,
                 "component_spoof_protection": {"enabled": False},
             },
+            "interaction_response": {"respond_to_poke": False},
         }
     )
     event = FakeEvent(

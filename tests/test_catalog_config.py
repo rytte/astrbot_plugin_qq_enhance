@@ -215,9 +215,12 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
             }
         },
         {"inbound": {"prefer_napcat_stt": True}},
-        {"inbound": {"respond_to_poke": 1}},
-        {"inbound": {"respond_to_red_packet": "true"}},
-        {"inbound": {"mark_recalled_messages": 1}},
+        {"inbound": {"respond_to_poke": False}},
+        {"inbound": {"respond_to_red_packet": False}},
+        {"interaction_response": {"respond_to_poke": 1}},
+        {"interaction_response": {"respond_to_red_packet": "true"}},
+        {"inbound": {"mark_recalled_messages": True}},
+        {"notice_events": {"message_recall": {"mode": "respond"}}},
         {"inbound": {"max_semantic_chars": 255}},
         {"limits": {"page_size": 0}},
     ],
@@ -238,6 +241,10 @@ def test_valid_config_preserves_explicit_values() -> None:
             "request_notifications": {
                 "enabled": True,
                 "admin_user_ids": ["10001"],
+            },
+            "interaction_response": {
+                "respond_to_poke": False,
+                "respond_to_red_packet": False,
             },
         }
     )
@@ -267,11 +274,13 @@ def test_valid_config_preserves_explicit_values() -> None:
                 "poke",
             ],
         },
-        "respond_to_poke": True,
-        "respond_to_red_packet": True,
-        "mark_recalled_messages": True,
         "max_semantic_chars": 2000,
     }
+    assert result["interaction_response"] == {
+        "respond_to_poke": False,
+        "respond_to_red_packet": False,
+    }
+    assert result["notice_events"]["message_recall"] == {"mode": "context"}
 
     disabled = validate_config({"confirmation": {"operations": []}})
     assert disabled["confirmation"]["operations"] == []

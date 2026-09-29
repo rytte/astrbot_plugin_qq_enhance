@@ -233,6 +233,20 @@
           }
         }
       },
+      "max_semantic_chars": {
+        "type": "int",
+        "description": "单条消息追加的组件语义文本上限",
+        "default": 2000,
+        "minimum": 256,
+        "maximum": 8000
+      }
+    }
+  },
+  "interaction_response": {
+    "type": "object",
+    "description": "互动响应",
+    "default": {},
+    "items": {
       "respond_to_poke": {
         "type": "bool",
         "description": "被戳一戳时允许唤醒模型回复",
@@ -244,28 +258,31 @@
         "description": "识别到红包时允许唤醒模型回复",
         "hint": "NapCat 4.18.19 的 walletElement 识别要求网络适配器开启 debug。",
         "default": true
-      },
-      "mark_recalled_messages": {
-        "type": "bool",
-        "description": "消息撤回感知",
-        "hint": "支持私聊和群聊；向原会话历史末尾追加独立的 QQ 撤回事件标签，不会因撤回事件唤醒模型或主动回复。",
-        "default": true
-      },
-      "max_semantic_chars": {
-        "type": "int",
-        "description": "单条消息追加的组件语义文本上限",
-        "default": 2000,
-        "minimum": 256,
-        "maximum": 8000
       }
     }
   },
   "notice_events": {
     "type": "object",
     "description": "平台事件感知",
-    "hint": "原有 11 类默认 context，新增灰条、输入状态、文件和掉线共 6 类默认 off。context 仅向已有会话追加背景，不唤醒模型，并参与后续防抖上下文。",
+    "hint": "消息撤回与原有 11 类平台事件默认 context，另有 6 类默认 off。context 只向已有会话追加背景，不唤醒模型；下一次同会话请求会等待已排队的事件投递结束。",
     "default": {},
     "items": {
+      "message_recall": {
+        "type": "object",
+        "description": "消息撤回",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式",
+            "options": [
+              "off",
+              "context"
+            ],
+            "default": "context"
+          }
+        }
+      },
       "friend_add": {
         "type": "object",
         "description": "好友添加成功",

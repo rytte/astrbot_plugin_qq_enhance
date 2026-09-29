@@ -43,7 +43,7 @@ from .catalog import (
 from .context_images import ContextImageError
 from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
-from .notice_context import NoticeContext
+from .notice_context import NoticeContext, QQNotice
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -698,13 +698,15 @@ class QQEnhancePlugin(Star):
                         "persist_verification_in_history"
                     ],
                     "protected_types": spoof_config["protected_types"],
-                    "respond_to_poke": self.config["inbound"]["respond_to_poke"],
-                    "respond_to_red_packet": self.config["inbound"][
+                    "respond_to_poke": self.config["interaction_response"][
+                        "respond_to_poke"
+                    ],
+                    "respond_to_red_packet": self.config["interaction_response"][
                         "respond_to_red_packet"
                     ],
-                    "mark_recalled_messages": self.config["inbound"][
-                        "mark_recalled_messages"
-                    ],
+                    "message_recall_mode": self.config["notice_events"][
+                        "message_recall"
+                    ]["mode"],
                     "debounce_enabled": self.config["debounce"]["enabled"],
                     "debounce_initial_window_seconds": self.config["debounce"][
                         "initial_window_seconds"
@@ -1177,18 +1179,19 @@ class QQEnhancePlugin(Star):
         if platform_id and event.get_platform_id() != platform_id:
             return
         inbound = self.config["inbound"]
+        interaction_response = self.config["interaction_response"]
         raw = getattr(event.message_obj, "raw_message", None)
         if inbound["component_spoof_protection"]["enabled"]:
             self._verify_inbound_components(event, raw)
         await self._enhance_inbound_qq_voice(event, raw)
-        red_packet = inbound["respond_to_red_packet"] and is_red_packet_event(
+        red_packet = interaction_response["respond_to_red_packet"] and is_red_packet_event(
             raw, self.config["limits"]["max_components"]
         )
         semantics = describe_inbound_event(
             raw,
             str(event.get_self_id() or ""),
             semanticize_components=inbound["semanticize_components"],
-            respond_to_poke=inbound["respond_to_poke"],
+            respond_to_poke=interaction_response["respond_to_poke"],
             max_components=self.config["limits"]["max_components"],
             max_chars=inbound["max_semantic_chars"],
         )
@@ -1604,7 +1607,7 @@ class QQEnhancePlugin(Star):
             request: Provider request containing the persisted conversation.
         """
 
-        if not self.config["inbound"]["mark_recalled_messages"]:
+        if self.config["notice_events"]["message_recall"]["mode"] == "off":
             return
         if event.get_platform_name() != "aiocqhttp" or request.conversation is None:
             return
@@ -1680,56 +1683,16 @@ class QQEnhancePlugin(Star):
         if hasattr(self, "debouncer"):
             pending = self.debouncer.early_recalls.pop(key, None)
             if pending is not None and pending[0] > time.monotonic():
-                await self.mark_recalled_message(pending[1])
+                await self.notice_context.capture(pending[1])
 
-    async def _append_recall_notice(self, entry: dict, content: str) -> None:
-        """Append a recall event after the original input has finished saving.
-
-        Args:
-            entry: Short-lived original message and conversation mapping.
-            content: Platform recall description to persist as a new user entry.
-        """
-
-        try:
-            if entry["history_ready"] is not None:
-                await entry["history_ready"].wait()
-            async with session_lock_manager.acquire_lock(entry["unified_msg_origin"]):
-                manager = self.context.conversation_manager
-                conversation = await manager.get_conversation(
-                    entry["unified_msg_origin"], entry["conversation_id"]
-                )
-                if conversation is None:
-                    logger.warning(
-                        "Cannot append QQ recall notice: original conversation was removed"
-                    )
-                    return
-                history = json.loads(conversation.history or "[]")
-                if not isinstance(history, list):
-                    raise ValueError("conversation history is not a list")
-                await manager.update_conversation(
-                    entry["unified_msg_origin"],
-                    entry["conversation_id"],
-                    history=[*history, {"role": "user", "content": content}],
-                    token_usage=None,
-                )
-                entry["notified"] = True
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "Failed to append QQ recall notice: umo=%s",
-                entry["unified_msg_origin"],
-            )
-
-    @filter.event_message_type(filter.EventMessageType.ALL)
     async def mark_recalled_message(self, event: AstrMessageEvent) -> None:
-        """Schedule independent recall notices for tracked QQ messages.
+        """Prepare a tracked recall for the shared platform notice queue.
 
         Args:
             event: Current OneBot notice event.
         """
 
-        if not self.config["inbound"]["mark_recalled_messages"]:
+        if self.config["notice_events"]["message_recall"]["mode"] == "off":
             return
         if event.get_platform_name() != "aiocqhttp":
             return
@@ -1794,23 +1757,45 @@ class QQEnhancePlugin(Star):
             isinstance(recalled_at, (str, int))
             and not isinstance(recalled_at, bool)
             and str(recalled_at).isdecimal()
-            and entry["sent_at"] is not None
+            and int(recalled_at) <= 2**63 - 1
         ):
-            elapsed = int(recalled_at) - entry["sent_at"]
+            occurred_at = int(recalled_at)
         else:
-            elapsed = -1
+            occurred_at = None
+        elapsed = (
+            occurred_at - entry["sent_at"]
+            if occurred_at is not None and entry["sent_at"] is not None
+            else -1
+        )
         if 0 <= elapsed <= RECALL_TRACK_TTL_SECONDS:
             recall_status = f"已在发送后 {elapsed} 秒被撤回"
         else:
             recall_status = "已被撤回"
-        content = (
-            f"[QQ 撤回事件: 用户 {entry['sender_id']} 于 {sent_time} "
+        description = (
+            f"用户 {entry['sender_id']} 于 {sent_time} "
             f"发送的消息{recall_status}。原消息摘录（仅用于定位）："
             + json.dumps(entry["excerpt"], ensure_ascii=False)
-            + "]"
         )
+        notice = QQNotice(
+            kind="message_recall",
+            self_id="",
+            group_id=scope_id if scope_kind == "group" else "",
+            user_id=entry["sender_id"],
+            occurred_at=occurred_at,
+            details={"scope_kind": scope_kind, "message_id": str(message_id)},
+            description=description,
+        )
+        delivery = await self.notice_context.queue_pinned(
+            notice,
+            entry["unified_msg_origin"],
+            entry["conversation_id"],
+            ready=entry["history_ready"],
+            recall_entry=entry,
+        )
+        if delivery is None:
+            return
         entry["pending"] = True
-        task = asyncio.create_task(self._append_recall_notice(entry, content))
+        task = delivery.task
         self.recall_tasks.add(task)
 
         def completed(done):
