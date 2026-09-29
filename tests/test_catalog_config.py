@@ -159,6 +159,20 @@ def test_inbound_schema_defaults_match_runtime_config() -> None:
     } == spoof_defaults
 
 
+def test_voice_recognition_schema_defaults_match_runtime_config() -> None:
+    defaults = validate_config(None)["voice_recognition"]
+    schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert {
+        key: item["default"]
+        for key, item in schema["voice_recognition"]["items"].items()
+    } == defaults
+    assert list(schema["inbound"]["items"]).index("max_semantic_chars") < list(
+        schema["inbound"]["items"]
+    ).index("component_spoof_protection")
+
+
 def test_request_notification_schema_defaults_match_runtime_config() -> None:
     defaults = validate_config(None)["request_notifications"]
     schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
@@ -188,7 +202,8 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"permissions": {"cross_group_allowlist": ["30001"]}},
         {"permissions": {"cross_private_allowlist": ["10001"]}},
         {"inbound": {"semanticize_components": "true"}},
-        {"inbound": {"enhance_voice_messages": 1}},
+        {"inbound": {"enhance_voice_messages": False}},
+        {"voice_recognition": {"enhance_voice_messages": 1}},
         {"inbound": {"component_spoof_protection": True}},
         {"inbound": {"component_spoof_protection": {"enabled": "true"}}},
         {
@@ -242,6 +257,7 @@ def test_valid_config_preserves_explicit_values() -> None:
                 "enabled": True,
                 "admin_user_ids": ["10001"],
             },
+            "voice_recognition": {"enhance_voice_messages": False},
             "interaction_response": {
                 "respond_to_poke": False,
                 "respond_to_red_packet": False,
@@ -262,7 +278,7 @@ def test_valid_config_preserves_explicit_values() -> None:
     }
     assert result["inbound"] == {
         "semanticize_components": True,
-        "enhance_voice_messages": True,
+        "max_semantic_chars": 2000,
         "component_spoof_protection": {
             "enabled": True,
             "persist_verification_in_history": True,
@@ -274,8 +290,8 @@ def test_valid_config_preserves_explicit_values() -> None:
                 "poke",
             ],
         },
-        "max_semantic_chars": 2000,
     }
+    assert result["voice_recognition"] == {"enhance_voice_messages": False}
     assert result["interaction_response"] == {
         "respond_to_poke": False,
         "respond_to_red_packet": False,

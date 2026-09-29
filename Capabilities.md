@@ -126,7 +126,7 @@
 | 消息扩展 | `ArkSharePeer` | 获取用户或群推荐 Ark（旧别名，仅返回数据） | ❌️ | — |
 | 消息扩展 | `click_inline_keyboard_button` | 点击内联键盘按钮 | ❌️ | — |
 | 消息扩展 | `fetch_emoji_like` | 获取表情点赞详情 | ❌️ | — |
-| 消息扩展 | `fetch_ptt_text` | 获取语音转文字结果 | ⚠️ 配置启用 | `inbound.enhance_voice_messages` |
+| 消息扩展 | `fetch_ptt_text` | 获取语音转文字结果 | ⚠️ 配置启用 | `voice_recognition.enhance_voice_messages` |
 | 消息扩展 | `get_emoji_likes` | 获取消息表情点赞列表 | ❌️ | — |
 | 消息扩展 | `send_ark_share` | 获取用户或群推荐 Ark（标准名，仅返回数据） | ❌️ | — |
 | 消息扩展 | `send_group_ark_share` | 获取群推荐 Ark（标准名，仅返回数据） | ❌️ | — |

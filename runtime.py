@@ -132,7 +132,7 @@ DEFAULT_CONFIG = {
     },
     "inbound": {
         "semanticize_components": True,
-        "enhance_voice_messages": True,
+        "max_semantic_chars": 2000,
         "component_spoof_protection": {
             "enabled": True,
             "persist_verification_in_history": True,
@@ -144,7 +144,9 @@ DEFAULT_CONFIG = {
                 "poke",
             ],
         },
-        "max_semantic_chars": 2000,
+    },
+    "voice_recognition": {
+        "enhance_voice_messages": True,
     },
     "interaction_response": {
         "respond_to_poke": True,
@@ -478,7 +480,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("debounce", "enabled"),
         ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
-        ("inbound", "enhance_voice_messages"),
+        ("voice_recognition", "enhance_voice_messages"),
         ("interaction_response", "respond_to_poke"),
         ("interaction_response", "respond_to_red_packet"),
     )

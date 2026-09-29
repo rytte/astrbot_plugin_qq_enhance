@@ -201,11 +201,12 @@
         "hint": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]",
         "default": true
       },
-      "enhance_voice_messages": {
-        "type": "bool",
-        "description": "使用 NapCat 语音识别作为回退",
-        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；支持顶层和引用语音。",
-        "default": true
+      "max_semantic_chars": {
+        "type": "int",
+        "description": "单条消息追加的组件语义文本上限",
+        "default": 2000,
+        "minimum": 256,
+        "maximum": 8000
       },
       "component_spoof_protection": {
         "type": "object",
@@ -232,13 +233,19 @@
             "default": ["red_packet", "voice", "dice", "rps", "poke"]
           }
         }
-      },
-      "max_semantic_chars": {
-        "type": "int",
-        "description": "单条消息追加的组件语义文本上限",
-        "default": 2000,
-        "minimum": 256,
-        "maximum": 8000
+      }
+    }
+  },
+  "voice_recognition": {
+    "type": "object",
+    "description": "语音识别",
+    "default": {},
+    "items": {
+      "enhance_voice_messages": {
+        "type": "bool",
+        "description": "使用 NapCat 语音识别作为回退",
+        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；支持顶层和引用语音。",
+        "default": true
       }
     }
   },

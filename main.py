@@ -690,7 +690,7 @@ class QQEnhancePlugin(Star):
                     "semanticize_components": self.config["inbound"][
                         "semanticize_components"
                     ],
-                    "enhance_voice_messages": self.config["inbound"][
+                    "enhance_voice_messages": self.config["voice_recognition"][
                         "enhance_voice_messages"
                     ],
                     "component_spoof_protection_enabled": spoof_config["enabled"],
@@ -1437,7 +1437,9 @@ class QQEnhancePlugin(Star):
         """
 
         semanticize = self.config["inbound"]["semanticize_components"]
-        use_napcat_fallback = self.config["inbound"]["enhance_voice_messages"]
+        use_napcat_fallback = self.config["voice_recognition"][
+            "enhance_voice_messages"
+        ]
         if not semanticize and not use_napcat_fallback:
             return
         if not isinstance(raw, dict) or raw.get("post_type") not in {None, "message"}:

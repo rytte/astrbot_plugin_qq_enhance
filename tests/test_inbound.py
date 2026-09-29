@@ -526,9 +526,9 @@ async def test_astrbot_stt_stays_plain_without_semanticization() -> None:
         {
             "inbound": {
                 "semanticize_components": False,
-                "enhance_voice_messages": True,
                 "component_spoof_protection": {"enabled": False},
-            }
+            },
+            "voice_recognition": {"enhance_voice_messages": True},
         }
     )
     plugin.runtime = SimpleNamespace(
@@ -556,7 +556,7 @@ async def test_astrbot_stt_stays_plain_without_semanticization() -> None:
 @pytest.mark.asyncio
 async def test_plugin_uses_napcat_stt_when_astrbot_leaves_record() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(return_value={"text": "测试语音"}),
@@ -591,9 +591,9 @@ async def test_napcat_stt_stays_plain_when_semanticization_is_disabled() -> None
         {
             "inbound": {
                 "semanticize_components": False,
-                "enhance_voice_messages": True,
                 "component_spoof_protection": {"enabled": False},
-            }
+            },
+            "voice_recognition": {"enhance_voice_messages": True},
         }
     )
     plugin.runtime = SimpleNamespace(
@@ -619,7 +619,7 @@ async def test_napcat_stt_stays_plain_when_semanticization_is_disabled() -> None
 @pytest.mark.asyncio
 async def test_semanticization_alone_does_not_call_napcat_for_a_record() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": False}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": False}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(),
@@ -645,7 +645,7 @@ async def test_semanticization_alone_does_not_call_napcat_for_a_record() -> None
 @pytest.mark.asyncio
 async def test_plugin_retries_when_napcat_stt_result_is_not_ready() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     not_ready = QQToolError(
         "protocol_rejected",
         "QQ action fetch_ptt_text 失败：获取语音转文字结果失败",
@@ -686,7 +686,7 @@ async def test_plugin_retries_when_napcat_stt_result_is_not_ready() -> None:
 @pytest.mark.asyncio
 async def test_plugin_uses_napcat_stt_for_record_in_reply() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(return_value={"text": "引用语音"}),
@@ -760,7 +760,7 @@ async def test_plugin_semanticizes_existing_asr_text_in_reply() -> None:
 @pytest.mark.asyncio
 async def test_plugin_keeps_record_in_reply_when_napcat_stt_fails() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(return_value={"text": ""}),
@@ -798,7 +798,7 @@ async def test_plugin_skips_reply_voice_that_cannot_be_mapped_safely(
     reply: Reply,
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(),
@@ -826,7 +826,7 @@ async def test_plugin_keeps_record_for_invalid_napcat_result(
     result: object,
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(return_value=result),
@@ -850,7 +850,7 @@ async def test_plugin_keeps_record_for_invalid_napcat_result(
 @pytest.mark.asyncio
 async def test_plugin_keeps_record_when_napcat_stt_fails() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(
@@ -877,7 +877,7 @@ async def test_plugin_keeps_record_when_napcat_stt_fails() -> None:
 @pytest.mark.asyncio
 async def test_plugin_stops_after_three_not_ready_stt_failures() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(
@@ -931,7 +931,7 @@ async def test_plugin_skips_voice_that_cannot_be_mapped_safely(
     messages: list,
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"inbound": {"enhance_voice_messages": True}})
+    plugin.config = validate_config({"voice_recognition": {"enhance_voice_messages": True}})
     plugin.runtime = SimpleNamespace(
         verify_platform=AsyncMock(),
         call_action=AsyncMock(),
