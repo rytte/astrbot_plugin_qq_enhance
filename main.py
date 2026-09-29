@@ -1853,6 +1853,7 @@ class QQEnhancePlugin(Star):
                 request.func_tool.remove_tool(tool_name)
             return
 
+        mode = self.config["toolsets"]["exposure_mode"]
         is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
         raw = getattr(event.message_obj, "raw_message", {})
@@ -1864,6 +1865,10 @@ class QQEnhancePlugin(Star):
                 operation_id = f"{tool_name}.{operation}"
                 if not self.runtime.operation_enabled(operation_id):
                     continue
+                if mode == "full" and current_group:
+                    # Group tool visibility stays stable; execution authorizes callers.
+                    visible.add(tool_name)
+                    break
                 spec = OPERATION_MAP[operation_id]
                 if spec.permission == "astrbot_admin" and not is_admin:
                     continue
@@ -2024,7 +2029,6 @@ class QQEnhancePlugin(Star):
             isinstance(component, File) for component in message_components
         ):
             requested.add("qq_private_files")
-        mode = self.config["toolsets"]["exposure_mode"]
         if mode != "full":
             if current_group:
                 selected = {

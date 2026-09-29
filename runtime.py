@@ -45,7 +45,7 @@ from .storage import Storage
 DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
-        "exposure_mode": "balanced",
+        "exposure_mode": "full",
         "inject_dialogue_prompt": True,
         "enabled_packs": [],
         "disabled_operations": [],

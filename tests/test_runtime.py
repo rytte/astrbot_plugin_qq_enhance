@@ -11,9 +11,11 @@ import pytest
 from mcp.types import CallToolResult, ImageContent
 from PIL import Image as PillowImage
 
+from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import File, Image
 from astrbot.core.provider.entities import ProviderRequest
-from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP
+from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, TOOL_OPERATIONS
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import (
     QQRuntime,
     QQToolError,
@@ -583,6 +585,52 @@ async def test_message_get_omits_raw_message_when_components_exist(tmp_path) -> 
         }
     ]
     assert fallback["data"]["raw_message"] == "plain fallback"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,operation,params,action",
+    [
+        ("qq_account_manage", "set_profile", {"nickname": "example"}, "set_qq_profile"),
+        (
+            "qq_group_manage",
+            "whole_ban",
+            {"group_id": 30001, "enable": True},
+            "set_group_whole_ban",
+        ),
+        (
+            "qq_friend_history",
+            "list",
+            {"user_id": 10001},
+            "get_friend_msg_history",
+        ),
+    ],
+)
+async def test_full_group_visible_tools_reject_unauthorized_execution(
+    tmp_path, tool, operation, params, action
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    event = FakeEvent(sender_id="20001", group_id="30001", admin=False)
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = runtime.config
+    plugin.runtime = runtime
+    request = ProviderRequest(
+        prompt="Hello",
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+
+    await plugin.select_tools(event, request)
+
+    assert request.func_tool.get_tool(tool) is not None
+    result = json.loads(await runtime.execute(event, tool, operation, params))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "permission_denied"
+    assert not any(call[0] == action for call in client.calls)
 
 
 @pytest.mark.asyncio

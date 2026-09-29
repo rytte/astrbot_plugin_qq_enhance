@@ -75,7 +75,12 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
             "[QQ component|QQ互动：群聊（群号 30003），用户 10001 戳了你]"
         )
         assert request.func_tool.get_tool("qq_group_member_manage") is not None
-        assert request.func_tool.get_tool("qq_friend_interact") is None
+        if exposure_mode == "full":
+            assert {tool.name for tool in request.func_tool.tools} == set(
+                TOOL_OPERATIONS
+            )
+        else:
+            assert request.func_tool.get_tool("qq_friend_interact") is None
     else:
         assert event.get_message_type() == MessageType.FRIEND_MESSAGE
         assert event.get_group_id() == ""
