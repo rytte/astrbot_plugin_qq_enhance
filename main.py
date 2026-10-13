@@ -43,7 +43,7 @@ from .catalog import (
 from .context_images import ContextImageError
 from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
-from .notice_context import NoticeContext, QQNotice
+from .notice_context import NoticeContext, QQNotice, format_notice_time
 from .inbound import (
     describe_inbound_event,
     format_component_semantics,
@@ -1749,12 +1749,7 @@ class QQEnhancePlugin(Star):
         ):
             return
         recalled_at = raw.get("time")
-        sent_time = "未知时间"
-        if entry["sent_at"] is not None:
-            try:
-                sent_time = time.strftime("%H:%M:%S", time.localtime(entry["sent_at"]))
-            except (ValueError, OverflowError, OSError):
-                pass
+        sent_time = format_notice_time(entry["sent_at"]) or "未知时间"
         if (
             isinstance(recalled_at, (str, int))
             and not isinstance(recalled_at, bool)
@@ -1764,15 +1759,23 @@ class QQEnhancePlugin(Star):
             occurred_at = int(recalled_at)
         else:
             occurred_at = None
-        elapsed = (
-            occurred_at - entry["sent_at"]
-            if occurred_at is not None and entry["sent_at"] is not None
-            else -1
-        )
-        if 0 <= elapsed <= RECALL_TRACK_TTL_SECONDS:
-            recall_status = f"已在发送后 {elapsed} 秒被撤回"
-        else:
-            recall_status = "已被撤回"
+        recall_status = "已撤回"
+        details = {"scope_kind": scope_kind, "message_id": str(message_id)}
+        if scope_kind == "group":
+            operator = raw.get("operator_id")
+            operator_id = None
+            if (
+                isinstance(operator, (str, int))
+                and not isinstance(operator, bool)
+                and str(operator).isdecimal()
+                and 0 < int(operator) <= 2**63 - 1
+            ):
+                operator_id = int(operator)
+            details["operator_id"] = operator_id
+            if operator_id is None:
+                recall_status = "已被撤回（撤回操作者未知）"
+            elif str(operator_id) != entry["sender_id"]:
+                recall_status = f"已被用户 {operator_id} 撤回"
         description = (
             f"用户 {entry['sender_id']} 于 {sent_time} "
             f"发送的消息{recall_status}。原消息摘录（仅用于定位）："
@@ -1784,7 +1787,7 @@ class QQEnhancePlugin(Star):
             group_id=scope_id if scope_kind == "group" else "",
             user_id=entry["sender_id"],
             occurred_at=occurred_at,
-            details={"scope_kind": scope_kind, "message_id": str(message_id)},
+            details=details,
             description=description,
         )
         delivery = await self.notice_context.queue_pinned(

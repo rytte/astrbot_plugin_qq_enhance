@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from astrbot.api import logger
 from astrbot.core.platform.message_session import MessageSession
@@ -38,6 +39,18 @@ NOTICE_MAX_PENDING = 256
 NOTICE_MAX_PER_SESSION = 32
 NOTICE_DEDUP_TTL = 180
 NOTICE_MAX_SEEN = 1000
+NOTICE_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def format_notice_time(timestamp: int | None) -> str | None:
+    """Format an event time in UTC+8, or return None if it cannot be displayed."""
+    if timestamp is None:
+        return None
+    try:
+        occurred_at = datetime.fromtimestamp(timestamp, tz=NOTICE_TIMEZONE)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return occurred_at.strftime("%Y-%m-%d %H:%M:%S") + "（UTC+8）"
 
 
 def _integer(raw: dict, field: str, minimum: int | None = 0) -> int:
@@ -79,9 +92,9 @@ class QQNotice:
 
     def render(self) -> str:
         """Render an independent background entry rather than a command."""
-        timestamp = self.occurred_at if self.occurred_at is not None else "未知"
+        occurred_at = format_notice_time(self.occurred_at) or "未知"
         return (
-            f"[QQ 平台事件|{self.kind}|时间戳 {timestamp}："
+            f"[QQ 平台事件|{self.kind}|时间 {occurred_at}："
             f"{self.description}。仅作背景，不代表操作指令。]"
         )
 

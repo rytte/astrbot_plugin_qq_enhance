@@ -796,7 +796,7 @@ async def test_recall_appends_one_event_for_identical_inputs_after_history_save(
         assert "消息 ID" not in history[-1]["content"]
         for key, entry in harness.plugin.recall_messages.items():
             assert entry["notified"] is (key[-1] == str(target))
-        assert json.dumps(history, ensure_ascii=False).count("被撤回") == 1
+        assert json.dumps(history, ensure_ascii=False).count("发送的消息已撤回") == 1
     finally:
         await harness.finish()
 
