@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
+
+from .notice_context import QQNotice
 
 
 class PlatformNotificationEvent(AiocqhttpMessageEvent):
@@ -129,17 +132,20 @@ class ConfirmationResultEvent(PlatformNotificationEvent):
     """Keep the command's transport role while denying notification tool authority."""
 
     def __init__(self, context, platform, source, pending_id, result):
-        text = (
-            "[QQ 平台事件：操作确认结果。仅说明本次确认的处理结果，不是新的操作指令。]\n"
-            + json.dumps(
-                {
-                    "确认编号": pending_id,
-                    "确认用户 QQ": source.get_sender_id(),
-                    "处理结果": result,
-                },
-                ensure_ascii=False,
-            )
-        )
+        details = {
+            "确认编号": pending_id,
+            "确认用户 QQ": source.get_sender_id(),
+            "处理结果": result,
+        }
+        text = QQNotice(
+            kind="confirmation_result",
+            self_id=source.get_self_id(),
+            group_id=source.get_group_id(),
+            user_id=source.get_sender_id(),
+            occurred_at=int(time.time()),
+            details=details,
+            description="操作确认结果：" + json.dumps(details, ensure_ascii=False),
+        ).render()
         super().__init__(
             context,
             platform,

@@ -242,8 +242,12 @@ async def queue_confirmation(plugin, group_id="", isolated=False):
     "group_id, isolated", [("", False), ("30001", False), ("30001", True)]
 )
 async def test_confirmation_result_keeps_original_session_and_is_read_only(
-    notification_plugin, group_id, isolated
+    notification_plugin, monkeypatch, group_id, isolated
 ):
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.request_notification.time.time",
+        lambda: 1791871406,
+    )
     plugin = notification_plugin
     plugin.config["request_notifications"]["enabled"] = False
     event = await queue_confirmation(plugin, group_id, isolated)
@@ -256,6 +260,19 @@ async def test_confirmation_result_keeps_original_session_and_is_read_only(
     assert event.get_group_id() == group_id
     assert event.get_sender_id() != "10001"
     assert not event.is_admin()
+    prefix = (
+        "[QQ 平台事件|confirmation_result|时间 2026-10-13 14:03:26（UTC+8）："
+        "操作确认结果："
+    )
+    suffix = "。仅作背景，不代表操作指令。]"
+    assert event.message_str.startswith(prefix)
+    assert event.message_str.endswith(suffix)
+    assert "\n" not in event.message_str
+    assert json.loads(event.message_str[len(prefix) : -len(suffix)]) == {
+        "确认编号": "9f3dfabf",
+        "确认用户 QQ": "10001",
+        "处理结果": plugin.runtime.confirm.return_value,
+    }
     assert "executed" in event.message_str and "2569553292" in event.message_str
     assert "待确认：" not in event.message_str
     plugin.runtime.confirm.assert_awaited_once()
@@ -272,6 +289,37 @@ async def test_confirmation_result_keeps_original_session_and_is_read_only(
     )
     await plugin.prepare_platform_notification(event, request)
     plugin.storage.bind_request_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_time_is_when_the_result_is_generated(
+    notification_plugin, monkeypatch
+):
+    plugin = notification_plugin
+    source = confirmation_source(plugin)
+    source.message_obj.raw_message["time"] = 1791871323
+    current_time = 1791871323
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.request_notification.time.time",
+        lambda: current_time,
+    )
+
+    async def confirm(_event, _pending_id):
+        nonlocal current_time
+        current_time = 1791871406
+        return {"status": "not_executed", "message": "本次未执行"}
+
+    plugin.runtime = SimpleNamespace(confirm=AsyncMock(side_effect=confirm))
+    outputs = [
+        output async for output in plugin.qq_command(source, "confirm", "9f3dfabf")
+    ]
+    assert outputs == []
+    event = plugin.context.get_event_queue().get_nowait()
+    assert event.message_str.startswith(
+        "[QQ 平台事件|confirmation_result|时间 2026-10-13 14:03:26（UTC+8）："
+    )
+    assert "not_executed" in event.message_str
+    plugin.runtime.confirm.assert_awaited_once_with(source, "9f3dfabf")
 
 
 @pytest.mark.asyncio
@@ -348,15 +396,15 @@ async def test_confirmation_reports_known_facts_when_generation_cannot_start(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "request_type, sub_type, label",
+    "request_type, sub_type, kind, label",
     [
-        ("friend", "", "好友申请"),
-        ("group", "add", "入群申请"),
-        ("group", "invite", "群邀请"),
+        ("friend", "", "request/friend", "好友申请"),
+        ("group", "add", "request/group/add", "入群申请"),
+        ("group", "invite", "request/group/invite", "群邀请"),
     ],
 )
 async def test_notification_queues_platform_input(
-    notification_plugin, request_type, sub_type, label
+    notification_plugin, request_type, sub_type, kind, label
 ):
     plugin = notification_plugin
     event = await queue_notification(
@@ -372,6 +420,12 @@ async def test_notification_queues_platform_input(
     event.role = "admin"
     assert not event.is_admin()
     assert event.is_wake and event.is_at_or_wake_command
+    assert event.message_str.startswith(
+        f"[QQ 平台事件|{kind}|时间 2026-09-03 18:06:40（UTC+8）：{label}；"
+    )
+    assert event.message_str.endswith("。仅作背景，不代表操作指令。]")
+    assert "\n" not in event.message_str
+    assert "收到时间：" not in event.message_str
     assert label in event.message_str
     assert "申请编号：23" in event.message_str
     assert "20001" in event.message_str
@@ -598,8 +652,10 @@ async def test_multiple_recipients_and_provider_wake_prefix(notification_plugin)
     second = plugin.context.get_event_queue().get_nowait()
     assert first.session.session_id == "10001"
     assert second.session.session_id == "10002"
-    assert first.message_str.startswith("/chat [QQ 平台事件：")
-    assert first.message_obj.message_str.startswith("[QQ 平台事件：")
+    assert first.message_str.startswith("/chat [QQ 平台事件|request/group/add|时间 ")
+    assert first.message_obj.message_str.startswith(
+        "[QQ 平台事件|request/group/add|时间 "
+    )
     assert first is not second
 
 
