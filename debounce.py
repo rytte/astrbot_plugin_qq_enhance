@@ -7,14 +7,22 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import dump_messages_with_checkpoints
-from astrbot.core.star.session_llm_manager import SessionServiceManager
-from astrbot.core.utils.session_lock import session_lock_manager
 
 
 ARRIVAL_KEY = "_qq_enhance_debounce_arrival"
+
+
+@dataclass(eq=False)
+class ContextInput:
+    """An input without wake authority, saved by its owning source."""
+
+    key: tuple
+    saved: asyncio.Future[bool]
+    content: str = ""
+    wait_applied: bool = False
 
 
 @dataclass(eq=False)
@@ -22,7 +30,7 @@ class Arrival:
     """One pipeline and its independently prepared user input."""
 
     event: AstrMessageEvent
-    task: asyncio.Task
+    task: asyncio.Task | None
     previous: Arrival | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     finished: asyncio.Event = field(default_factory=asyncio.Event)
@@ -36,39 +44,22 @@ class Arrival:
     persistence: asyncio.Task | None = None
     buffer_bytes: int = 0
     waited_seconds: float = 0.0
+    conversation_id: str | None = None
+    context_inputs: list[ContextInput] = field(default_factory=list)
+    waiting: bool = False
+    wait_changed: asyncio.Event = field(default_factory=asyncio.Event)
+    replayed: bool = False
+    scope: tuple | None = None
+    seen_context: set[tuple] = field(default_factory=set)
 
 
-class ArrivalFilter(filter.CustomFilter):
-    """Record pipeline order before asynchronous media preprocessing.
-
-    The filter only records arrival; eligibility is checked by the handler after
-    ordinary QQ enrichment and command processing have completed.
-    """
+class ArrivalRegistry:
+    """Platform-independent arrival order before asynchronous preparation."""
 
     tails: ClassVar[dict[tuple, Arrival]] = {}
 
-    def filter(self, event, cfg) -> bool:
-        """Attach arrival state while AstrBot evaluates adapter filters.
-
-        Args:
-            event: Original adapter event.
-            cfg: AstrBot session configuration.
-
-        Returns:
-            Whether this QQ input needs the later debounce handler.
-        """
-        if event.get_platform_name() != "aiocqhttp" or not event.get_sender_id():
-            return False
-        raw = getattr(event.message_obj, "raw_message", {})
-        if not isinstance(raw, dict):
-            return False
-        if raw.get("post_type") != "message" and not (
-            raw.get("post_type") == "notice"
-            and raw.get("notice_type") == "notify"
-            and raw.get("sub_type") == "poke"
-            and str(raw.get("target_id")) == str(event.get_self_id())
-        ):
-            return False
+    @classmethod
+    def record(cls, event) -> bool:
         if event.get_extra(ARRIVAL_KEY) is not None:
             return True
         task = asyncio.current_task()
@@ -79,9 +70,15 @@ class ArrivalFilter(filter.CustomFilter):
             event.unified_msg_origin,
             event.get_sender_id(),
         )
-        arrival = Arrival(event, task, self.tails.get(key))
-        self.tails[key] = arrival
+        arrival = Arrival(event, task, cls.tails.get(key))
+        cls.tails[key] = arrival
         event.set_extra(ARRIVAL_KEY, arrival)
+
+        cls.bind_completion(arrival, key)
+        return True
+
+    @classmethod
+    def bind_completion(cls, arrival, key=None):
 
         def completed(_task):
             arrival.finished.set()
@@ -89,24 +86,34 @@ class ArrivalFilter(filter.CustomFilter):
             if not arrival.superseded:
                 arrival.history_ready.set()
             arrival.previous = None
-            if self.tails.get(key) is arrival:
-                self.tails.pop(key, None)
+            if cls.tails.get(key) is arrival:
+                cls.tails.pop(key, None)
 
-        task.add_done_callback(completed)
-        return True
+        arrival.task.add_done_callback(completed)
+
+    @classmethod
+    def predecessors(cls, umo=None):
+        found = set()
+        for arrival in list(cls.tails.values()):
+            while arrival is not None and arrival not in found:
+                found.add(arrival)
+                if umo is None or arrival.event.unified_msg_origin == umo:
+                    yield arrival
+                arrival = arrival.previous
 
 
 class MessageDebouncer:
     """Replace unfinished generations while persisting separate user inputs."""
 
-    def __init__(self, plugin) -> None:
-        self.plugin = plugin
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+        self.config = runtime.config
         self.jobs: set[asyncio.Task] = set()
         self.pending: dict[tuple, asyncio.Task] = {}
         self.active: dict[tuple, Arrival] = {}
         self.failed: dict[tuple, Arrival] = {}
-        self.early_recalls: dict[tuple, tuple[float, object]] = {}
-        self.conflict_reported = False
+        self.context_jobs: dict[tuple, asyncio.Task] = {}
+        self.context_targets: dict[tuple, Arrival] = {}
         self.closed = False
 
     async def capture(self, event) -> None:
@@ -115,55 +122,17 @@ class MessageDebouncer:
         Args:
             event: An enriched input that is eligible for the default LLM flow.
         """
-        config = self.plugin.config["debounce"]
+        config = self.config
         arrival = event.get_extra(ARRIVAL_KEY)
         if self.closed or not config["enabled"] or arrival is None:
             return
-        platform_id = self.plugin.config["platform"]["platform_id"]
-        if platform_id and event.get_platform_id() != platform_id:
+        if arrival.replayed:
+            await self.runtime.prepare_resume(event)
             return
-        if event.is_stopped() or event._has_send_oper or event.call_llm:
-            return
-        if not event.is_at_or_wake_command:
-            return
-        cfg = self.plugin.context.get_config(umo=event.unified_msg_origin)
-        runner = cfg.get("agent_runner", {})
-        if isinstance(runner, dict) and runner.get("runner_type", "local") != "local":
-            return
-        if not cfg.get("provider_settings", {}).get("enable", True):
-            return
-        # Match the local Agent's input gate before cancelling anything. QQ
-        # adapters may expose newer or adapter-specific components that are not
-        # known to this plugin; any component is therefore eligible here and
-        # keeps the debounce layer independent from the component registry.
-        if not (event.message_str or "").strip() and not event.get_messages():
-            return
-        prefix = cfg.get("provider_settings", {}).get("wake_prefix", "")
-        for wake_prefix in cfg.get("wake_prefix", []):
-            if prefix.startswith(wake_prefix):
-                prefix = prefix[len(wake_prefix) :]
-                break
-        if prefix and not event.message_str.startswith(prefix):
-            return
-        original = str(getattr(event.message_obj, "message_str", "") or "").lstrip()
-        if any(
-            original.startswith(prefix)
-            for prefix in config["ignore_prefixes"]
-            if prefix
+        if not self.runtime.eligible(event) or not await self.runtime.request_allowed(
+            event
         ):
             return
-        for star in self.plugin.context.get_all_stars():
-            if (
-                star.name == "astrbot_plugin_message_merger"
-                and star.activated
-                and (star.config is None or star.config.get("enabled", True))
-            ):
-                if not self.conflict_reported:
-                    logger.warning(
-                        "QQ debounce is inactive while message_merger is enabled"
-                    )
-                    self.conflict_reported = True
-                return
         arrival.batch = [arrival]
         previous = arrival.previous
         # A failed database write remains retryable instead of silently losing
@@ -173,6 +142,11 @@ class MessageDebouncer:
             event.unified_msg_origin,
             "group" if shared_group else event.get_sender_id(),
         )
+        arrival.scope = scope
+        if (job := self.context_jobs.get(scope)) and self.context_targets[
+            scope
+        ] is not arrival:
+            await asyncio.shield(job)
         for (umo, _), job in list(self.pending.items()):
             if umo == event.unified_msg_origin and not job.done():
                 await asyncio.shield(job)
@@ -184,104 +158,316 @@ class MessageDebouncer:
         active = self.active.get(scope)
         if active is not None and not active.finished.is_set():
             previous = active
+            await previous.ready.wait()
         self.active[scope] = arrival
 
-        def completed(_task):
-            if self.active.get(scope) is arrival:
-                self.active.pop(scope, None)
-
-        arrival.task.add_done_callback(completed)
+        self._bind_active(arrival)
         if previous is None:
             window = float(config["initial_window_seconds"])
-            maximum = float(config["max_wait_seconds"])
-            if maximum > 0:
-                window = min(window, maximum)
-            if window > 0:
-                await asyncio.sleep(window)
-                arrival.waited_seconds = window
+            await self._wait(arrival, window)
             return
         if previous.persistence and not previous.persistence.done():
             await asyncio.shield(previous.persistence)
         window = float(config["followup_window_seconds"])
-        maximum = float(config["max_wait_seconds"])
-        if maximum > 0:
-            window = min(window, max(maximum - previous.waited_seconds, 0.0))
-        if window > 0:
-            await asyncio.sleep(window)
-        arrival.waited_seconds = previous.waited_seconds + window
-        result = previous.event.get_result()
-        streaming = "STREAMING" in str(getattr(result, "result_content_type", ""))
+        await self._wait(arrival, window, previous.waited_seconds)
         can_replace = (
-            previous.messages
-            and not previous.finished.is_set()
-            and not previous.protected
-            and not previous.event._has_send_oper
-            and not previous.event.is_stopped()
-            and not streaming
-            and len(previous.batch) < config["max_messages"]
+            self._replaceable(previous)
+            and len(previous.batch) + len(previous.context_inputs)
+            < config["max_messages"]
             and sum(item.buffer_bytes for item in previous.batch)
+            + sum(len(i.content.encode("utf-8")) for i in previous.context_inputs)
             <= config["max_buffer_mb"] * 1024 * 1024
         )
         if can_replace:
-            if not await SessionServiceManager.should_process_llm_request(event):
-                return
             # Recheck the conversation before cancellation: /new must not move
             # unfinished input from one conversation into another.
-            cid = (
-                await self.plugin.context.conversation_manager.get_curr_conversation_id(
-                    event.unified_msg_origin
-                )
-            )
-            can_replace = (
-                cid == previous.request.conversation.cid
-                and not previous.protected
-                and not previous.event._has_send_oper
-                and not previous.event.is_stopped()
-                and not previous.finished.is_set()
-                and "STREAMING"
-                not in str(
-                    getattr(previous.event.get_result(), "result_content_type", "")
-                )
-                and (
-                    shared_group
-                    or not any(
-                        item.event.unified_msg_origin == event.unified_msg_origin
-                        and item.event.get_sender_id() != event.get_sender_id()
-                        and not item.finished.is_set()
-                        for item in ArrivalFilter.tails.values()
-                    )
-                )
+            can_replace = await self.runtime.can_resume(previous) and self._replaceable(
+                previous
             )
         if can_replace:
             arrival.batch = [*previous.batch, arrival]
-            previous.event.stop_event()
-            # AstrBot cleans event-owned media in the cancelled pipeline's
-            # finally block. Transfer ownership before issuing cancellation.
-            paths = getattr(previous.event, "_temporary_local_files", [])
-            for path in paths:
-                event.track_temporary_local_file(path)
-            paths.clear()
-            previous.superseded = True
-            previous.task.cancel()
-            job = asyncio.create_task(self._persist_after_finish(previous, scope))
-            arrival.persistence = job
-            self.jobs.add(job)
-            self.pending[scope] = job
-
-            def persisted(done):
-                self.jobs.discard(done)
-                if self.pending.get(scope) is done:
-                    self.pending.pop(scope, None)
-                if not done.cancelled():
-                    done.exception()  # Retrieve failures if the waiter was cancelled.
-
-            job.add_done_callback(persisted)
+            arrival.context_inputs = [*previous.context_inputs, *arrival.context_inputs]
+            job = self._replace(previous, arrival)
             await asyncio.shield(job)
         else:
             # Finish this run before entering AstrBot's native follow-up path;
             # that path only carries text inside a tool result.
             await previous.finished.wait()
         arrival.previous = None
+
+    def _bind_active(self, arrival):
+        def completed(_task):
+            if self.active.get(arrival.scope) is arrival:
+                self.active.pop(arrival.scope, None)
+
+        arrival.task.add_done_callback(completed)
+
+    async def _wait(self, arrival, seconds, already_waited=0.0):
+        """Restart a live window on updates, with one cumulative time budget."""
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        maximum = float(self.config["max_wait_seconds"])
+        limit = (
+            start + max(maximum - already_waited, 0.0) if maximum > 0 else float("inf")
+        )
+        deadline = min(start + seconds, limit)
+        arrival.waiting = True
+        try:
+            while deadline > loop.time():
+                arrival.wait_changed.clear()
+                try:
+                    await asyncio.wait_for(
+                        arrival.wait_changed.wait(), deadline - loop.time()
+                    )
+                except TimeoutError:
+                    # Event-loop timers can fire slightly before their deadline.
+                    # Also retain an update racing with timeout delivery.
+                    if not arrival.wait_changed.is_set():
+                        continue
+                deadline = min(
+                    loop.time() + float(self.config["followup_window_seconds"]), limit
+                )
+        finally:
+            arrival.waiting = False
+            arrival.waited_seconds = already_waited + min(
+                loop.time() - start, max(deadline - start, 0.0)
+            )
+            if maximum > 0:
+                arrival.waited_seconds = min(arrival.waited_seconds, maximum)
+
+    def _replace(self, previous, successor):
+        previous.event.stop_event()
+        paths = getattr(previous.event, "_temporary_local_files", [])
+        for path in paths:
+            successor.event.track_temporary_local_file(path)
+        paths.clear()
+        previous.superseded = True
+        previous.task.cancel()
+        scope = successor.scope
+        job = asyncio.create_task(self._persist_after_finish(previous, scope))
+        successor.persistence = job
+        self.jobs.add(job)
+        self.pending[scope] = job
+
+        def persisted(done):
+            self.jobs.discard(done)
+            if self.pending.get(scope) is done:
+                self.pending.pop(scope, None)
+            if not done.cancelled():
+                done.exception()
+
+        job.add_done_callback(persisted)
+        return job
+
+    def submit_context(self, related: Arrival, item: ContextInput) -> bool:
+        """Join an existing input without granting a source wake authority."""
+        if (
+            self.closed
+            or not self.config["enabled"]
+            or related.finished.is_set()
+            and not related.superseded
+        ):
+            return False
+        scope = (
+            related.event.unified_msg_origin,
+            "group"
+            if self.config["shared_group"] and related.event.get_group_id()
+            else related.event.get_sender_id(),
+        )
+        owner = self.active.get(scope) or related
+        if owner is not related and related not in owner.batch:
+            # A later pipeline may still be preparing its inherited batch.
+            if owner.previous is not related and not any(
+                related in a.batch for a in owner.batch
+            ):
+                return False
+        if (
+            owner.finished.is_set()
+            or owner.protected
+            or owner.event._has_send_oper
+            or owner.event.is_stopped()
+        ):
+            return False
+        if any(existing.key == item.key for existing in owner.context_inputs):
+            return False
+        if len(owner.batch) + len(owner.context_inputs) >= self.config["max_messages"]:
+            return False
+        if (
+            sum(a.buffer_bytes for a in owner.batch)
+            + sum(len(i.content.encode("utf-8")) for i in owner.context_inputs)
+            + len(item.content.encode("utf-8"))
+            > self.config["max_buffer_mb"] * 1024 * 1024
+        ):
+            return False
+        owner.context_inputs.append(item)
+        if owner.waiting:
+            item.wait_applied = True
+            owner.wait_changed.set()
+        if scope not in self.context_jobs or self.context_jobs[scope].done():
+            self.context_targets[scope] = owner
+            job = asyncio.create_task(self._continue_context(scope, owner))
+            self.context_jobs[scope] = job
+
+            def completed(done):
+                if self.context_jobs.get(scope) is done:
+                    self.context_jobs.pop(scope, None)
+                    self.context_targets.pop(scope, None)
+                if not done.cancelled():
+                    done.exception()
+
+            job.add_done_callback(completed)
+        return True
+
+    def context_barriers(self, related):
+        """Keep a source's history entry behind the live batch's current input."""
+        if related is None:
+            return ()
+        for owner in self.active.values():
+            # A continuation adds no new user input. Its original batch has
+            # its own persistence barriers; waiting for this run would make
+            # event delivery and the restart wait on each other.
+            if (
+                (
+                    owner is related
+                    or related in owner.batch
+                    or owner.previous is related
+                )
+                and not owner.replayed
+                and not owner.history_ready.is_set()
+            ):
+                return (owner,)
+        return ()
+
+    def _replaceable(self, arrival):
+        return bool(
+            (arrival.messages or arrival.replayed)
+            and not arrival.finished.is_set()
+            and not arrival.protected
+            and not arrival.event._has_send_oper
+            and not arrival.event.is_stopped()
+            and "STREAMING"
+            not in str(getattr(arrival.event.get_result(), "result_content_type", ""))
+            and (
+                self.config["shared_group"]
+                or not any(
+                    item.event.unified_msg_origin == arrival.event.unified_msg_origin
+                    and item.event.get_sender_id() != arrival.event.get_sender_id()
+                    and not item.finished.is_set()
+                    for item in ArrivalRegistry.predecessors()
+                )
+            )
+        )
+
+    def _within_budget(self, arrival):
+        return (
+            len(arrival.batch) + len(arrival.context_inputs)
+            <= self.config["max_messages"]
+            and sum(a.buffer_bytes for a in arrival.batch)
+            + sum(len(i.content.encode("utf-8")) for i in arrival.context_inputs)
+            <= self.config["max_buffer_mb"] * 1024 * 1024
+        )
+
+    async def _continue_context(self, scope, related):
+        try:
+            await related.ready.wait()
+            owner = self.active.get(scope)
+            if owner is None or owner.finished.is_set():
+                return
+            await owner.ready.wait()
+            owner.context_inputs[:] = [
+                item
+                for item in owner.context_inputs
+                if not item.saved.done()
+                or not item.saved.cancelled()
+                and item.saved.result()
+            ]
+            unseen = [
+                item
+                for item in owner.context_inputs
+                if item.key not in owner.seen_context
+            ]
+            if not unseen or not self._replaceable(owner):
+                return
+            if owner.persistence:
+                await asyncio.shield(owner.persistence)
+            if not all(item.wait_applied for item in unseen):
+                await self._wait(
+                    owner,
+                    float(self.config["followup_window_seconds"]),
+                    owner.waited_seconds,
+                )
+            if (
+                not self._replaceable(owner)
+                or not self._within_budget(owner)
+                or not await self.runtime.can_resume(owner)
+            ):
+                return
+            # Recheck after eligibility awaits; the batch may have completed.
+            if self.active.get(scope) is not owner or not self._replaceable(owner):
+                return
+            event = self.runtime.make_resume(owner, self)
+            successor = Arrival(event, None, replayed=True, scope=scope)
+            successor.batch = list(owner.batch)
+            successor.context_inputs = list(owner.context_inputs)
+            successor.conversation_id = owner.conversation_id
+            successor.waited_seconds = owner.waited_seconds
+            event.set_extra(ARRIVAL_KEY, successor)
+            self.active[scope] = successor
+            await asyncio.shield(self._replace(owner, successor))
+            for item in successor.context_inputs:
+                if not await asyncio.shield(item.saved):
+                    raise RuntimeError(
+                        "Background input was not saved; reply restart aborted"
+                    )
+            if self.closed or not await self.runtime.can_resume(successor):
+                self.runtime.discard_resume(event)
+                self.active.pop(scope, None)
+                return
+            await self.runtime.enqueue_resume(successor)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to continue a debounced reply with background input"
+            )
+            active = self.active.get(scope)
+            if active is not None and active.replayed and active.task is None:
+                self.runtime.discard_resume(active.event)
+                self.active.pop(scope, None)
+
+    def claim_resume(self, event):
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if (
+            self.closed
+            or self.active.get(arrival.scope) is not arrival
+            or event.is_stopped()
+        ):
+            event.stop_event()
+            return False
+        if arrival.task is not None:
+            return False
+        arrival.task = asyncio.current_task()
+        ArrivalRegistry.bind_completion(arrival)
+        self._bind_active(arrival)
+        return True
+
+    def release_unclaimed_resume(self, event):
+        """Release queued work skipped before the adapter hook can claim it."""
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if arrival is None or arrival.task is not None:
+            return
+        arrival.finished.set()
+        arrival.ready.set()
+        arrival.history_ready.set()
+        if self.active.get(arrival.scope) is arrival:
+            self.active.pop(arrival.scope, None)
+
+    @staticmethod
+    def batch_text(event):
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if arrival is not None and arrival.batch:
+            return "\n".join(item.event.message_str or "" for item in arrival.batch)
+        return event.message_str or ""
 
     async def _persist_after_finish(self, arrival: Arrival, scope: tuple) -> None:
         """Persist cancelled input even when its successor is interrupted.
@@ -295,7 +481,7 @@ class MessageDebouncer:
             await self._persist(arrival)
         except Exception:
             self.failed[scope] = arrival
-            logger.exception("Failed to persist an unanswered QQ input")
+            logger.exception("Failed to persist an unanswered input")
             raise
 
     async def _persist(self, arrival: Arrival) -> None:
@@ -306,31 +492,11 @@ class MessageDebouncer:
         """
         if arrival.persisted:
             return
-        event = arrival.event
-        cid = arrival.request.conversation.cid
-        manager = self.plugin.context.conversation_manager
-        async with session_lock_manager.acquire_lock(event.unified_msg_origin):
-            conversation = await manager.get_conversation(event.unified_msg_origin, cid)
-            if conversation is None:
-                raise RuntimeError(
-                    "The conversation for the unanswered QQ input was removed"
-                )
-            history = json.loads(conversation.history or "[]")
-            if not isinstance(history, list):
-                raise ValueError("Conversation history must be a list")
-            messages = deepcopy(arrival.messages)
-            await manager.update_conversation(
-                event.unified_msg_origin,
-                cid,
-                history=[*history, *messages],
-                token_usage=None,
-            )
-            arrival.persisted = True
-            arrival.history_ready.set()
-            # Only the input's size and source event are needed for later batch
-            # limits and tool selection; release its full request history.
-            arrival.request = None
-            arrival.messages.clear()
+        await self.runtime.persist(arrival)
+        arrival.persisted = True
+        arrival.history_ready.set()
+        arrival.request = None
+        arrival.messages.clear()
 
     def bind_request(self, event, request) -> None:
         """Retain the finalized request without flattening its current input.
@@ -342,6 +508,8 @@ class MessageDebouncer:
         arrival = event.get_extra(ARRIVAL_KEY)
         if arrival is not None and arrival.batch:
             arrival.request = request
+            if request.conversation is not None:
+                arrival.conversation_id = request.conversation.cid
 
     def snapshot(self, event, run_context) -> None:
         """Capture normalized user content before generation and compression.
@@ -356,6 +524,14 @@ class MessageDebouncer:
         request = arrival.request
         if request.conversation is None or not run_context.messages:
             arrival.protected = True
+            arrival.ready.set()
+            return
+        arrival.seen_context = {
+            item.key
+            for item in arrival.context_inputs
+            if item.saved.done() and not item.saved.cancelled() and item.saved.result()
+        }
+        if arrival.replayed:
             arrival.ready.set()
             return
         current = run_context.messages[-1]
@@ -392,6 +568,22 @@ class MessageDebouncer:
     async def close(self) -> None:
         """Finish outstanding persistence without cancelling ordinary replies."""
         self.closed = True
+        context_jobs = list(self.context_jobs.values())
+        for job in context_jobs:
+            job.cancel()
+        if context_jobs:
+            await asyncio.gather(*context_jobs, return_exceptions=True)
+        resumed_tasks = []
+        for arrival in list(self.active.values()):
+            if arrival.replayed:
+                arrival.event.stop_event()
+                if arrival.task is not None and not arrival.task.done():
+                    arrival.task.cancel()
+                    resumed_tasks.append(arrival.task)
+                elif arrival.task is None:
+                    self.runtime.discard_resume(arrival.event)
+        if resumed_tasks:
+            await asyncio.gather(*resumed_tasks, return_exceptions=True)
         if self.jobs:
             await asyncio.gather(*self.jobs, return_exceptions=True)
         for arrival in list(self.failed.values()):
@@ -399,4 +591,5 @@ class MessageDebouncer:
         self.failed.clear()
         self.active.clear()
         self.pending.clear()
-        self.early_recalls.clear()
+        self.context_jobs.clear()
+        self.context_targets.clear()

@@ -13,7 +13,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
 
-from .debounce import Arrival, ArrivalFilter
+from .debounce import Arrival, ArrivalRegistry
 
 
 DEFAULT_NOTICE_POLICIES = {
@@ -340,6 +340,7 @@ class NoticeDelivery:
     ready: asyncio.Event | None = None
     recall_entry: dict | None = None
     task: asyncio.Task | None = None
+    saved: bool = False
 
 
 class NoticeContext:
@@ -351,6 +352,16 @@ class NoticeContext:
         self.seen: dict[tuple, float] = {}
         self.capture_lock = asyncio.Lock()
         self.closed = False
+        self.early_recalls: dict[tuple, tuple[float, object]] = {}
+
+    def discard_early_recall(self, key) -> None:
+        """Release a source input when its pending notice is discarded."""
+        pending = self.early_recalls.pop(key, None)
+        if pending is None:
+            return
+        item = pending[1].get_extra("_qq_enhance_recall_input")
+        if item is not None and not item.saved.done():
+            item.saved.set_result(False)
 
     async def capture(self, event) -> None:
         """Normalize and dispatch a notice according to its configured policy."""
@@ -425,16 +436,11 @@ class NoticeContext:
             or not config.get("provider_settings", {}).get("enable", True)
         ):
             return
-        predecessors = set()
-        for arrival in list(ArrivalFilter.tails.values()):
-            while arrival is not None and arrival not in predecessors:
-                if (
-                    arrival.event.unified_msg_origin == umo
-                    and not arrival.history_ready.is_set()
-                ):
-                    predecessors.add(arrival)
-                arrival = arrival.previous
-        barriers = tuple(predecessors)
+        barriers = tuple(
+            arrival
+            for arrival in ArrivalRegistry.predecessors(umo)
+            if not arrival.history_ready.is_set()
+        )
         if not await SessionPluginManager.is_plugin_enabled_for_session(
             umo, "astrbot_plugin_qq_enhance"
         ):
@@ -510,6 +516,7 @@ class NoticeContext:
                     ],
                     token_usage=None,
                 )
+                delivery.saved = True
                 if delivery.recall_entry is not None:
                     delivery.recall_entry["notified"] = True
                 while len(self.seen) >= NOTICE_MAX_SEEN:
@@ -539,3 +546,5 @@ class NoticeContext:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.pending.clear()
         self.seen.clear()
+        for key in list(self.early_recalls):
+            self.discard_early_recall(key)

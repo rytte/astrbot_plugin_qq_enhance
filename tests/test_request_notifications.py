@@ -281,7 +281,7 @@ async def test_confirmation_result_keeps_original_session_and_is_read_only(
     plugin.context.conversation_manager.update_conversation.assert_not_awaited()
     await plugin.capture_onebot_event(event)
     plugin.storage.add_event.assert_not_awaited()
-    from astrbot_plugin_qq_enhance.debounce import ArrivalFilter
+    from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
 
     assert not ArrivalFilter().filter(event, {})
     request = ProviderRequest(
@@ -441,7 +441,7 @@ async def test_notification_queues_platform_input(
 
 @pytest.mark.asyncio
 async def test_internal_notification_is_not_captured_or_debounced(notification_plugin):
-    from astrbot_plugin_qq_enhance.debounce import ArrivalFilter
+    from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
 
     event = await queue_notification(notification_plugin)
     await notification_plugin.capture_onebot_event(event)

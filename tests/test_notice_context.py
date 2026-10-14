@@ -10,7 +10,8 @@ import pytest
 
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
-from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY, ArrivalFilter
+from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY
+from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.notice_context import (
     DEFAULT_NOTICE_POLICIES,
@@ -494,7 +495,10 @@ def test_notice_policies_preserve_per_event_defaults_and_allow_individual_off():
     result = validate_config({"notice_events": {"group_increase": {"mode": "off"}}})
     expected = deepcopy(DEFAULT_NOTICE_POLICIES)
     expected["group_increase"]["mode"] = "off"
-    assert result["notice_events"] == {"message_recall": {"mode": "context"}, **expected}
+    assert result["notice_events"] == {
+        "message_recall": {"mode": "context"},
+        **expected,
+    }
     assert len(expected) == 17
     assert (
         sum(policy["mode"] == "off" for policy in DEFAULT_NOTICE_POLICIES.values()) == 6
@@ -508,9 +512,9 @@ def test_message_recall_policy_is_separate_from_normal_notice_types():
     assert validate_config(None)["notice_events"]["message_recall"] == {
         "mode": "context"
     }
-    assert validate_config(
-        {"notice_events": {"message_recall": {"mode": "off"}}}
-    )["notice_events"]["message_recall"] == {"mode": "off"}
+    assert validate_config({"notice_events": {"message_recall": {"mode": "off"}}})[
+        "notice_events"
+    ]["message_recall"] == {"mode": "off"}
     assert normalize_notice(payload("message_recall")) is None
 
 

@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 from astrbot_plugin_qq_enhance.debounce import (
     ARRIVAL_KEY,
-    ArrivalFilter,
     MessageDebouncer,
 )
+from astrbot_plugin_qq_enhance.debounce_runtime import AstrBotDebounceRuntime
+from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.notice_context import NoticeContext
 from astrbot_plugin_qq_enhance.runtime import validate_config
@@ -33,6 +34,10 @@ def enabled_session(monkeypatch):
     monkeypatch.setattr(
         SessionServiceManager,
         "should_process_llm_request",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.star.session_plugin_manager.SessionPluginManager.is_plugin_enabled_for_session",
         AsyncMock(return_value=True),
     )
 
@@ -101,6 +106,9 @@ class Event:
     def is_stopped(self):
         return self.stopped
 
+    def authorize_resume(self):
+        self.is_at_or_wake_command = True
+
     def stop_event(self):
         self.stopped = True
 
@@ -109,6 +117,10 @@ class Event:
 
     def track_temporary_local_file(self, path):
         self._temporary_local_files.append(path)
+
+    def cleanup_temporary_local_files(self):
+        self.cleaned_files.extend(self._temporary_local_files)
+        self._temporary_local_files.clear()
 
 
 class Conversations:
@@ -144,16 +156,48 @@ class Harness:
         self.plugin.recall_tasks = set()
         self.plugin.context = SimpleNamespace(
             conversation_manager=self.manager,
-            get_config=lambda **kwargs: {"agent_runner": {"runner_type": "local"}},
+            get_config=lambda **kwargs: {
+                "provider_settings": {"agent_runner_type": "local"}
+            },
             get_all_stars=lambda: [],
         )
         self.plugin.context_images = SimpleNamespace(
             mark_current_request_images=lambda _event, _run_context: None
         )
-        self.plugin.debouncer = MessageDebouncer(self.plugin)
+        self.runtime = AstrBotDebounceRuntime(
+            self.plugin.context, self.plugin.config["debounce"]
+        )
+        self.plugin.debouncer = MessageDebouncer(self.runtime)
+        self.resumed = []
+        self.restart_enqueued = asyncio.Event()
+        self.runtime.make_resume = self.make_resume
+        self.runtime.enqueue_resume = self.enqueue_resume
         self.plugin.notice_context = NoticeContext(self.plugin)
         self.tasks = []
         self.requests = []
+
+    def make_resume(self, arrival, debouncer):
+        source = arrival.event
+        event = Event(
+            "继续处理已有的待回复批次",
+            source.message_obj.raw_message.get("message_id"),
+            sender=source.sender,
+            group=source.group,
+            raw={"post_type": "notice", "notice_type": "debounce_resume"},
+        )
+        event.unified_msg_origin = source.unified_msg_origin
+        self.resumed.append(event)
+        return event
+
+    async def enqueue_resume(self, arrival):
+        self.start(arrival.event)
+        self.restart_enqueued.set()
+
+    async def wait_resumed(self):
+        await wait(self.restart_enqueued)
+        event = self.resumed[-1]
+        await wait(event.prepared)
+        return event
 
     def start(
         self,
@@ -168,7 +212,12 @@ class Harness:
         enrich=False,
     ):
         async def pipeline():
-            ArrivalFilter().filter(event, {})
+            arrival = event.get_extra(ARRIVAL_KEY)
+            if arrival is not None and arrival.replayed:
+                if not self.plugin.debouncer.claim_resume(event):
+                    return
+            else:
+                ArrivalFilter().filter(event, {})
             event.entered.set()
             try:
                 if preprocess:
@@ -196,12 +245,14 @@ class Harness:
                     await self.plugin.add_verified_component_signal(event, req)
                     await self.plugin.track_context_message(event, req)
                     await self.plugin.bind_debounce_request(event, req)
-                    current = await req.assemble_context()
-                    if parts:
-                        current["content"].extend(deepcopy(parts))
-                    messages = bind_checkpoint_messages(req.contexts) + [
-                        Message.model_validate(current)
-                    ]
+                    if event.get_extra(ARRIVAL_KEY).replayed:
+                        await self.runtime.finalize_resume(event, req)
+                    messages = bind_checkpoint_messages(req.contexts)
+                    if req.prompt is not None:
+                        current = await req.assemble_context()
+                        if parts:
+                            current["content"].extend(deepcopy(parts))
+                        messages.append(Message.model_validate(current))
                     if req.system_prompt:
                         messages.insert(
                             0, Message(role="system", content=req.system_prompt)
@@ -764,7 +815,7 @@ async def test_media_cleanup_ownership_moves_to_successor():
 
 @pytest.mark.parametrize("target", [1, 2])
 @pytest.mark.asyncio
-async def test_recall_appends_one_event_for_identical_inputs_after_history_save(target):
+async def test_recall_restarts_batch_and_preserves_identical_inputs_once(target):
     harness = Harness()
     first, second = Event("同样的文字", 1), Event("同样的文字", 2)
     try:
@@ -787,13 +838,17 @@ async def test_recall_appends_one_event_for_identical_inputs_after_history_save(
         assert "[QQ 平台事件|message_recall|" not in json.dumps(
             dump_messages_with_checkpoints(second.runtime.messages), ensure_ascii=False
         )
-        second.allow_reply.set()
+        resumed = await harness.wait_resumed()
+        assert harness.tasks[1].cancelled()
+        assert texts(harness.requests[-1])[:2] == ["同样的文字", "同样的文字"]
+        assert texts(harness.requests[-1])[2].startswith("[QQ 平台事件|message_recall|")
+        resumed.allow_reply.set()
         await harness.tasks[-1]
         await harness.drain_recalls()
         history = harness.manager.history(second)
-        assert texts(history[:3]) == ["同样的文字", "同样的文字", "reply"]
-        assert history[-1]["role"] == "user"
-        assert "消息 ID" not in history[-1]["content"]
+        assert texts(history[:2]) == ["同样的文字", "同样的文字"]
+        assert history[-1]["role"] == "assistant"
+        assert "消息 ID" not in texts(history)[2]
         for key, entry in harness.plugin.recall_messages.items():
             assert entry["notified"] is (key[-1] == str(target))
         assert json.dumps(history, ensure_ascii=False).count("发送的消息已撤回") == 1
@@ -993,14 +1048,19 @@ async def test_recall_during_persistence_is_not_lost():
         release.set()
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "early recall"
-        assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
+        resumed = await harness.wait_resumed()
+        assert texts(harness.requests[-1])[:2] == ["early recall", "next"]
+        assert texts(harness.requests[-1])[2].startswith("[QQ 平台事件|message_recall|")
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
     finally:
         release.set()
         await harness.finish()
 
 
 @pytest.mark.asyncio
-async def test_real_agent_cancellation_and_native_follow_up_boundary():
+@pytest.mark.parametrize("successor_kind", ["message", "context"])
+async def test_real_agent_cancellation_and_native_follow_up_boundary(successor_kind):
     from astrbot.core.agent.hooks import BaseAgentRunHooks
     from astrbot.core.agent.run_context import ContextWrapper
     from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
@@ -1024,7 +1084,11 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
             )
 
     async def pipeline(event):
-        ArrivalFilter().filter(event, {})
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if arrival is not None and arrival.replayed:
+            assert harness.plugin.debouncer.claim_resume(event)
+        else:
+            ArrivalFilter().filter(event, {})
         await harness.plugin.debounce_inbound_message(event)
         assert try_capture_follow_up(event) is None
         async with session_lock_manager.acquire_lock(event.unified_msg_origin):
@@ -1038,6 +1102,8 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
             )
             await harness.plugin.track_context_message(event, req)
             await harness.plugin.bind_debounce_request(event, req)
+            if event.get_extra(ARRIVAL_KEY).replayed:
+                await harness.runtime.finalize_resume(event, req)
 
             async def text_chat(**kwargs):
                 calls.append(
@@ -1073,20 +1139,32 @@ async def test_real_agent_cancellation_and_native_follow_up_boundary():
                 unregister_active_runner(event.unified_msg_origin, runner)
 
     first, second = Event("first input", 1), Event("latest input", 2)
+
+    async def enqueue(arrival):
+        harness.tasks.append(asyncio.create_task(pipeline(arrival.event)))
+        harness.restart_enqueued.set()
+
+    harness.runtime.enqueue_resume = enqueue
     try:
         harness.tasks.append(asyncio.create_task(pipeline(first)))
         await wait(first.prepared)
-        harness.tasks.append(asyncio.create_task(pipeline(second)))
-        await wait(second.prepared)
+        if successor_kind == "context":
+            await harness.plugin.mark_recalled_message(recall_of(first))
+            second = await harness.wait_resumed()
+        else:
+            harness.tasks.append(asyncio.create_task(pipeline(second)))
+            await wait(second.prepared)
         assert cancelled == ["first input"]
-        assert texts(calls[-1]) == ["first input", "latest input"]
+        expected = texts(calls[-1])
+        assert expected[0] == "first input"
+        assert len(expected) == 2
+        if successor_kind == "context":
+            assert expected[1].startswith("[QQ 平台事件|message_recall|")
+        else:
+            assert expected[1] == "latest input"
         second.allow_reply.set()
         await harness.tasks[-1]
-        assert texts(harness.manager.history(second)) == [
-            "first input",
-            "latest input",
-            "reply",
-        ]
+        assert texts(harness.manager.history(second)) == [*expected, "reply"]
     finally:
         await harness.finish()
 
@@ -1111,13 +1189,13 @@ async def test_recall_before_preprocessing_finishes_is_appended_after_original_i
             },
         )
         await harness.plugin.mark_recalled_message(notice)
-        assert harness.plugin.debouncer.early_recalls
+        assert harness.plugin.notice_context.early_recalls
         harness.start(second)
         gate.set()
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "slow voice"
         assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
-        assert not harness.plugin.debouncer.early_recalls
+        assert not harness.plugin.notice_context.early_recalls
     finally:
         gate.set()
         await harness.finish()
@@ -1244,9 +1322,13 @@ async def test_failed_persistence_is_retried_before_next_generation(recalled):
                     },
                 )
             )
-        second_task = harness.start(second)
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await second_task
+        if recalled:
+            jobs = list(harness.plugin.debouncer.context_jobs.values())
+            await asyncio.wait_for(asyncio.gather(*jobs), 3)
+        else:
+            second_task = harness.start(second)
+            with pytest.raises(RuntimeError, match="database unavailable"):
+                await second_task
         assert harness.plugin.debouncer.failed
         assert harness.manager.history(first) == []
         if recalled:
@@ -1331,13 +1413,16 @@ async def test_pure_image_without_prompt_is_retained_and_recallable():
             },
         )
         await harness.plugin.mark_recalled_message(notice)
-        second.allow_reply.set()
+        resumed = await harness.wait_resumed()
+        resumed.allow_reply.set()
         await harness.tasks[-1]
         await harness.drain_recalls()
         history = harness.manager.history(second)
-        assert "[QQ 平台事件|message_recall|" not in json.dumps(history[0], ensure_ascii=False)
-        assert "[QQ 平台事件|message_recall|" in history[-1]["content"]
-        assert "[非文本消息]" in history[-1]["content"]
+        assert "[QQ 平台事件|message_recall|" not in json.dumps(
+            history[0], ensure_ascii=False
+        )
+        assert "[QQ 平台事件|message_recall|" in history[-2]["content"]
+        assert "[非文本消息]" in history[-2]["content"]
         assert any(
             part.get("image_url", {}).get("url") == image["image_url"]["url"]
             for part in history[0]["content"]
@@ -1413,3 +1498,442 @@ def test_debounce_window_defaults_are_zero_and_max_wait_is_five_seconds():
     assert config["initial_window_seconds"] == 0.0
     assert config["followup_window_seconds"] == 0.0
     assert config["max_wait_seconds"] == 5.0
+
+
+def recall_of(event, *, operator=None):
+    raw = event.message_obj.raw_message
+    notice = Event(
+        "",
+        None,
+        sender=event.sender,
+        group=event.group,
+        raw={
+            "post_type": "notice",
+            "notice_type": "group_recall" if event.group else "friend_recall",
+            "user_id": int(event.sender),
+            "group_id": event.group,
+            "message_id": raw["message_id"],
+            "operator_id": operator if operator is not None else int(event.sender),
+            "time": 1005,
+        },
+    )
+    notice.is_at_or_wake_command = False
+    return notice
+
+
+@pytest.mark.asyncio
+async def test_idle_recall_only_appends_history_without_opening_a_batch():
+    harness = Harness()
+    first = Event("finished", 1)
+    try:
+        task = harness.start(first)
+        await wait(first.prepared)
+        first.allow_reply.set()
+        await task
+        notice = recall_of(first)
+        await harness.plugin.mark_recalled_message(notice)
+        await harness.drain_recalls()
+        assert len(harness.requests) == 1
+        assert not harness.resumed
+        assert not harness.plugin.debouncer.active
+        assert not notice.is_at_or_wake_command
+        assert texts(harness.manager.history(first))[:2] == ["finished", "reply"]
+        assert texts(harness.manager.history(first))[-1].startswith(
+            "[QQ 平台事件|message_recall|"
+        )
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.parametrize("maximum", [0.0, 0.14])
+@pytest.mark.asyncio
+async def test_early_recall_resets_live_window_and_obeys_wait_limit(maximum):
+    harness = Harness(
+        {
+            "initial_window_seconds": 0.1,
+            "followup_window_seconds": 0.1,
+            "max_wait_seconds": maximum,
+        }
+    )
+    first = Event("waiting", 1)
+    try:
+        harness.start(first)
+        await wait(first.entered)
+        await asyncio.sleep(0.07)
+        assert not first.prepared.is_set()
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        arrival = first.get_extra(ARRIVAL_KEY)
+        assert arrival.context_inputs[0].wait_applied
+        resumed = await harness.wait_resumed()
+        assert arrival.waited_seconds > 0.13
+        if maximum:
+            assert arrival.waited_seconds <= maximum
+        else:
+            assert arrival.waited_seconds >= 0.16
+        assert texts(harness.requests[-1])[0] == "waiting"
+        assert texts(harness.requests[-1])[1].startswith("[QQ 平台事件|message_recall|")
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_shared_group_recall_preserves_batch_reply_identity_not_operator():
+    harness = Harness()
+    first, second = (
+        Event("A", 1, sender=7, group="10"),
+        Event("B", 2, sender=8, group="10"),
+    )
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.start(second)
+        await wait(second.prepared)
+        notice = recall_of(first, operator=9)
+        await harness.plugin.mark_recalled_message(notice)
+        resumed = await harness.wait_resumed()
+        assert resumed.sender == "8"
+        assert resumed.unified_msg_origin == second.unified_msg_origin
+        assert "已被用户 9 撤回" in texts(harness.requests[-1])[2]
+        assert not notice.is_at_or_wake_command
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "tool",
+        "streaming",
+        "sent",
+        "limit",
+        "budget",
+        "session",
+        "runner",
+        "plugin",
+        "conversation",
+    ],
+)
+@pytest.mark.asyncio
+async def test_recall_does_not_replace_protected_or_unavailable_reply(boundary):
+    harness = Harness({"max_messages": 2} if boundary == "limit" else {})
+    first = Event("protected", 1)
+    try:
+        if boundary == "limit":
+            earlier = Event("earlier", 0)
+            harness.start(earlier)
+            await wait(earlier.prepared)
+        task = harness.start(
+            first, tool=boundary == "tool", streaming=boundary == "streaming"
+        )
+        await wait(first.prepared)
+        if boundary == "sent":
+            first._has_send_oper = True
+        elif boundary == "budget":
+            first.get_extra(ARRIVAL_KEY).buffer_bytes = 100 * 1024 * 1024
+        elif boundary == "session":
+            SessionServiceManager.should_process_llm_request.return_value = False
+        elif boundary == "runner":
+            harness.plugin.context.get_config = lambda **kwargs: {
+                "provider_settings": {"agent_runner_type": "dify"}
+            }
+        elif boundary == "plugin":
+            harness.plugin.context.get_config = lambda **kwargs: {
+                "plugin_set": ["another"]
+            }
+        elif boundary == "conversation":
+            harness.manager.current_id = "new-conversation"
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        jobs = list(harness.plugin.debouncer.context_jobs.values())
+        await asyncio.wait_for(asyncio.gather(*jobs), 3)
+        assert not task.cancelled()
+        assert not harness.resumed
+        first.allow_reply.set()
+        await task
+        await harness.drain_recalls()
+        history = harness.manager.histories[first.unified_msg_origin, "conversation"]
+        assert texts(history)[:-1] == (["earlier"] if boundary == "limit" else []) + [
+            "protected",
+            "reply",
+        ]
+        assert texts(history)[-1].startswith("[QQ 平台事件|message_recall|")
+        assert (
+            first.unified_msg_origin,
+            "new-conversation",
+        ) not in harness.manager.histories
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_recalling_all_batch_inputs_still_requests_model_and_deduplicates():
+    harness = Harness()
+    first, second = Event("first", 1), Event("second", 2)
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.start(second)
+        await wait(second.prepared)
+        for event in (first, second, first):
+            await harness.plugin.mark_recalled_message(recall_of(event))
+        resumed = await harness.wait_resumed()
+        request = texts(harness.requests[-1])
+        assert request[:2] == ["first", "second"]
+        assert len(request) == 4
+        assert all(
+            text.startswith("[QQ 平台事件|message_recall|") for text in request[2:]
+        )
+        await harness.plugin.mark_recalled_message(recall_of(second))
+        assert len(harness.resumed) == 1
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+        assert texts(harness.manager.history(second)) == [*request, "reply"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_another_recall_can_replace_an_already_resumed_generation():
+    harness = Harness()
+    first, second = Event("first", 1), Event("second", 2)
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.start(second)
+        await wait(second.prepared)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        await harness.wait_resumed()
+        old_task = harness.tasks[-1]
+        harness.restart_enqueued.clear()
+        await harness.plugin.mark_recalled_message(recall_of(second))
+        resumed = await harness.wait_resumed()
+        assert old_task.cancelled()
+        assert len(harness.resumed) == 2
+        request = texts(harness.requests[-1])
+        assert request[:2] == ["first", "second"]
+        assert len(request) == 4
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+        assert texts(harness.manager.history(second)) == [*request, "reply"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_second_recall_during_restart_persistence_does_not_wait_on_resume():
+    harness = Harness()
+    first, second = Event("first", 1), Event("second", 2)
+    saving, release = asyncio.Event(), asyncio.Event()
+    persist = harness.runtime.persist
+
+    async def delayed_persist(arrival):
+        if arrival.event is second:
+            saving.set()
+            await release.wait()
+        await persist(arrival)
+
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.start(second)
+        await wait(second.prepared)
+        harness.runtime.persist = delayed_persist
+        await harness.plugin.mark_recalled_message(recall_of(second))
+        await wait(saving)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        release.set()
+        resumed = await harness.wait_resumed()
+        request = texts(harness.requests[-1])
+        assert request[:2] == ["first", "second"]
+        assert len(request) == 4
+        assert len(harness.resumed) == 1
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+        assert texts(harness.manager.history(second)) == [*request, "reply"]
+    finally:
+        release.set()
+        await harness.finish()
+
+
+@pytest.mark.parametrize("removal", ["expired", "evicted"])
+@pytest.mark.asyncio
+async def test_removed_early_recall_does_not_cancel_or_block_original_reply(
+    removal, monkeypatch
+):
+    harness = Harness()
+    first = Event("slow", 1)
+    gate = asyncio.Event()
+    notice = recall_of(first)
+    try:
+        task = harness.start(first, preprocess=gate)
+        await wait(first.entered)
+        await harness.plugin.mark_recalled_message(notice)
+        item = notice.get_extra("_qq_enhance_recall_input")
+        if removal == "expired":
+            key = next(iter(harness.plugin.notice_context.early_recalls))
+            harness.plugin.notice_context.early_recalls[key] = (0, notice)
+        else:
+            monkeypatch.setattr(
+                "astrbot_plugin_qq_enhance.main.RECALL_TRACK_MAX_ENTRIES", 1
+            )
+            await harness.plugin.mark_recalled_message(recall_of(Event("other", 2)))
+        gate.set()
+        await wait(first.prepared)
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        assert item.saved.done() and not item.saved.result()
+        assert not task.cancelled()
+        assert not harness.resumed
+        first.allow_reply.set()
+        await task
+        assert texts(harness.manager.history(first)) == ["slow", "reply"]
+    finally:
+        gate.set()
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_normal_followup_takes_over_queued_resume_without_duplicate_reply():
+    harness = Harness()
+    first, second = Event("original", 1), Event("followup", 2)
+    enqueue_started, release = asyncio.Event(), asyncio.Event()
+    enqueue = harness.runtime.enqueue_resume
+
+    async def delayed_enqueue(arrival):
+        enqueue_started.set()
+        await release.wait()
+        await enqueue(arrival)
+
+    harness.runtime.enqueue_resume = delayed_enqueue
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        await wait(enqueue_started)
+        second_task = harness.start(second)
+        await wait(second.entered)
+        release.set()
+        await wait(second.prepared)
+        request = texts(harness.requests[-1])
+        assert request[0] == "original"
+        assert request[1].startswith("[QQ 平台事件|message_recall|")
+        assert request[2] == "followup"
+        second.allow_reply.set()
+        await second_task
+        assert texts(harness.manager.history(second)) == [*request, "reply"]
+        assert all(
+            task.cancelled() for task in harness.tasks if task is not harness.tasks[1]
+        )
+    finally:
+        release.set()
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_recall_keeps_sender_isolation_when_another_sender_intervenes():
+    harness = Harness({"shared_group": False})
+    first, other = Event("A", 1, group="10"), Event("B", 2, sender=8, group="10")
+    try:
+        task = harness.start(first)
+        await wait(first.prepared)
+        harness.start(other)
+        await wait(other.entered)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        await asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values()))
+        assert not harness.resumed
+        assert not task.cancelled()
+        first.allow_reply.set()
+        await wait(other.prepared)
+        other.allow_reply.set()
+        await harness.tasks[-1]
+        await harness.drain_recalls()
+        assert len(harness.requests) == 2
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.parametrize("invalid_author", [False, True])
+@pytest.mark.asyncio
+async def test_duplicate_early_recall_and_wrong_author_do_not_leave_orphaned_restart(
+    invalid_author,
+):
+    harness = Harness()
+    first = Event("slow", 1, group="10")
+    gate = asyncio.Event()
+    try:
+        harness.start(first, preprocess=gate)
+        await wait(first.entered)
+        notice = recall_of(first)
+        if invalid_author:
+            notice.message_obj.raw_message["user_id"] = 9
+        await harness.plugin.mark_recalled_message(notice)
+        await harness.plugin.mark_recalled_message(
+            recall_of(first) if not invalid_author else notice
+        )
+        gate.set()
+        if invalid_author:
+            await wait(first.prepared)
+            assert not harness.plugin.debouncer.context_jobs
+            assert not harness.resumed
+            first.allow_reply.set()
+        else:
+            resumed = await harness.wait_resumed()
+            assert len(harness.resumed) == 1
+            assert len(harness.requests[-1]) == 2
+            resumed.allow_reply.set()
+        await harness.tasks[-1]
+    finally:
+        gate.set()
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_reply_finishing_during_context_window_does_not_start_another_reply():
+    harness = Harness({"followup_window_seconds": 0.05})
+    first = Event("finishing", 1)
+    try:
+        task = harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        first.allow_reply.set()
+        await task
+        await asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values()))
+        await harness.drain_recalls()
+        assert not harness.resumed
+        assert len(harness.requests) == 1
+        assert texts(harness.manager.history(first))[:2] == ["finishing", "reply"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_unloading_before_resume_is_dispatched_releases_owned_media():
+    harness = Harness()
+    first = Event("media", 1)
+    first.track_temporary_local_file("prepared.png")
+    enqueuing, release = asyncio.Event(), asyncio.Event()
+
+    async def enqueue(arrival):
+        enqueuing.set()
+        await release.wait()
+
+    harness.runtime.enqueue_resume = enqueue
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.mark_recalled_message(recall_of(first))
+        await wait(enqueuing)
+        resumed = harness.resumed[-1]
+        assert resumed._temporary_local_files == ["prepared.png"]
+        await harness.plugin.debouncer.close()
+        assert resumed.cleaned_files == ["prepared.png"]
+        assert resumed.is_stopped()
+        assert not harness.plugin.debouncer.context_jobs
+        assert texts(harness.manager.history(first))[0] == "media"
+    finally:
+        release.set()
+        await harness.finish()

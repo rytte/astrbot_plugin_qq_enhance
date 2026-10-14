@@ -169,7 +169,7 @@
       "max_messages": {
         "type": "int",
         "description": "一批连续输入的最大条数",
-        "hint": "达到限制后等待前批完成，再处理后续输入，不截断消息。",
+        "hint": "包括加入批次的撤回事件。达到限制后等待前批完成，再处理后续普通输入；撤回仅追加历史。",
         "default": 8,
         "minimum": 2,
         "maximum": 100
@@ -271,7 +271,7 @@
   "notice_events": {
     "type": "object",
     "description": "平台事件感知",
-    "hint": "消息撤回与原有 11 类平台事件默认 context，另有 6 类默认 off。context 只向已有会话追加背景，不唤醒模型；下一次同会话请求会等待已排队的事件投递结束。",
+    "hint": "消息撤回与原有 11 类平台事件默认 context，另有 6 类默认 off。context 不独立唤醒模型；撤回可更新关联的未完成防抖批次，重置等待或安全取消后继续生成。其他事件仅追加已有会话历史。",
     "default": {},
     "items": {
       "message_recall": {

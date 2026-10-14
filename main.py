@@ -42,7 +42,9 @@ from .catalog import (
 )
 from .context_images import ContextImageError
 from .group_image_cache import GROUP_IMAGES_EXTRA
-from .debounce import ARRIVAL_KEY, ArrivalFilter, MessageDebouncer
+from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
+from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
+from .qq_debounce import ArrivalFilter, find_message_arrival
 from .notice_context import NoticeContext, QQNotice, format_notice_time
 from .inbound import (
     describe_inbound_event,
@@ -235,7 +237,9 @@ class QQEnhancePlugin(Star):
         self.recall_tasks: set[asyncio.Task[None]] = set()
         self.notification_events: WeakSet[PlatformNotificationEvent] = WeakSet()
         self.recall_messages: dict[tuple[str, str, str, str], dict] = {}
-        self.debouncer = MessageDebouncer(self)
+        self.debouncer = MessageDebouncer(
+            AstrBotDebounceRuntime(context, self.config["debounce"])
+        )
         self.notice_context = NoticeContext(self)
         context.register_web_api(
             f"/{PLUGIN_NAME}/diagnostics",
@@ -964,8 +968,17 @@ class QQEnhancePlugin(Star):
         Args:
             event: Enriched QQ message or targeted poke event.
         """
+        configured_id = self.config["platform"]["platform_id"]
+        if configured_id and event.get_platform_id() != configured_id:
+            return
         await self.debouncer.capture(event)
         await self.notice_context.wait_before(event)
+
+    @filter.on_llm_request(priority=-30000)
+    async def finalize_debounce_resume(self, event, request) -> None:
+        """Continue saved batch inputs without duplicating the original message."""
+        if isinstance(event, ResumedMessageEvent):
+            await self.debouncer.runtime.finalize_resume(event, request)
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def capture_notice_context(self, event: AstrMessageEvent) -> None:
@@ -1030,7 +1043,7 @@ class QQEnhancePlugin(Star):
             and getattr(run_context, "messages", None)
             and run_context.messages[-1].role == "user"
         ):
-            source_parts = [str(event.message_str or "").strip()]
+            source_parts = [MessageDebouncer.batch_text(event).strip()]
             content = run_context.messages[-1].content
             if isinstance(content, list):
                 for part in content:
@@ -1173,6 +1186,8 @@ class QQEnhancePlugin(Star):
             event: Current message or notice event.
         """
 
+        if isinstance(event, ResumedMessageEvent):
+            return
         if event.get_platform_name() != "aiocqhttp":
             return
         platform_id = self.config["platform"]["platform_id"]
@@ -1681,11 +1696,16 @@ class QQEnhancePlugin(Star):
             "history_ready": (
                 debounced.history_ready if debounced and debounced.batch else None
             ),
+            "arrival": debounced if debounced and debounced.batch else None,
         }
         if hasattr(self, "debouncer"):
-            pending = self.debouncer.early_recalls.pop(key, None)
-            if pending is not None and pending[0] > time.monotonic():
-                await self.notice_context.capture(pending[1])
+            pending = self.notice_context.early_recalls.get(key)
+            if pending is not None:
+                if pending[0] > time.monotonic():
+                    self.notice_context.early_recalls.pop(key)
+                    await self.notice_context.capture(pending[1])
+                else:
+                    self.notice_context.discard_early_recall(key)
 
     async def mark_recalled_message(self, event: AstrMessageEvent) -> None:
         """Prepare a tracked recall for the shared platform notice queue.
@@ -1732,14 +1752,22 @@ class QQEnhancePlugin(Star):
         entry = self.recall_messages.get(key)
         if entry is None:
             if self.config["debounce"]["enabled"] and hasattr(self, "debouncer"):
-                pending = self.debouncer.early_recalls
+                pending = self.notice_context.early_recalls
                 now = time.monotonic()
                 for old_key, (expires_at, _) in list(pending.items()):
                     if expires_at <= now:
-                        pending.pop(old_key, None)
+                        self.notice_context.discard_early_recall(old_key)
+                if key in pending:
+                    return
                 while len(pending) >= RECALL_TRACK_MAX_ENTRIES:
-                    pending.pop(next(iter(pending)))
+                    self.notice_context.discard_early_recall(next(iter(pending)))
                 pending[key] = (now + RECALL_TRACK_TTL_SECONDS, event)
+                related = find_message_arrival(key)
+                if (
+                    related is not None
+                    and str(raw.get("user_id") or "") == related.event.get_sender_id()
+                ):
+                    self._submit_recall_input(event, key, related)
             return
         if entry["pending"] or entry["notified"]:
             return
@@ -1795,10 +1823,23 @@ class QQEnhancePlugin(Star):
             entry["unified_msg_origin"],
             entry["conversation_id"],
             ready=entry["history_ready"],
+            barriers=(
+                self.debouncer.context_barriers(entry["arrival"])
+                if hasattr(self, "debouncer")
+                else ()
+            ),
             recall_entry=entry,
         )
         if delivery is None:
+            if item := event.get_extra("_qq_enhance_recall_input"):
+                if not item.saved.done():
+                    item.saved.set_result(False)
             return
+        item = event.get_extra("_qq_enhance_recall_input")
+        if hasattr(self, "debouncer") and entry["arrival"] is not None:
+            item = self._submit_recall_input(event, key, entry["arrival"], notice.render())
+        if item is not None:
+            item.content = notice.render()
         entry["pending"] = True
         task = delivery.task
         self.recall_tasks.add(task)
@@ -1806,8 +1847,18 @@ class QQEnhancePlugin(Star):
         def completed(done):
             self.recall_tasks.discard(done)
             entry["pending"] = False
+            if item is not None and not item.saved.done():
+                item.saved.set_result(delivery.saved)
 
         task.add_done_callback(completed)
+
+    def _submit_recall_input(self, event, key, related, content=""):
+        item = event.get_extra("_qq_enhance_recall_input")
+        if item is None:
+            item = ContextInput(key, asyncio.get_running_loop().create_future(), content)
+            event.set_extra("_qq_enhance_recall_input", item)
+            self.debouncer.submit_context(related, item)
+        return item
 
     @filter.on_agent_done(priority=-2000)
     async def remove_inspected_images_before_history_save(
@@ -1901,10 +1952,10 @@ class QQEnhancePlugin(Star):
 
         prompt = request.prompt or event.message_str or ""
         arrival = event.get_extra(ARRIVAL_KEY) if hasattr(event, "get_extra") else None
-        if arrival is not None and len(arrival.batch) > 1:
+        if arrival is not None and (len(arrival.batch) > 1 or arrival.replayed):
             # Tool selection must consider every pending intent, while model
             # messages themselves remain separate and unchanged.
-            prompt = "\n".join(item.event.message_str or "" for item in arrival.batch)
+            prompt = self.debouncer.batch_text(event)
         notification_tool = ""
         if len(prompt.strip()) <= 16 and not any(
             keyword in prompt for keyword in KEYWORD_TOOLS
