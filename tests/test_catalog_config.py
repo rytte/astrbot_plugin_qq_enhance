@@ -21,6 +21,7 @@ from astrbot_plugin_qq_enhance.catalog import (
 )
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import (
+    DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
     PROTECTED_COMPONENT_TYPES,
     validate_config,
 )
@@ -47,7 +48,21 @@ def test_version_range_is_explicit() -> None:
 
 @pytest.mark.parametrize("config", [None, {}, {"toolsets": {}}])
 def test_tool_dialogue_prompt_is_enabled_by_default(config) -> None:
-    assert validate_config(config)["toolsets"]["inject_dialogue_prompt"] is True
+    toolsets = validate_config(config)["toolsets"]
+    assert toolsets["inject_dialogue_prompt"] is True
+    assert toolsets["dialogue_prompt"] == DEFAULT_QQ_TOOL_DIALOGUE_PROMPT
+
+
+def test_tool_dialogue_prompt_preserves_custom_text() -> None:
+    prompt = "\n请沿用当前人设自然回应。\n不要播报工具调用过程。\n"
+    config = validate_config({"toolsets": {"dialogue_prompt": prompt}})
+    assert config["toolsets"]["dialogue_prompt"] == prompt
+
+
+@pytest.mark.parametrize("value", [None, True, 0, 1, [], {}, "", " \n\t"])
+def test_tool_dialogue_prompt_rejects_invalid_text(value) -> None:
+    with pytest.raises(ValueError, match="toolsets[.]dialogue_prompt 必须是非空字符串"):
+        validate_config({"toolsets": {"dialogue_prompt": value}})
 
 
 @pytest.mark.parametrize("value", ["true", "false", 0, 1, None, [], {}])

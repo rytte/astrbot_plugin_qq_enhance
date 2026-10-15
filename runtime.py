@@ -42,11 +42,18 @@ from .notice_context import DEFAULT_NOTICE_POLICIES
 from .request_notification import PlatformNotificationEvent
 from .storage import Storage
 
+DEFAULT_QQ_TOOL_DIALOGUE_PROMPT = """QQ工具调用前后，发言是可选的：可以直接调用，也可以沿用当前人设与对话语气自然回应用户。
+不要输出内部行动计划、工具选择推演、措辞或情绪/语气安排，也不要缩成动作播报。没话对用户说时直接调用工具。
+戳一戳、点赞等轻量互动成功后，默认不复述“操作成功”等完成报告。
+可以继续自然聊天，没有新内容就结束，不必补发回复。
+查询结果、用户追问、必要澄清和失败信息仍应正常交代；不要提前或虚假宣称成功。"""
+
 DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
         "exposure_mode": "full",
         "inject_dialogue_prompt": True,
+        "dialogue_prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
         "enabled_packs": [],
         "disabled_operations": [],
     },
@@ -123,8 +130,8 @@ DEFAULT_CONFIG = {
     "debounce": {
         "enabled": True,
         "shared_group": True,
-        "initial_window_seconds": 0.0,
-        "followup_window_seconds": 0.0,
+        "initial_window_seconds": 1.0,
+        "followup_window_seconds": 1.0,
         "max_wait_seconds": 5.0,
         "max_messages": 8,
         "max_buffer_mb": 32,
@@ -405,6 +412,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("platform.platform_id 必须是字符串")
     if result["toolsets"]["exposure_mode"] not in {"compact", "balanced", "full"}:
         raise ValueError("toolsets.exposure_mode 必须是 compact、balanced 或 full")
+    dialogue_prompt = result["toolsets"]["dialogue_prompt"]
+    if not isinstance(dialogue_prompt, str) or not dialogue_prompt.strip():
+        raise ValueError("toolsets.dialogue_prompt 必须是非空字符串")
 
     list_fields = (
         ("toolsets", "enabled_packs"),

@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
-from astrbot_plugin_qq_enhance.main import QQ_TOOL_DIALOGUE_PROMPT, QQEnhancePlugin
-from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
+from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.runtime import (
+    DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
+    QQRuntime,
+    validate_config,
+)
 from astrbot_plugin_qq_enhance.web_reader import (
     WEB_READER_PROMPT,
     WEB_TOOL_NAMES,
@@ -126,7 +130,7 @@ async def test_full_group_tools_and_prompts_stay_stable_across_roles_and_topics(
 
         assert request.func_tool.openai_schema() == original_schema
         assert request.prompt == prompt
-        assert request.system_prompt.count(QQ_TOOL_DIALOGUE_PROMPT) == 1
+        assert request.system_prompt.count(DEFAULT_QQ_TOOL_DIALOGUE_PROMPT) == 1
         assert request.system_prompt.count(WEB_READER_PROMPT) == 1
         system_prompts.append(request.system_prompt)
     assert len(set(system_prompts)) == 1
@@ -169,13 +173,19 @@ async def test_full_group_omits_tools_disabled_by_configuration() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
 @pytest.mark.parametrize("event_type", [SelectionEvent, PrivateAdminSelectionEvent])
+@pytest.mark.parametrize(
+    "dialogue_prompt", [None, "请自然回应用户。\n不要播报工具调用。"]
+)
 async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
-    mode, event_type
+    mode, event_type, dialogue_prompt
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
+    toolsets = {"exposure_mode": mode}
+    if dialogue_prompt is not None:
+        toolsets["dialogue_prompt"] = dialogue_prompt
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": mode},
+            "toolsets": toolsets,
             "inbound": {"component_spoof_protection": {"enabled": False}},
         }
     )
@@ -198,19 +208,34 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
     await plugin.select_tools(event, request)
 
     assert request.system_prompt.startswith("Existing persona")
-    assert request.system_prompt.count(QQ_TOOL_DIALOGUE_PROMPT) == 1
+    expected_prompt = plugin.config["toolsets"]["dialogue_prompt"]
+    assert request.system_prompt.count(expected_prompt) == 1
+    if dialogue_prompt is not None:
+        assert DEFAULT_QQ_TOOL_DIALOGUE_PROMPT not in request.system_prompt
     assert request.prompt == event.message_str
     assert request.contexts == [{"role": "assistant", "content": "我看看。"}]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
-async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(mode) -> None:
+@pytest.mark.parametrize(
+    "dialogue_prompt",
+    [DEFAULT_QQ_TOOL_DIALOGUE_PROMPT, "自定义工具对话提示。\n请简洁回应。"],
+)
+async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(
+    mode, dialogue_prompt
+) -> None:
     requests = []
     for enabled in (True, False):
         plugin = object.__new__(QQEnhancePlugin)
         plugin.config = validate_config(
-            {"toolsets": {"exposure_mode": mode, "inject_dialogue_prompt": enabled}}
+            {
+                "toolsets": {
+                    "exposure_mode": mode,
+                    "inject_dialogue_prompt": enabled,
+                    "dialogue_prompt": dialogue_prompt,
+                }
+            }
         )
         plugin.runtime = object.__new__(QQRuntime)
         plugin.runtime.config = plugin.config
@@ -234,10 +259,10 @@ async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(mode) ->
         requests.append(request)
 
     enabled_request, disabled_request = requests
-    assert enabled_request.system_prompt.count(QQ_TOOL_DIALOGUE_PROMPT) == 1
-    assert QQ_TOOL_DIALOGUE_PROMPT not in disabled_request.system_prompt
+    assert enabled_request.system_prompt.count(dialogue_prompt) == 1
+    assert dialogue_prompt not in disabled_request.system_prompt
     assert (
-        enabled_request.system_prompt.replace(f"\n{QQ_TOOL_DIALOGUE_PROMPT}\n", "")
+        enabled_request.system_prompt.replace(f"\n{dialogue_prompt}\n", "")
         == disabled_request.system_prompt
     )
     assert {tool.name for tool in enabled_request.func_tool.tools} == {
@@ -285,7 +310,7 @@ async def test_qq_tool_dialogue_prompt_does_not_affect_unrelated_requests(
     await plugin.select_tools(event, request)
 
     assert request.system_prompt.startswith("Existing persona")
-    assert QQ_TOOL_DIALOGUE_PROMPT not in request.system_prompt
+    assert DEFAULT_QQ_TOOL_DIALOGUE_PROMPT not in request.system_prompt
 
 
 @pytest.mark.parametrize("web_enabled", [True, False])

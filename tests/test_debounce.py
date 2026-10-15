@@ -159,7 +159,14 @@ class Harness:
         self.manager = Conversations()
         self.plugin = object.__new__(QQEnhancePlugin)
         self.plugin.config = validate_config(
-            {"debounce": {"enabled": True, **(config or {})}}
+            {
+                "debounce": {
+                    "enabled": True,
+                    "initial_window_seconds": 0.0,
+                    "followup_window_seconds": 0.0,
+                    **(config or {}),
+                }
+            }
         )
         self.plugin.recall_messages = {}
         self.plugin.recall_tasks = set()
@@ -1498,10 +1505,10 @@ async def test_followup_window_delays_cancellation_and_is_capped_by_cumulative_m
         await harness.finish()
 
 
-def test_debounce_window_defaults_are_zero_and_max_wait_is_five_seconds():
+def test_debounce_window_defaults_are_one_and_max_wait_is_five_seconds():
     config = validate_config(None)["debounce"]
-    assert config["initial_window_seconds"] == 0.0
-    assert config["followup_window_seconds"] == 0.0
+    assert config["initial_window_seconds"] == 1.0
+    assert config["followup_window_seconds"] == 1.0
     assert config["max_wait_seconds"] == 5.0
 
 
