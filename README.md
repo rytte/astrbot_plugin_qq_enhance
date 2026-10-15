@@ -4,7 +4,7 @@
 
 `astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
-[功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development)
+[功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development) · [更新日志](./CHANGELOG.md)
 
 <a id="features"></a>
 
@@ -849,8 +849,11 @@ pytest -q
 > 本节记录外部模型的兼容性问题，不代表本插件存在缺陷。
 
 * Gemini 无法读取工具调用后追加的图片，可能因此重复调用图片、OCR 或 Python 工具；GPT 和 Grok 在相同流程下可以正常识别。
-* Gemini 可能将推理式前导文本作为普通正文返回，导致内部分析出现在最终回复中。
+
+## 🤝 反馈与贡献
+
+遇到问题、发现 bug 或有改进建议，欢迎提交 **Issue**；想一起完善功能，也欢迎提交 **Pull Request**。
 
 ## 📄 开源协议
 
-本项目采用 GNU Affero General Public License v3.0（AGPL-3.0），详见 [LICENSE](./LICENSE)。
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）授权。
