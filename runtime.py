@@ -11,6 +11,7 @@ import secrets
 import socket
 import stat
 import time
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ from .group_image_cache import GroupImageCache
 from .notice_context import DEFAULT_NOTICE_POLICIES
 from .providers import resolve_provider
 from .providers.base import OneBotProvider, ProviderBinding, VersionInfo
+from .random_components import parse_random_component
 from .request_notification import PlatformNotificationEvent
 from .storage import Storage
 
@@ -830,11 +832,17 @@ class QQRuntime:
             data = local_result
             if action is not None:
                 data = await self.call_action(event, action, action_params)
-                if operation_id == "qq_send_message.send" and any(
-                    isinstance(component, dict)
-                    and component.get("type") in {"dice", "rps"}
-                    for component in normalized["components"]
-                ):
+                expected_random = (
+                    Counter(
+                        component["type"]
+                        for component in normalized.get("components", [])
+                        if isinstance(component, dict)
+                        and component.get("type") in {"dice", "rps"}
+                    )
+                    if operation_id == "qq_send_message.send"
+                    else Counter()
+                )
+                if expected_random:
                     message_id = (
                         data.get("message_id") if isinstance(data, dict) else None
                     )
@@ -856,44 +864,31 @@ class QQRuntime:
                                 else None
                             )
                             random_results = []
+                            resolved_random = Counter()
                             if isinstance(message, list):
                                 for component in message:
-                                    if not isinstance(component, dict):
+                                    random_component = parse_random_component(component)
+                                    if (
+                                        random_component is None
+                                        or random_component.result is None
+                                        or resolved_random[random_component.kind]
+                                        >= expected_random[random_component.kind]
+                                    ):
                                         continue
-                                    component_type = component.get("type")
-                                    component_data = component.get("data")
-                                    if component_type not in {
-                                        "dice",
-                                        "rps",
-                                    } or not isinstance(component_data, dict):
-                                        continue
-                                    raw_result = str(
-                                        component_data.get("result") or ""
-                                    ).strip()
-                                    if component_type == "dice":
-                                        resolved_result = (
-                                            raw_result
-                                            if raw_result
-                                            in {"1", "2", "3", "4", "5", "6"}
-                                            else "未知"
-                                        )
-                                    else:
-                                        resolved_result = {
-                                            "1": "布",
-                                            "2": "剪刀",
-                                            "3": "石头",
-                                        }.get(raw_result, "未知")
+                                    resolved_random[random_component.kind] += 1
                                     random_results.append(
                                         {
-                                            "type": component_type,
-                                            "result": resolved_result,
+                                            "type": random_component.kind,
+                                            "result": random_component.result,
                                         }
                                     )
                             if random_results:
                                 data = {**data, "random_results": random_results}
-                            else:
+                            if resolved_random != expected_random:
                                 warnings.append(
-                                    "消息已发送，但未能读取随机组件的最终结果"
+                                    "消息已发送，但部分随机组件的最终结果未能读取"
+                                    if random_results
+                                    else "消息已发送，但未能读取随机组件的最终结果"
                                 )
                     else:
                         warnings.append(

@@ -1849,6 +1849,129 @@ async def test_random_components_are_resolved_after_send(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_snowluma_random_faces_are_resolved_after_send(tmp_path) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    client.version_info = {
+        "app_name": "SnowLuma",
+        "app_version": "1.14.22-node",
+        "protocol_version": "v11",
+    }
+    client.responses["send_private_msg"] = {"message_id": -341295321}
+    client.responses["get_msg"] = {
+        "message_id": -341295321,
+        "message": [
+            {"type": "face", "data": {"id": "359", "resultId": "2"}},
+            {"type": "face", "data": {"id": "358", "resultId": "4"}},
+            {"type": "face", "data": {"id": "358", "resultId": 6}},
+            {"type": "face", "data": {"id": "114", "resultId": "1"}},
+        ],
+    }
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "rps"}, {"type": "dice"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "message_id": -341295321,
+        "random_results": [
+            {"type": "rps", "result": "剪刀"},
+            {"type": "dice", "result": "4"},
+            {"type": "dice", "result": "6"},
+        ],
+    }
+    assert "随机组件最终结果见 data.random_results" in result["summary"]
+    assert result["warnings"] == []
+    assert ("get_msg", {"message_id": -341295321}) in client.calls
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        [{"type": "face", "data": {"id": "358"}}],
+        [{"type": "face", "data": {"id": "358", "resultId": "0"}}],
+        [{"type": "face", "data": {"id": "358", "resultId": True}}],
+        [{"type": "face", "data": {"id": "358", "resultId": 4.0}}],
+        [{"type": "face", "data": {"id": "358", "result": "4"}}],
+        [{"type": "face", "data": {"id": "114", "resultId": "4"}}],
+        [{"type": "face", "data": {"id": "359", "resultId": "2"}}],
+        [None, [], {"type": [], "data": {}}, {"type": "face", "data": None}],
+    ],
+)
+async def test_snowluma_missing_or_invalid_dice_results_keep_warning(
+    tmp_path, message
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    client.version_info = {
+        "app_name": "SnowLuma",
+        "app_version": "1.14.22-node",
+        "protocol_version": "v11",
+    }
+    client.responses["get_msg"] = {"message": message}
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert "random_results" not in result["data"]
+    assert result["warnings"] == ["消息已发送，但未能读取随机组件的最终结果"]
+    assert "随机组件最终结果见" not in result["summary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        [
+            {"type": "face", "data": {"id": "358", "resultId": "4"}},
+            {"type": "face", "data": {"id": "358"}},
+        ],
+        [
+            {"type": "dice", "data": {"result": "4"}},
+            {"type": "dice", "data": {"result": 0}},
+        ],
+    ],
+)
+async def test_partial_random_results_do_not_claim_all_results_are_available(
+    tmp_path, message
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+    client.responses["get_msg"] = {"message": message}
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "dice"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["random_results"] == [{"type": "dice", "result": "4"}]
+    assert result["warnings"] == ["消息已发送，但部分随机组件的最终结果未能读取"]
+
+
+@pytest.mark.asyncio
 async def test_window_shake_is_not_exposed_as_a_message_component(tmp_path) -> None:
     runtime, _, _ = await make_runtime(tmp_path)
 

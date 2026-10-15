@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .face_names import QQ_FACE_NAMES
+from .random_components import parse_random_component
 
 _FIELD_CHAR_LIMIT = 300
 _JSON_INPUT_LIMIT = 65536
@@ -414,6 +415,9 @@ def get_inbound_component_type(component: Any) -> str:
     data = component.get("data")
     if not isinstance(data, Mapping):
         return ""
+    random_component = parse_random_component(component)
+    if random_component is not None:
+        return random_component.kind
     if component_type == "record":
         return "voice"
     if component_type == "face":
@@ -484,6 +488,21 @@ def _describe_component(component: Any) -> str:
     if not isinstance(data, Mapping):
         return ""
 
+    random_component = parse_random_component(component)
+    if random_component is not None:
+        label = "QQ骰子" if random_component.kind == "dice" else "QQ猜拳"
+        if random_component.result is not None:
+            content = (
+                f"{label}：结果 {random_component.result}"
+                if random_component.kind == "dice"
+                else f"{label}：{random_component.result}"
+            )
+        elif random_component.result_provided:
+            content = f"{label}：结果未知"
+        else:
+            content = label
+        return format_component_semantics(content)
+
     if component_type == "face":
         raw = data.get("raw")
         face_text = raw.get("faceText") if isinstance(raw, Mapping) else ""
@@ -537,17 +556,6 @@ def _describe_component(component: Any) -> str:
         return format_component_semantics(content)
     if component_type == "poke":
         return format_component_semantics("QQ互动：戳一戳")
-    if component_type == "dice":
-        result = _clean_text(data.get("result"), 30)
-        content = f"QQ骰子：结果 {result}" if result else "QQ骰子"
-        return format_component_semantics(content)
-    if component_type == "rps":
-        result = _clean_text(data.get("result"), 30)
-        gesture = {"1": "布", "2": "剪刀", "3": "石头"}.get(result)
-        if gesture:
-            return format_component_semantics(f"QQ猜拳：{gesture}")
-        content = "QQ猜拳：结果未知" if result else "QQ猜拳"
-        return format_component_semantics(content)
     if component_type == "contact":
         contact_type = _clean_text(data.get("type"), 30)
         contact_id = _clean_text(data.get("id"), 100)

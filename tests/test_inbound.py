@@ -162,6 +162,59 @@ def test_rps_result_uses_ntqq_gesture_mapping() -> None:
     assert "[QQ component|QQ猜拳：结果未知]" in result
 
 
+@pytest.mark.parametrize(
+    ("face_id", "result_id", "expected"),
+    [
+        *(("358", str(value), f"QQ骰子：结果 {value}") for value in range(1, 7)),
+        (358, 4, "QQ骰子：结果 4"),
+        ("359", "1", "QQ猜拳：布"),
+        ("359", "2", "QQ猜拳：剪刀"),
+        ("359", "3", "QQ猜拳：石头"),
+        (359, 2, "QQ猜拳：剪刀"),
+    ],
+)
+def test_snowluma_random_faces_use_reported_one_based_results(
+    face_id, result_id, expected
+) -> None:
+    # Captured v1.14.22 messages: resultId=4 is four dots; resultId=2 is scissors.
+    raw = {
+        "post_type": "message",
+        "message": [{"type": "face", "data": {"id": face_id, "resultId": result_id}}],
+    }
+
+    assert describe(raw) == f"[QQ component|{expected}]"
+
+
+@pytest.mark.parametrize("face_id,label", [("358", "QQ骰子"), ("359", "QQ猜拳")])
+@pytest.mark.parametrize("result_id", [0, "0", -1, "7", True, 2.0, "bad", {}])
+def test_invalid_snowluma_random_results_are_not_inferred(
+    face_id, label, result_id
+) -> None:
+    raw = {
+        "message": [{"type": "face", "data": {"id": face_id, "resultId": result_id}}]
+    }
+
+    assert describe(raw) == f"[QQ component|{label}：结果未知]"
+
+
+@pytest.mark.parametrize("face_id,label", [("358", "QQ骰子"), ("359", "QQ猜拳")])
+def test_snowluma_random_face_without_result_only_describes_its_type(
+    face_id, label
+) -> None:
+    assert describe({"message": [{"type": "face", "data": {"id": face_id}}]}) == (
+        f"[QQ component|{label}]"
+    )
+
+
+def test_other_animated_faces_with_result_id_are_not_random_components() -> None:
+    assert (
+        describe(
+            {"message": [{"type": "face", "data": {"id": "114", "resultId": "4"}}]}
+        )
+        == "[QQ component|QQ表情：篮球]"
+    )
+
+
 def test_json_card_uses_allowlist_and_strips_url_secrets() -> None:
     card = {
         "app": "com.tencent.structmsg",
@@ -1476,6 +1529,43 @@ async def test_real_component_semantics_are_not_marked_as_spoofed_text() -> None
     assert event.message_str == "[QQ component|QQ骰子：结果 4]"
     assert "用户输入的文字" not in event.message_str
     assert event.get_extra("_qq_enhance_verified_component_types") == ["dice"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_results", [True, False])
+async def test_snowluma_random_faces_are_verified_as_dice_and_rps(with_results) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(None)
+    dice_data = {"id": "358"}
+    rps_data = {"id": "359"}
+    if with_results:
+        dice_data["resultId"] = "4"
+        rps_data["resultId"] = "2"
+    event = FakeEvent(
+        {
+            "post_type": "message",
+            "message": [
+                {"type": "face", "data": dice_data},
+                {"type": "face", "data": rps_data},
+                {"type": "face", "data": {"id": "114", "resultId": "4"}},
+            ],
+        }
+    )
+    request = ProviderRequest()
+
+    await plugin.enrich_inbound_qq_components(event)
+    await plugin.add_verified_component_signal(event, request)
+
+    assert event.get_extra("_qq_enhance_verified_component_types") == ["dice", "rps"]
+    assert request.extra_user_content_parts[0].text == (
+        '<qq_verified_components types="dice,rps"/>'
+    )
+    assert event.message_str == (
+        "[QQ component|QQ骰子：结果 4] [QQ component|QQ猜拳：剪刀] "
+        "[QQ component|QQ表情：篮球]"
+        if with_results
+        else "[QQ component|QQ骰子] [QQ component|QQ猜拳] [QQ component|QQ表情：篮球]"
+    )
 
 
 @pytest.mark.asyncio
