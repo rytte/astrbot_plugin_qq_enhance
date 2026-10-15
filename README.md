@@ -84,7 +84,18 @@
 | QQ 协议端 | NapCat `>=4.18.19,<5.0.0`，使用 OneBot v11 |
 | 模型 | 在 AstrBot 中配置支持工具调用的模型，并为目标会话启用模型对话 |
 
-先确认 AstrBot 与 NapCat 已连接，机器人能够正常收发 QQ 消息。插件执行工具时会校验协议端实现与版本；其他 OneBot 实现及 NapCat 5.x 不在当前支持范围内。
+* 插件执行工具时会校验协议端实现与版本
+
+* QQ 版本最好在 NapCat 适配的版本范围内，否则部分接口可能失效
+
+  > **查看版本适配**：[NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) 切换到你使用的 NapCat 版本，其中 `packages/napcat-core/external/packet.json` 记录了具体适配的 QQ 版本
+
+* 本插件开发与测试环境如下
+
+  * Windows11
+  * AstrBot 4.27.4
+  * NapCat 4.18.19
+  * NTQQ 9.9.28-46928
 
 ### 2. 安装插件
 
@@ -119,8 +130,6 @@ QQ Enhance initialized
 ### 4. 查看运行状态
 
 在 AstrBot WebUI 的插件详情中打开 **“QQ 能力增强状态与诊断”**，可查看 NapCat 连接、登录账号、版本兼容性、有效配置摘要、启用能力、近期审计及待确认操作。能力列表支持搜索和筛选。
-
-页面为只读；每次打开或刷新会查询 NapCat 的版本、运行状态和登录信息。
 
 <a id="configuration"></a>
 
