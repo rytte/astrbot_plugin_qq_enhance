@@ -10,7 +10,8 @@ import pytest
 
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
-from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY
+from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY, MessageDebouncer
+from astrbot_plugin_qq_enhance.debounce_runtime import AstrBotDebounceRuntime
 from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.notice_context import (
@@ -151,6 +152,7 @@ def plugin(monkeypatch):
         get_curr_conversation_id=AsyncMock(return_value="conversation-a"),
         get_conversation=AsyncMock(side_effect=get_conversation),
         update_conversation=AsyncMock(side_effect=update_conversation),
+        get_filtered_conversations=AsyncMock(return_value=([], 0)),
         histories=histories,
     )
     instance = object.__new__(QQEnhancePlugin)
@@ -161,6 +163,10 @@ def plugin(monkeypatch):
         get_event_queue=AsyncMock(),
         llm_generate=AsyncMock(),
         send_message=AsyncMock(),
+        get_all_stars=lambda: [],
+    )
+    instance.debouncer = MessageDebouncer(
+        AstrBotDebounceRuntime(instance.context, instance.config["debounce"])
     )
     instance.notice_context = NoticeContext(instance)
     return instance
@@ -420,6 +426,99 @@ async def test_isolated_groups_only_route_to_an_explicit_related_member(
             manager.update_conversation.await_args.args[0]
             == f"platform-a:GroupMessage:{member}_300"
         )
+
+
+@pytest.mark.parametrize(
+    "kind,details",
+    [
+        ("notify/group_name", {"name_new": "新群名"}),
+        (
+            "group_ban",
+            {"sub_type": "ban", "user_id": 0, "operator_id": 8, "duration": -1},
+        ),
+        ("group_decrease", {"sub_type": "disband", "operator_id": 0}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_group_wide_context_routes_once_to_each_existing_current_session(
+    plugin, kind, details
+):
+    manager = plugin.context.conversation_manager
+    records = [
+        "platform-a:GroupMessage:7_300",
+        "platform-a:GroupMessage:7_300",  # another historical conversation
+        "platform-a:GroupMessage:8_300",
+        "platform-a:GroupMessage:9_300",  # session plugin disabled
+        "platform-a:GroupMessage:10_300",  # AI disabled
+        "platform-a:GroupMessage:11_300",  # no selected conversation
+        "platform-a:GroupMessage:12_300",  # plugin excluded
+        "platform-a:GroupMessage:7_301",
+        "platform-a:GroupMessage:7_1300",
+        "platform-b:GroupMessage:7_300",
+        "platform-a:FriendMessage:7_300",
+        "platform-a:GroupMessage:99_300",
+        "platform-a:GroupMessage:0_300",
+        "platform-a:GroupMessage:300",
+        "malformed",
+    ]
+    manager.get_filtered_conversations.return_value = (
+        [SimpleNamespace(user_id=umo) for umo in records],
+        len(records),
+    )
+    manager.get_curr_conversation_id.side_effect = lambda umo: (
+        None if umo.endswith(":11_300") else f"current-{umo}"
+    )
+    SessionPluginManager.is_plugin_enabled_for_session.side_effect = (
+        lambda umo, _plugin: not umo.endswith(":9_300")
+    )
+
+    def config(**kwargs):
+        umo = kwargs["umo"]
+        return {
+            "platform_settings": {"unique_session": True},
+            "provider_settings": {"enable": not umo.endswith(":10_300")},
+            "plugin_set": ["other"] if umo.endswith(":12_300") else ["*"],
+        }
+
+    plugin.context.get_config = config
+    event = NoticeEvent(payload(kind, **details))
+    for _ in range(2):
+        await plugin.capture_notice_context(event)
+        await drain(plugin)
+    expected = {f"platform-a:GroupMessage:{member}_300" for member in (7, 8)}
+    assert set(manager.histories) == {(umo, f"current-{umo}") for umo in expected}
+    assert all(len(history) == 1 for history in manager.histories.values())
+    assert (
+        manager.get_filtered_conversations.call_args.kwargs["include_history"] is False
+    )
+    plugin.context.get_event_queue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_group_wide_context_scans_all_pages_of_existing_sessions(plugin):
+    plugin.context.get_config = lambda **kwargs: {
+        "platform_settings": {"unique_session": True}
+    }
+    manager = plugin.context.conversation_manager
+    unrelated = [
+        SimpleNamespace(user_id=f"platform-a:GroupMessage:{i}_301") for i in range(100)
+    ]
+    relevant = SimpleNamespace(user_id="platform-a:GroupMessage:7_300")
+    manager.get_filtered_conversations.side_effect = [
+        (unrelated, 101),
+        ([relevant], 101),
+    ]
+    await plugin.capture_notice_context(
+        NoticeEvent(payload("notify/group_name", name_new="new"))
+    )
+    await drain(plugin)
+    assert set(manager.histories) == {
+        ("platform-a:GroupMessage:7_300", "conversation-a")
+    }
+    assert [
+        call.kwargs["page"]
+        for call in manager.get_filtered_conversations.call_args_list
+    ] == [1, 2]
 
 
 @pytest.mark.asyncio

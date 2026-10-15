@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from test_notice_context import CASES, EXTRA_CASES, payload
 from astrbot_plugin_qq_enhance.debounce import (
     ARRIVAL_KEY,
     MessageDebouncer,
@@ -127,16 +128,24 @@ class Conversations:
     def __init__(self):
         self.histories = {}
         self.current_id = "conversation"
+        self.sessions = set()
 
     async def get_curr_conversation_id(self, umo):
         return self.current_id
 
     async def get_conversation(self, umo, cid):
+        self.sessions.add(umo)
         return SimpleNamespace(
             cid=cid,
             history=json.dumps(self.histories.get((umo, cid), [])),
             token_usage=0,
         )
+
+    async def get_filtered_conversations(self, *, page, page_size, **kwargs):
+        sessions = sorted(self.sessions | {umo for umo, _ in self.histories})
+        conversations = [SimpleNamespace(user_id=umo) for umo in sessions]
+        start = (page - 1) * page_size
+        return conversations[start : start + page_size], len(conversations)
 
     async def update_conversation(self, umo, cid, *, history, **kwargs):
         self.histories[umo, cid] = deepcopy(history)
@@ -363,7 +372,7 @@ def context_notice():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sender", [7, 8])
-async def test_context_notice_joins_debounced_successor_without_triggering_generation(
+async def test_context_notice_updates_batch_before_normal_followup(
     allow_context_notices, sender
 ):
     harness = Harness()
@@ -374,10 +383,9 @@ async def test_context_notice_joins_debounced_successor_without_triggering_gener
         first_task = harness.start(first)
         await wait(first.prepared)
         await harness.plugin.capture_notice_context(notice)
-        await asyncio.sleep(0)
-        assert not first_task.done()
-        assert not first.stopped
-        assert len(harness.requests) == 1
+        resumed = await harness.wait_resumed()
+        assert first_task.cancelled()
+        assert len(harness.requests) == 2
         assert not notice.is_at_or_wake_command
         assert not ArrivalFilter().filter(notice, {})
         second_task = harness.start(second)
@@ -389,6 +397,7 @@ async def test_context_notice_joins_debounced_successor_without_triggering_gener
         assert request_texts[2] == "后一条消息"
         second.allow_reply.set()
         await second_task
+        assert resumed.is_stopped()
         assert texts(harness.manager.history(second)) == [*request_texts, "reply"]
         assert not harness.plugin.notice_context.pending
     finally:
@@ -418,73 +427,67 @@ async def test_context_notice_during_preprocessing_does_not_wait_on_its_own_inpu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "kind,details,group",
-    [
-        (
-            "notify/gray_tip",
-            {"message_id": 123, "busi_id": "unknown", "content": "灰条文本"},
-            300,
-        ),
-        (
-            "notify/input_status",
-            {"event_type": 2, "status_text": "对方正在输入..."},
-            "",
-        ),
-        (
-            "group_upload",
-            {"file": {"id": "file-1", "name": "test.txt", "size": 10, "busid": 102}},
-            300,
-        ),
-        ("online_file_receive", {"peer_id": 7, "sub_type": "cancel"}, ""),
-        ("online_file_send", {"peer_id": 7, "sub_type": "refuse"}, ""),
-        ("bot_offline", {"user_id": 99, "tag": "offline", "message": "reason"}, ""),
-    ],
-)
-async def test_new_notice_types_use_the_same_passive_debounce_flow(
-    allow_context_notices, kind, details, group
-):
+async def test_context_received_before_conversation_switch_stays_in_original_history():
     harness = Harness()
+    release = asyncio.Event()
+    first = Event("尚在预处理", 1, group=300)
+    try:
+        task = harness.start(first, preprocess=release)
+        await wait(first.entered)
+        await harness.plugin.capture_notice_context(context_notice())
+        delivery = next(iter(harness.plugin.notice_context.pending.values()))
+        assert delivery.cid == "conversation"
+        harness.manager.current_id = "new-conversation"
+        release.set()
+        await wait(first.prepared)
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        assert not harness.resumed
+        assert not task.cancelled()
+        assert texts(harness.requests[-1]) == ["尚在预处理"]
+        first.allow_reply.set()
+        await task
+        await asyncio.wait_for(delivery.task, 3)
+        assert "group_card" in texts(harness.manager.history(first))[0]
+        assert texts(
+            harness.manager.histories[first.unified_msg_origin, "new-conversation"]
+        ) == ["尚在预处理", "reply"]
+    finally:
+        release.set()
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,details,expected", CASES + EXTRA_CASES)
+@pytest.mark.parametrize("stage", ["waiting", "generating"])
+async def test_all_context_notice_types_update_existing_debounce_batch(
+    kind, details, expected, stage
+):
+    harness = Harness({"initial_window_seconds": 0.04} if stage == "waiting" else {})
     harness.plugin.config["notice_events"][kind]["mode"] = "context"
     if kind == "bot_offline":
         harness.plugin.config["notice_events"][kind]["admin_user_ids"] = ["7"]
-    notice_type, _, subtype = kind.partition("/")
-    raw = {
-        "post_type": "notice",
-        "notice_type": notice_type,
-        "self_id": 99,
-        "user_id": 7,
-        "time": 1001,
-    }
-    if subtype:
-        raw["sub_type"] = subtype
-    if group:
-        raw["group_id"] = group
-    elif kind == "notify/input_status":
-        raw["group_id"] = 0
-    if kind in {"online_file_receive", "online_file_send"}:
-        raw.pop("user_id")
-    raw.update(details)
+    raw = payload(kind, **details)
+    group = raw.get("group_id") or ""
     notice = Event("", None, group=group, raw=raw)
     notice.is_at_or_wake_command = False
-    first, second = Event("先前输入", 1, group=group), Event("后续输入", 2, group=group)
+    first = Event("先前输入", 1, group=group)
     try:
         first_task = harness.start(first)
-        await wait(first.prepared)
+        await wait(first.entered if stage == "waiting" else first.prepared)
         await harness.plugin.capture_notice_context(notice)
-        await asyncio.sleep(0)
-        assert not first_task.done()
-        assert len(harness.requests) == 1
+        resumed = await harness.wait_resumed()
+        assert first_task.cancelled()
         assert not notice.is_at_or_wake_command
-        second_task = harness.start(second)
-        await wait(second.prepared)
         history = texts(harness.requests[-1])
         assert history[0] == "先前输入"
         assert f"QQ 平台事件|{kind}|" in history[1]
-        assert history[2] == "后续输入"
-        second.allow_reply.set()
-        await second_task
-        assert texts(harness.manager.history(second)) == [*history, "reply"]
+        assert expected in history[1]
+        assert len(history) == 2
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+        assert texts(harness.manager.history(first)) == [*history, "reply"]
     finally:
         await harness.finish()
 
@@ -518,7 +521,7 @@ async def test_context_notice_after_two_preprocessing_inputs_has_no_circular_wai
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-async def test_context_notice_waits_for_current_reply_when_no_successor_exists(
+async def test_context_notice_continues_existing_reply_only_when_debounce_enabled(
     allow_context_notices, enabled
 ):
     harness = Harness({"enabled": enabled, "initial_window_seconds": 0.02})
@@ -527,16 +530,18 @@ async def test_context_notice_waits_for_current_reply_when_no_successor_exists(
         task = harness.start(first)
         await wait(first.entered)
         await harness.plugin.capture_notice_context(context_notice())
-        await wait(first.prepared)
-        assert len(harness.requests) == 1
-        assert not first.stopped
-        first.allow_reply.set()
-        await task
+        current = await harness.wait_resumed() if enabled else first
+        await wait(current.prepared)
+        assert len(harness.requests) == (2 if enabled else 1)
+        assert task.cancelled() if enabled else not first.stopped
+        current.allow_reply.set()
+        await harness.tasks[-1]
         pending = [item.task for item in harness.plugin.notice_context.pending.values()]
         await asyncio.wait_for(asyncio.gather(*pending), 3)
         history = texts(harness.manager.history(first))
-        assert history[:2] == ["当前消息", "reply"]
-        assert "group_card" in history[2]
+        assert history[0] == "当前消息"
+        assert "group_card" in history[1 if enabled else 2]
+        assert history[2 if enabled else 1] == "reply"
     finally:
         await harness.finish()
 
@@ -1546,8 +1551,9 @@ async def test_idle_recall_only_appends_history_without_opening_a_batch():
 
 
 @pytest.mark.parametrize("maximum", [0.0, 0.14])
+@pytest.mark.parametrize("source", ["recall", "other_context"])
 @pytest.mark.asyncio
-async def test_early_recall_resets_live_window_and_obeys_wait_limit(maximum):
+async def test_context_update_resets_live_window_and_obeys_wait_limit(maximum, source):
     harness = Harness(
         {
             "initial_window_seconds": 0.1,
@@ -1555,13 +1561,14 @@ async def test_early_recall_resets_live_window_and_obeys_wait_limit(maximum):
             "max_wait_seconds": maximum,
         }
     )
-    first = Event("waiting", 1)
+    first = Event("waiting", 1, group=300)
     try:
         harness.start(first)
         await wait(first.entered)
         await asyncio.sleep(0.07)
         assert not first.prepared.is_set()
-        await harness.plugin.mark_recalled_message(recall_of(first))
+        notice = recall_of(first) if source == "recall" else context_notice()
+        await harness.plugin.capture_notice_context(notice)
         arrival = first.get_extra(ARRIVAL_KEY)
         assert arrival.context_inputs[0].wait_applied
         resumed = await harness.wait_resumed()
@@ -1571,7 +1578,8 @@ async def test_early_recall_resets_live_window_and_obeys_wait_limit(maximum):
         else:
             assert arrival.waited_seconds >= 0.16
         assert texts(harness.requests[-1])[0] == "waiting"
-        assert texts(harness.requests[-1])[1].startswith("[QQ 平台事件|message_recall|")
+        kind = "message_recall" if source == "recall" else "group_card"
+        assert texts(harness.requests[-1])[1].startswith(f"[QQ 平台事件|{kind}|")
         resumed.allow_reply.set()
         await harness.tasks[-1]
     finally:
@@ -1936,4 +1944,285 @@ async def test_unloading_before_resume_is_dispatched_releases_owned_media():
         assert texts(harness.manager.history(first))[0] == "media"
     finally:
         release.set()
+        await harness.finish()
+
+
+@pytest.mark.parametrize("unique_session", [False, True])
+@pytest.mark.parametrize("shared_group", [False, True])
+@pytest.mark.parametrize(
+    "kind,details",
+    [
+        ("notify/group_name", {"name_new": "新群名"}),
+        (
+            "group_ban",
+            {"sub_type": "ban", "user_id": 0, "operator_id": 8, "duration": -1},
+        ),
+        ("group_decrease", {"sub_type": "disband", "operator_id": 0}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_group_wide_event_updates_all_existing_batches_and_deduplicates_history(
+    unique_session, shared_group, kind, details
+):
+    harness = Harness({"shared_group": shared_group, "initial_window_seconds": 0.08})
+    harness.plugin.context.get_config = lambda **kwargs: {
+        "platform_settings": {"unique_session": unique_session}
+    }
+    first = Event("A", 1, group=300)
+    second = Event("B", 2, sender=8, group=300)
+    other = Event("other group", 3, group=301)
+    if unique_session:
+        for event in (first, second, other):
+            event.unified_msg_origin = f"qq:GroupMessage:{event.sender}_{event.group}"
+            harness.manager.sessions.add(event.unified_msg_origin)
+    notice = Event("", None, group=300, raw=payload(kind, **details))
+    notice.is_at_or_wake_command = False
+    try:
+        harness.start(first)
+        await wait(first.entered)
+        harness.start(second)
+        await wait(second.entered)
+        other_task = harness.start(other)
+        await wait(other.entered)
+        await harness.plugin.capture_notice_context(notice)
+        first_arrival, second_arrival = (
+            event.get_extra(ARRIVAL_KEY) for event in (first, second)
+        )
+        if unique_session or not shared_group:
+            assert len(first_arrival.context_inputs) == 1
+        assert len(second_arrival.context_inputs) == 1
+        assert not other.get_extra(ARRIVAL_KEY).context_inputs
+        assert len(harness.plugin.notice_context.pending) == (
+            2 if unique_session else 1
+        )
+        await wait(other.prepared)
+        # Separate sender batches sharing one history retain the existing
+        # interleaving protection; the first reply must finish naturally.
+        if not unique_session and not shared_group:
+            await wait(first.prepared)
+            assert not first.stopped
+            first.allow_reply.set()
+        expected_resumes = 2 if unique_session else 1
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        assert len(harness.resumed) == expected_resumes
+        for event in harness.resumed:
+            await wait(event.prepared)
+            event.allow_reply.set()
+        other.allow_reply.set()
+        await asyncio.wait_for(
+            asyncio.gather(*harness.tasks, return_exceptions=True), 3
+        )
+        deliveries = [
+            delivery.task for delivery in harness.plugin.notice_context.pending.values()
+        ]
+        await asyncio.wait_for(asyncio.gather(*deliveries), 3)
+        histories = {
+            event.unified_msg_origin: harness.manager.history(event)
+            for event in (first, second)
+        }
+        assert all(
+            sum(f"QQ 平台事件|{kind}|" in text for text in texts(history)) == 1
+            for history in histories.values()
+        )
+        assert texts(harness.manager.history(other)) == ["other group", "reply"]
+        assert not other_task.cancelled()
+        assert not notice.is_at_or_wake_command
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.parametrize(
+    "boundary", ["tool", "streaming", "sent", "limit", "budget", "off", "disabled"]
+)
+@pytest.mark.asyncio
+async def test_other_context_events_obey_existing_debounce_protections(boundary):
+    harness = Harness({"max_messages": 2} if boundary == "limit" else {})
+    first = Event("original", 1, group=300)
+    try:
+        if boundary == "limit":
+            earlier = Event("earlier", 0, group=300)
+            harness.start(earlier)
+            await wait(earlier.prepared)
+        task = harness.start(
+            first, tool=boundary == "tool", streaming=boundary == "streaming"
+        )
+        await wait(first.prepared)
+        if boundary == "sent":
+            first._has_send_oper = True
+        elif boundary == "budget":
+            first.get_extra(ARRIVAL_KEY).buffer_bytes = 100 * 1024 * 1024
+        elif boundary == "off":
+            harness.plugin.config["notice_events"]["group_card"]["mode"] = "off"
+        elif boundary == "disabled":
+            harness.plugin.config["debounce"]["enabled"] = False
+        await harness.plugin.capture_notice_context(context_notice())
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        assert not harness.resumed
+        assert not task.cancelled()
+        first.allow_reply.set()
+        await task
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    delivery.task
+                    for delivery in harness.plugin.notice_context.pending.values()
+                )
+            ),
+            3,
+        )
+        history = texts(harness.manager.history(first))
+        if boundary == "off":
+            assert history == ["original", "reply"]
+        else:
+            assert "group_card" in history[-1]
+            assert history[-2] == "reply"
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_member_context_does_not_update_another_isolated_user_batch():
+    harness = Harness({"shared_group": False})
+    harness.plugin.context.get_config = lambda **kwargs: {
+        "platform_settings": {"unique_session": True}
+    }
+    first = Event("A", 1, group=300)
+    first.unified_msg_origin = "qq:GroupMessage:7_300"
+    other = Event("B", 2, sender=8, group=300)
+    other.unified_msg_origin = "qq:GroupMessage:8_300"
+    try:
+        harness.start(first)
+        other_task = harness.start(other)
+        await wait(first.prepared)
+        await wait(other.prepared)
+        await harness.plugin.capture_notice_context(context_notice())
+        resumed = await harness.wait_resumed()
+        assert resumed.sender == "7"
+        assert not other.get_extra(ARRIVAL_KEY).context_inputs
+        assert not other_task.cancelled()
+        resumed.allow_reply.set()
+        other.allow_reply.set()
+        await asyncio.gather(*harness.tasks, return_exceptions=True)
+        assert texts(harness.manager.history(other)) == ["B", "reply"]
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_context_event_during_resume_persistence_joins_same_restart():
+    harness = Harness()
+    first = Event("original", 1, group=300)
+    saving, release = asyncio.Event(), asyncio.Event()
+    persist = harness.runtime.persist
+
+    async def delayed_persist(arrival):
+        saving.set()
+        await release.wait()
+        await persist(arrival)
+
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.runtime.persist = delayed_persist
+        await harness.plugin.capture_notice_context(context_notice())
+        await wait(saving)
+        second_notice = context_notice()
+        second_notice.message_obj.raw_message["card_new"] = "another name"
+        await harness.plugin.capture_notice_context(second_notice)
+        release.set()
+        resumed = await harness.wait_resumed()
+        assert len(harness.resumed) == 1
+        assert len(harness.requests[-1]) == 3
+        assert "another name" in texts(harness.requests[-1])[-1]
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
+    finally:
+        release.set()
+        await harness.finish()
+
+
+@pytest.mark.parametrize("preparing", [False, True])
+@pytest.mark.asyncio
+async def test_two_context_events_around_a_followup_do_not_create_a_circular_wait(
+    preparing,
+):
+    harness = Harness()
+    first, second = Event("A", 1, group=300), Event("B", 2, group=300)
+    gate, saving, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    persist = harness.runtime.persist
+
+    async def delayed_persist(arrival):
+        if arrival.event is first:
+            saving.set()
+            await release.wait()
+        await persist(arrival)
+
+    try:
+        harness.start(first, preprocess=gate if preparing else None)
+        await wait(first.entered if preparing else first.prepared)
+        harness.runtime.persist = delayed_persist
+        await harness.plugin.capture_notice_context(context_notice())
+        if not preparing:
+            await wait(saving)
+        second_task = harness.start(second)
+        await wait(second.entered)
+        another = context_notice()
+        another.message_obj.raw_message["card_new"] = "later"
+        await harness.plugin.capture_notice_context(another)
+        gate.set()
+        release.set()
+        await wait(second.prepared)
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        latest = harness.resumed[-1]
+        await wait(latest.prepared)
+        request = texts(harness.requests[-1])
+        assert request.count("A") == request.count("B") == 1
+        assert "later" in request[-1]
+        assert request.index("B") < len(request) - 1
+        latest.allow_reply.set()
+        await harness.tasks[-1]
+        assert second_task.cancelled()
+    finally:
+        gate.set()
+        release.set()
+        await harness.finish()
+
+
+@pytest.mark.parametrize("failure", ["input", "event"])
+@pytest.mark.asyncio
+async def test_context_restart_aborts_on_save_failure_and_keeps_original_input(failure):
+    harness = Harness()
+    first, followup = Event("original", 1, group=300), Event("followup", 2, group=300)
+    update = harness.manager.update_conversation
+
+    async def fail_save(umo, cid, *, history, **kwargs):
+        is_event = "QQ 平台事件|" in json.dumps(history[-1], ensure_ascii=False)
+        if is_event == (failure == "event"):
+            raise RuntimeError("database unavailable")
+        await update(umo, cid, history=history, **kwargs)
+
+    try:
+        harness.start(first)
+        await wait(first.prepared)
+        harness.manager.update_conversation = fail_save
+        await harness.plugin.capture_notice_context(context_notice())
+        await asyncio.wait_for(
+            asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
+        )
+        assert not harness.restart_enqueued.is_set()
+        assert harness.tasks[0].cancelled()
+        harness.manager.update_conversation = update
+        harness.start(followup)
+        await wait(followup.prepared)
+        assert texts(harness.requests[-1])[0] == "original"
+        assert texts(harness.requests[-1])[-1] == "followup"
+        followup.allow_reply.set()
+        await harness.tasks[-1]
+    finally:
         await harness.finish()

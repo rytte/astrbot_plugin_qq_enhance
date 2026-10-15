@@ -13,7 +13,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
 
-from .debounce import Arrival, ArrivalRegistry
+from .debounce import ARRIVAL_KEY, Arrival, ContextInput
 
 
 DEFAULT_NOTICE_POLICIES = {
@@ -89,6 +89,17 @@ class QQNotice:
     occurred_at: int | None
     details: dict
     description: str
+
+    @property
+    def group_wide(self) -> bool:
+        """Facts about the whole group rather than an individual member."""
+        return bool(self.group_id) and (
+            self.kind == "notify/group_name"
+            or self.kind == "group_ban"
+            and self.user_id == "0"
+            or self.kind == "group_decrease"
+            and self.details.get("sub_type") == "disband"
+        )
 
     def render(self) -> str:
         """Render an independent background entry rather than a command."""
@@ -344,7 +355,7 @@ class NoticeDelivery:
 
 
 class NoticeContext:
-    """Deliver passive facts without waking or superseding an inbound pipeline."""
+    """Save context facts and update existing replies without independent waking."""
 
     def __init__(self, plugin):
         self.plugin = plugin
@@ -414,7 +425,8 @@ class NoticeContext:
     async def deliver_context(
         self, event, notice: QQNotice, *, recipient_id: str | None = None
     ) -> None:
-        """Queue facts only for an existing, explicitly scoped conversation."""
+        """Route facts to existing conversations and their unfinished batches."""
+        arrivals = self.plugin.debouncer.arrivals()
         message_type = (
             MessageType.GROUP_MESSAGE if notice.group_id else MessageType.FRIEND_MESSAGE
         )
@@ -424,11 +436,52 @@ class NoticeContext:
         if notice.group_id and config.get("platform_settings", {}).get(
             "unique_session", False
         ):
+            if notice.group_wide:
+                sessions = await self._group_sessions(event.get_platform_id(), notice)
+                for umo in sessions:
+                    await self._deliver_session(notice, umo, arrivals)
+                return
             if notice.user_id in {"0", notice.self_id}:
                 return
             session.session_id = f"{notice.user_id}_{notice.group_id}"
-            config = self.plugin.context.get_config(umo=str(session))
-        umo = str(session)
+        await self._deliver_session(notice, str(session), arrivals)
+
+    async def _group_sessions(self, platform_id, notice):
+        """Find existing isolated group sessions without loading their histories."""
+        manager = self.plugin.context.conversation_manager
+        sessions = set()
+        page = 1
+        while True:
+            conversations, total = await manager.get_filtered_conversations(
+                page=page,
+                page_size=100,
+                platform_ids=[platform_id],
+                search_query=f"_{notice.group_id}",
+                include_history=False,
+                message_types=[MessageType.GROUP_MESSAGE.value],
+            )
+            for conversation in conversations:
+                try:
+                    session = MessageSession.from_str(conversation.user_id)
+                except (ValueError, AttributeError):
+                    continue
+                member, separator, group = session.session_id.partition("_")
+                if (
+                    session.platform_id == platform_id
+                    and session.message_type == MessageType.GROUP_MESSAGE
+                    and separator
+                    and member.isdecimal()
+                    and member not in {"0", notice.self_id}
+                    and group == notice.group_id
+                ):
+                    sessions.add(str(session))
+            if not conversations or page * 100 >= total:
+                break
+            page += 1
+        return sorted(sessions)
+
+    async def _deliver_session(self, notice, umo, arrivals):
+        config = self.plugin.context.get_config(umo=umo)
         plugin_set = config.get("plugin_set", ["*"])
         if (
             plugin_set != ["*"]
@@ -438,8 +491,10 @@ class NoticeContext:
             return
         barriers = tuple(
             arrival
-            for arrival in ArrivalRegistry.predecessors(umo)
-            if not arrival.history_ready.is_set()
+            for arrival in arrivals
+            if arrival.event.unified_msg_origin == umo
+            and not arrival.replayed
+            and not arrival.history_ready.is_set()
         )
         if not await SessionPluginManager.is_plugin_enabled_for_session(
             umo, "astrbot_plugin_qq_enhance"
@@ -450,7 +505,34 @@ class NoticeContext:
         )
         if not cid or self.closed:
             return
-        await self.queue_pinned(notice, umo, cid, barriers=barriers)
+        delivery = await self.queue_pinned(notice, umo, cid, barriers=barriers)
+        if delivery is None:
+            return
+        sender_id = (
+            notice.user_id
+            if notice.group_id
+            else MessageSession.from_str(umo).session_id
+        )
+        targets = self.plugin.debouncer.context_arrivals(
+            arrivals, umo, cid, sender_id=None if notice.group_wide else sender_id
+        )
+        if targets:
+            saved = asyncio.get_running_loop().create_future()
+
+            def completed(_task):
+                saved.set_result(delivery.saved)
+
+            delivery.task.add_done_callback(completed)
+            for arrival in targets:
+                self.plugin.debouncer.submit_context(
+                    arrival,
+                    ContextInput(
+                        (umo, notice.fingerprint()),
+                        saved,
+                        notice.render(),
+                        conversation_id=cid,
+                    ),
+                )
 
     async def queue_pinned(
         self,
@@ -529,10 +611,18 @@ class NoticeContext:
 
     async def wait_before(self, event) -> None:
         """Flush earlier facts after debounce persistence and before the next request."""
+        current = event.get_extra(ARRIVAL_KEY)
         for delivery in list(self.pending.values()):
             if delivery.umo != event.unified_msg_origin:
                 continue
-            if any(arrival.event is event for arrival in delivery.barriers):
+            # A fact following a later input must not hold up the earlier
+            # continuation that input needs to supersede.
+            if any(
+                arrival.event is event
+                or current is not None
+                and arrival.order >= current.order
+                for arrival in delivery.barriers
+            ):
                 break
             await asyncio.shield(delivery.task)
 

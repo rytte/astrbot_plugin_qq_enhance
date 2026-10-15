@@ -4,6 +4,7 @@ import asyncio
 import json
 from copy import deepcopy
 from dataclasses import dataclass, field
+from itertools import count
 from typing import ClassVar
 
 from astrbot.api import logger
@@ -13,6 +14,7 @@ from astrbot.core.agent.message import dump_messages_with_checkpoints
 
 
 ARRIVAL_KEY = "_qq_enhance_debounce_arrival"
+_ARRIVAL_ORDER = count()
 
 
 @dataclass(eq=False)
@@ -23,6 +25,7 @@ class ContextInput:
     saved: asyncio.Future[bool]
     content: str = ""
     wait_applied: bool = False
+    conversation_id: str | None = None
 
 
 @dataclass(eq=False)
@@ -51,6 +54,7 @@ class Arrival:
     replayed: bool = False
     scope: tuple | None = None
     seen_context: set[tuple] = field(default_factory=set)
+    order: int = field(default_factory=lambda: next(_ARRIVAL_ORDER))
 
 
 class ArrivalRegistry:
@@ -143,9 +147,9 @@ class MessageDebouncer:
             "group" if shared_group else event.get_sender_id(),
         )
         arrival.scope = scope
-        if (job := self.context_jobs.get(scope)) and self.context_targets[
-            scope
-        ] is not arrival:
+        if (
+            job := self.context_jobs.get(scope)
+        ) and arrival.order > self.context_targets[scope].order:
             await asyncio.shield(job)
         for (umo, _), job in list(self.pending.items()):
             if umo == event.unified_msg_origin and not job.done():
@@ -275,6 +279,10 @@ class MessageDebouncer:
             else related.event.get_sender_id(),
         )
         owner = self.active.get(scope) or related
+        if related.order > owner.order:
+            # An earlier pipeline must be allowed to finish preparing before
+            # the latest input can inherit its batch and this context update.
+            owner = related
         if owner is not related and related not in owner.batch:
             # A later pipeline may still be preparing its inherited batch.
             if owner.previous is not related and not any(
@@ -303,9 +311,20 @@ class MessageDebouncer:
         if owner.waiting:
             item.wait_applied = True
             owner.wait_changed.set()
-        if scope not in self.context_jobs or self.context_jobs[scope].done():
+        previous_job = self.context_jobs.get(scope)
+        if (
+            previous_job is None
+            or previous_job.done()
+            or owner.order > self.context_targets[scope].order
+        ):
             self.context_targets[scope] = owner
-            job = asyncio.create_task(self._continue_context(scope, owner))
+            job = asyncio.create_task(
+                self._continue_context(
+                    scope,
+                    owner,
+                    previous_job if previous_job and not previous_job.done() else None,
+                )
+            )
             self.context_jobs[scope] = job
 
             def completed(done):
@@ -317,6 +336,43 @@ class MessageDebouncer:
 
             job.add_done_callback(completed)
         return True
+
+    def arrivals(self, umo=None):
+        """Snapshot inputs including queued continuations and media preparation."""
+        return tuple(
+            dict.fromkeys(
+                arrival
+                for arrival in (
+                    *ArrivalRegistry.predecessors(umo),
+                    *self.active.values(),
+                )
+                if umo is None or arrival.event.unified_msg_origin == umo
+            )
+        )
+
+    def context_arrivals(self, arrivals, umo, cid, *, sender_id=None):
+        """Select the latest existing input per scope for a pinned context fact."""
+        selected = {}
+        for arrival in arrivals:
+            event = arrival.event
+            if (
+                event.unified_msg_origin != umo
+                or arrival.finished.is_set()
+                or arrival.conversation_id not in (None, cid)
+                or not (arrival.batch or self.runtime.eligible(event))
+            ):
+                continue
+            shared = self.config["shared_group"] and bool(event.get_group_id())
+            if (
+                sender_id is not None
+                and not shared
+                and event.get_sender_id() != sender_id
+            ):
+                continue
+            scope = (umo, "group" if shared else event.get_sender_id())
+            if scope not in selected or arrival.order > selected[scope].order:
+                selected[scope] = arrival
+        return tuple(selected.values())
 
     def context_barriers(self, related):
         """Keep a source's history entry behind the live batch's current input."""
@@ -367,8 +423,10 @@ class MessageDebouncer:
             <= self.config["max_buffer_mb"] * 1024 * 1024
         )
 
-    async def _continue_context(self, scope, related):
+    async def _continue_context(self, scope, related, previous_job=None):
         try:
+            if previous_job is not None:
+                await previous_job
             await related.ready.wait()
             owner = self.active.get(scope)
             if owner is None or owner.finished.is_set():
@@ -385,6 +443,7 @@ class MessageDebouncer:
                 item
                 for item in owner.context_inputs
                 if item.key not in owner.seen_context
+                and item.conversation_id in (None, owner.conversation_id)
             ]
             if not unseen or not self._replaceable(owner):
                 return
@@ -406,7 +465,9 @@ class MessageDebouncer:
             if self.active.get(scope) is not owner or not self._replaceable(owner):
                 return
             event = self.runtime.make_resume(owner, self)
-            successor = Arrival(event, None, replayed=True, scope=scope)
+            successor = Arrival(
+                event, None, replayed=True, scope=scope, order=owner.order
+            )
             successor.batch = list(owner.batch)
             successor.context_inputs = list(owner.context_inputs)
             successor.conversation_id = owner.conversation_id
