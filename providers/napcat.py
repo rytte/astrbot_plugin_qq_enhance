@@ -16,8 +16,7 @@ class NapCatProvider:
     display_name = "NapCat"
     contract_version = "4.18.19"
     min_version = (4, 18, 19)
-    max_version = (5, 0, 0)
-    supported_versions = ">=4.18.19,<5.0.0"
+    supported_versions = ">=4.18.19"
 
     def __init__(self) -> None:
         contract = (
@@ -35,7 +34,7 @@ class NapCatProvider:
         if not match:
             raise QQToolError("response_invalid", "无法识别 NapCat 版本号")
         version = tuple(int(part) for part in match.groups())
-        if not self.min_version <= version < self.max_version:
+        if version < self.min_version:
             raise QQToolError(
                 "unsupported_version",
                 f"仅支持 NapCat {self.supported_versions}，当前版本为 {info.version}",

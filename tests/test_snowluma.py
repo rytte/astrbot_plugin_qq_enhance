@@ -8,8 +8,11 @@ from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA, resolve_provid
 from astrbot_plugin_qq_enhance.providers.base import VersionInfo
 
 
-@pytest.mark.parametrize("version", ["1.14.22", "1.14.22-node"])
-def test_fixed_snowluma_contract(version):
+@pytest.mark.parametrize(
+    "version",
+    ["1.14.22", "1.14.22-node", "1.14.23", "1.14.23-node", "1.15.0-node", "2.0.0"],
+)
+def test_snowluma_accepts_versions_at_or_above_minimum(version):
     binding = resolve_provider(VersionInfo("SnowLuma", version, "v11"))
     assert binding.provider is SNOWLUMA
 
@@ -18,8 +21,8 @@ def test_fixed_snowluma_contract(version):
     "info,code",
     [
         (VersionInfo("SnowLuma", "1.14.21-node", "v11"), "unsupported_version"),
-        (VersionInfo("SnowLuma", "1.14.23-node", "v11"), "unsupported_version"),
-        (VersionInfo("SnowLuma", "2.0.0", "v11"), "unsupported_version"),
+        (VersionInfo("SnowLuma", "1.13.99", "v11"), "unsupported_version"),
+        (VersionInfo("SnowLuma", "0.99.99", "v11"), "unsupported_version"),
         (VersionInfo("SnowLuma", "unknown", "v11"), "response_invalid"),
         (VersionInfo("SnowLuma", "1.14.22-node-dev", "v11"), "response_invalid"),
         (VersionInfo("SnowLuma", "1.14.22-node", "v12"), "unsupported_version"),
@@ -27,7 +30,7 @@ def test_fixed_snowluma_contract(version):
         (VersionInfo("Other", "1.14.22", "v11"), "unsupported_version"),
     ],
 )
-def test_unverified_implementations_versions_and_protocols_are_rejected(info, code):
+def test_unsupported_implementations_versions_and_protocols_are_rejected(info, code):
     with pytest.raises(QQToolError) as caught:
         resolve_provider(info)
     assert caught.value.code == code

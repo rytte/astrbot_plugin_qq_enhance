@@ -15,7 +15,8 @@ class SnowLumaProvider:
     id = "snowluma"
     display_name = "SnowLuma"
     contract_version = "1.14.22"
-    supported_versions = "1.14.22"
+    min_version = (1, 14, 22)
+    supported_versions = ">=1.14.22"
     unsupported_operations = {
         "qq_recent_contacts.list": "SnowLuma v1.14.22 的最近联系人接口是固定空数组占位，无法查询最近联系人",
         "qq_group_info.detail_ex": "SnowLuma v1.14.22 不提供 NapCat 扩展群资料，请使用 qq_group_info.detail",
@@ -78,10 +79,10 @@ class SnowLumaProvider:
         match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-node)?", info.version)
         if not match:
             raise QQToolError("response_invalid", "无法识别 SnowLuma 版本号")
-        if tuple(int(part) for part in match.groups()) != (1, 14, 22):
+        if tuple(int(part) for part in match.groups()) < self.min_version:
             raise QQToolError(
                 "unsupported_version",
-                f"仅支持 SnowLuma v1.14.22，当前版本为 {info.version}",
+                f"仅支持 SnowLuma {self.supported_versions}，当前版本为 {info.version}",
             )
         if info.protocol_version != "v11":
             raise QQToolError(

@@ -475,6 +475,7 @@
       "notify/gray_tip": {
         "type": "object",
         "description": "未知群灰条",
+        "hint": "SnowLuma v1.14.22 不上报未识别群灰条，启用后也无法接收此类事件。",
         "default": {},
         "items": {
           "mode": {
@@ -523,6 +524,7 @@
       "online_file_receive": {
         "type": "object",
         "description": "在线文件传输取消",
+        "hint": "SnowLuma v1.14.22 不上报在线文件取消事件，插件无法从普通文件消息判断是否取消。",
         "default": {},
         "items": {
           "mode": {
@@ -539,6 +541,7 @@
       "online_file_send": {
         "type": "object",
         "description": "在线文件接收或拒绝",
+        "hint": "SnowLuma v1.14.22 不上报在线文件接收或拒绝事件，插件无法从文件发送成功推断对方是否接收。",
         "default": {},
         "items": {
           "mode": {

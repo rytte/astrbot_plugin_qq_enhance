@@ -18,7 +18,7 @@ from astrbot_plugin_qq_enhance.catalog import (
     TOOL_OPERATIONS,
 )
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
-from astrbot_plugin_qq_enhance.providers import NAPCAT
+from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.runtime import (
     DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
     PROTECTED_COMPONENT_TYPES,
@@ -42,7 +42,9 @@ def test_catalog_is_complete_and_matches_contract() -> None:
 
 def test_version_range_is_explicit() -> None:
     assert NAPCAT.min_version == (4, 18, 19)
-    assert NAPCAT.max_version == (5, 0, 0)
+    assert NAPCAT.supported_versions == ">=4.18.19"
+    assert SNOWLUMA.min_version == (1, 14, 22)
+    assert SNOWLUMA.supported_versions == ">=1.14.22"
 
 
 @pytest.mark.parametrize("config", [None, {}, {"toolsets": {}}])

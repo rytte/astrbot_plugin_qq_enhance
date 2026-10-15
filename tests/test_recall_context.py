@@ -200,6 +200,51 @@ async def test_recall_uses_platform_notice_entry_and_shared_delivery_queue():
     assert notice.is_wake is False
 
 
+@pytest.mark.parametrize("group", [False, True])
+@pytest.mark.asyncio
+async def test_snowluma_recall_with_negative_id_passes_real_adapter(group):
+    from aiocqhttp import Event
+    from astrbot.api.platform import PlatformMetadata
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
+        AiocqhttpAdapter,
+    )
+
+    original = [{"role": "user", "content": "原消息"}]
+    plugin, conversation = make_plugin(original)
+    _, notice = await track_message(
+        plugin, conversation, "原消息", message_id=-123, group=group
+    )
+    raw = deepcopy(notice.message_obj.raw_message)
+    raw["self_id"] = 99
+    if group:
+        raw["operator_id"] = 10002
+    else:
+        raw.pop("group_id")
+    adapter = object.__new__(AiocqhttpAdapter)
+    adapter.metadata = PlatformMetadata(
+        name="aiocqhttp", description="", id="platform-a"
+    )
+    adapter.bot = AsyncMock()
+    event = adapter.create_event(await adapter.convert_message(Event(raw)))
+    await plugin.capture_notice_context(event)
+    await drain_recalls(plugin)
+    await plugin.capture_notice_context(event)
+    await drain_recalls(plugin)
+    history = json.loads(conversation.history)
+    assert history[:-1] == original
+    assert "[QQ 平台事件|message_recall|" in history[-1]["content"]
+    assert ('原消息摘录（仅用于定位）："原消息"') in history[-1]["content"]
+    if group:
+        assert "已被用户 10002 撤回" in history[-1]["content"]
+    plugin.context.conversation_manager.update_conversation.assert_awaited_once()
+    assert plugin.context.conversation_manager.update_conversation.await_args.args == (
+        "platform-a:GroupMessage:30001" if group else "platform-a:FriendMessage:10001",
+        "conversation-a",
+    )
+    assert not event.is_at_or_wake_command
+    adapter.bot.call_action.assert_not_awaited()
+
+
 @pytest.mark.parametrize("field,value", [("group_id", 30002), ("user_id", 10002)])
 @pytest.mark.asyncio
 async def test_group_recall_rejects_wrong_scope_or_sender(field, value):

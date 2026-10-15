@@ -2920,7 +2920,7 @@ async def test_confirmation_reprobes_and_rejects_changed_or_missing_provider(
             "protocol_version": "v11",
         }
     elif change == "version":
-        client.version_info = {"app_name": "NapCat", "app_version": "5.0.0"}
+        client.version_info = {"app_name": "NapCat", "app_version": "4.18.18"}
     else:
         claim = storage.claim_pending
 

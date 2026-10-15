@@ -181,7 +181,7 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
     assert payload["summary"]["operations_total"] == len(OPERATIONS)
     assert {
         row["provider_id"]: row["supported_versions"] for row in payload["contracts"]
-    } == {"napcat": ">=4.18.19,<5.0.0", "snowluma": "1.14.22"}
+    } == {"napcat": ">=4.18.19", "snowluma": ">=1.14.22"}
     assert payload["platforms"][0] == {
         "platform_id": "platform-a",
         "selected": True,
@@ -232,7 +232,7 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
             {"app_name": "NapCat.OneBot", "app_version": "4.18.18"},
             "unsupported_version",
         ),
-        ({"app_name": "NapCat.OneBot", "app_version": "5.0.0"}, "unsupported_version"),
+        ({"app_name": "NapCat.OneBot", "app_version": "5.0.0"}, None),
         ({"app_name": "NapCat.OneBot", "app_version": "unknown"}, "response_invalid"),
         (
             {"app_name": "SnowLuma", "app_version": "1.14.22-node"},
@@ -250,6 +250,22 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
             {
                 "app_name": "SnowLuma",
                 "app_version": "1.14.23-node",
+                "protocol_version": "v11",
+            },
+            None,
+        ),
+        (
+            {
+                "app_name": "SnowLuma",
+                "app_version": "2.0.0",
+                "protocol_version": "v11",
+            },
+            None,
+        ),
+        (
+            {
+                "app_name": "SnowLuma",
+                "app_version": "1.14.21-node",
                 "protocol_version": "v11",
             },
             "unsupported_version",

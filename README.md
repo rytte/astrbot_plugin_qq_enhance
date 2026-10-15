@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 [功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development)
 
@@ -20,7 +20,7 @@
 | 好友与账号 | 查询资料、点赞、修改备注、管理好友申请，以及由 AstrBot 管理员维护机器人资料 |
 | 群聊管理 | 查询成员、历史消息和公告，管理禁言、群名片、精华消息、群申请与群文件 |
 
-完整的动作对应关系见 [NapCat 能力矩阵](./Capabilities.md) / [SnowLuma 能力矩阵](./Capabilities_SnowLuma.md)。
+完整的动作对应关系见 [NapCat 能力矩阵](./docs/Capabilities_NapCat.md) / [SnowLuma 能力矩阵](./docs/Capabilities_SnowLuma.md)。
 
 ### 🧩 插件增强能力
 
@@ -81,14 +81,17 @@
 | --- | --- |
 | AstrBot | `>=4.27,<5` |
 | 平台适配器 | `aiocqhttp` |
-| QQ 协议端 | NapCat `>=4.18.19,<5.0.0` 或 SnowLuma `1.14.22`，使用 OneBot v11 |
+| QQ 协议端 | NapCat `>=4.18.19` 或 SnowLuma `>=1.14.22`，使用 OneBot v11 |
 | 模型 | 在 AstrBot 中配置支持工具调用的模型，并为目标会话启用模型对话 |
 
 * 插件执行工具时会校验协议端实现与版本
 
-* QQ 版本最好在 NapCat 适配的版本范围内，否则部分接口可能失效
+* QQ 版本最好在 NapCat / SnowLuma 适配的版本范围内，否则部分接口可能失效
 
-  > **查看版本适配**：[NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) 切换到你使用的 NapCat 版本，其中 `packages/napcat-core/external/packet.json` 记录了具体适配的 QQ 版本
+  > **查看版本适配**
+  >
+  > * [NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) 切换到你使用的 NapCat 版本，其中 `packages/napcat-core/external/packet.json` 记录了具体适配的 QQ 版本
+  > * [SnowLuma/SnowLuma](https://github.com/SnowLuma/SnowLuma) 为 `compat/qq.json` 记录
 
 * 本插件开发与测试环境如下
 
@@ -129,7 +132,7 @@ QQ Enhance initialized
 
 ### 4. 查看运行状态
 
-在 AstrBot WebUI 的插件详情中打开 **“QQ 能力增强状态与诊断”**，可查看 OneBot 平台连接、登录账号、版本兼容性、有效配置摘要、启用能力、近期审计及待确认操作。能力列表区分配置开关与上游契约支持情况，并按平台实例列出支持状态，支持搜索和筛选；“上游支持”表示静态契约支持，实际调用仍可能受 QQ 权限、登录状态或服务端限制影响。
+在 AstrBot WebUI 的插件详情中打开 **“QQ 能力增强状态与诊断”**，可查看 OneBot 平台连接、登录账号、版本兼容性、有效配置摘要、启用能力、近期审计及待确认操作。能力列表区分配置开关与上游契约支持情况，并按平台实例列出支持状态，支持搜索和筛选。
 
 <a id="configuration"></a>
 
@@ -142,24 +145,6 @@ QQ Enhance initialized
 > 插件加载时由 AstrBot 按当前 Schema 自动清理已删除字段并补齐新增字段，无需用户手动删除旧字段；
 >
 > 随后插件校验整理后的配置，类型、取值范围、操作名称或依赖关系不合法时仍会明确报错。
-
-### SnowLuma 支持范围
-
-适配基线为 [SnowLuma v1.14.22](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，接受其 `1.14.22-node` 版本标识，且要求 `protocol_version=v11`。其他版本会明确拒绝，不自动视为兼容；无需添加协议端选择配置，由 `get_version_info` 自动识别。
-
-| 能力                           | SnowLuma v1.14.22 的行为                                     |
-| ------------------------------ | ------------------------------------------------------------ |
-| 最近联系人、扩展群资料         | `qq_recent_contacts.list` 与 `qq_group_info.detail_ex` 禁用：前者是空数组占位，后者只有普通群资料；普通群资料仍可查询 |
-| 历史消息                       | 使用 `message_id` 作为有符号 32 位消息锚点，允许负数，省略或 `0` 查询最新记录；拒绝 `message_seq`。NapCat 继续使用 `message_seq`，两者不能改名或混用 |
-| 群文件移动                     | 公开参数保持 `current_parent_directory` / `target_parent_directory`，适配器转换为 SnowLuma 的 `parent_directory` / `target_directory` |
-| OCR                            | 只接受 `url` 或 SnowLuma 图片缓存 `file_id`；拒绝 `path`、`base64`、`media_ref`。URL 经插件的 DNS、重定向及体积检查后，将最终 URL 交给 QQ 服务端识别；过期的图片地址应使用可刷新的缓存 `file_id` |
-| 语音转码                       | `get_record(out_format=...)` 和 `convert_record` 的 Base64 输出保存为插件临时文件，返回 `media_ref`、实际文件名和大小；不将源语音 URL 当作转码文件，临时文件按配置过期清理 |
-| 私聊文件下载                   | 可传原始文件消息中的 `file_hash`，并保留 `user_id`；NapCat 不接受 `file_hash`。不传 `file_id` 时仍查询当前私聊附件已有地址 |
-| 账号资料、好友审批、头衔、公告 | 明确拒绝不生效的 `company/email/college`、审批 `remark`、头衔 `duration`、公告独立 `title`；好友备注可在通过申请后单独修改，公告标题可写入 `content` |
-| 强制刷新、退群与群头像         | 在线设备、好友列表及陌生人资料不支持 `no_cache=true`；退群不支持 `is_dismiss=true`，群头像不支持 `cache=true` |
-| 查询数据限制                   | 在线设备依赖本次会话的设备快照，无快照时失败；禁言列表可能延迟约 60 秒；部分成员资料字段是上游固定值。工具结果和诊断会提示这些限制 |
-
-消息发送、合并转发、语音识别及其他已登记动作共用现有工具流程。以上适配经过固定版本源码核对和离线回归测试；私聊自发骰子与猜拳的结果回查已通过用户提供的在线日志验证，群聊补查尚待实测。实际效果仍受 QQ 权限、登录状态和服务端限制影响。
 
 ### 工具暴露模式
 
@@ -381,6 +366,14 @@ User-entered verification tags are replaced with
 | `online_file_receive` | 在线文件传输取消，按 `peer_id` 定位私聊 |
 | `online_file_send` | 对方接收或拒绝在线文件，按 `peer_id` 定位私聊 |
 | `bot_offline` | 机器人账号在事件发生时掉线，仅投递到独立配置的接收者私聊 |
+
+**SnowLuma v1.14.22 支持其中 15 类**，逐项对照见 [平台事件支持表](./docs/Capabilities_SnowLuma.md#平台事件支持情况)。群消息表情回应已适配 `sub_type=add/remove`，保留数字或字母数字表情标识；私聊输入状态允许省略 `group_id`；`bot_status/offline` 复用 `bot_offline` 的配置和接收者，仅记录离线事实，不补造掉线原因。
+
+以下 3 类因该版本没有对应事件上报而无法适配，开启配置也不会收到：
+
+- `notify/gray_tip`：只解析部分已识别灰条，不上报未知灰条原文。
+- `online_file_receive`：不上报在线文件取消通知，普通文件消息无法确认取消。
+- `online_file_send`：不上报在线文件接收或拒绝通知，发送成功不能代表对方已接收。
 
 **事件处理模式：**
 
@@ -758,7 +751,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 | `qq_essence` | 群精华消息 |
 | `qq_notice` | 群公告 |
 
-更多动作与支持范围见 [能力矩阵](./Capabilities.md)。
+更多动作与支持范围见 [能力矩阵](./docs/Capabilities_NapCat.md)。
 
 </details>
 
@@ -803,6 +796,24 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 </details>
 
+### SnowLuma 支持范围
+
+适配基线为 [SnowLuma v1.14.22](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，允许运行 `>=1.14.22` 的版本，接受 `x.y.z` 和 `x.y.z-node` 版本标识，且要求 `protocol_version=v11`。
+
+| 能力                           | SnowLuma v1.14.22 的行为                                     |
+| ------------------------------ | ------------------------------------------------------------ |
+| 最近联系人、扩展群资料         | `qq_recent_contacts.list` 与 `qq_group_info.detail_ex` 禁用：前者是空数组占位，后者只有普通群资料；普通群资料仍可查询 |
+| 历史消息                       | 使用 `message_id` 作为有符号 32 位消息锚点，允许负数，省略或 `0` 查询最新记录；拒绝 `message_seq`。NapCat 继续使用 `message_seq`，两者不能改名或混用 |
+| 群文件移动                     | 公开参数保持 `current_parent_directory` / `target_parent_directory`，适配器转换为 SnowLuma 的 `parent_directory` / `target_directory` |
+| OCR                            | 只接受 `url` 或 SnowLuma 图片缓存 `file_id`；拒绝 `path`、`base64`、`media_ref`。URL 经插件的 DNS、重定向及体积检查后，将最终 URL 交给 QQ 服务端识别；过期的图片地址应使用可刷新的缓存 `file_id` |
+| 语音转码                       | `get_record(out_format=...)` 和 `convert_record` 的 Base64 输出保存为插件临时文件，返回 `media_ref`、实际文件名和大小；不将源语音 URL 当作转码文件，临时文件按配置过期清理 |
+| 私聊文件下载                   | 可传原始文件消息中的 `file_hash`，并保留 `user_id`；NapCat 不接受 `file_hash`。不传 `file_id` 时仍查询当前私聊附件已有地址 |
+| 账号资料、好友审批、头衔、公告 | 明确拒绝不生效的 `company/email/college`、审批 `remark`、头衔 `duration`、公告独立 `title`；好友备注可在通过申请后单独修改，公告标题可写入 `content` |
+| 强制刷新、退群与群头像         | 在线设备、好友列表及陌生人资料不支持 `no_cache=true`；退群不支持 `is_dismiss=true`，群头像不支持 `cache=true` |
+| 查询数据限制                   | 在线设备依赖本次会话的设备快照，无快照时失败；禁言列表可能延迟约 60 秒；部分成员资料字段是上游固定值。工具结果和诊断会提示这些限制 |
+
+消息发送、合并转发、语音识别及其他已登记动作共用现有工具流程。以上适配经过固定版本源码核对和离线回归测试。
+
 <a id="development"></a>
 
 ## 🛠️ 开发验证
@@ -829,7 +840,7 @@ pytest -q
 ```
 
 * 测试覆盖能力目录与契约、配置校验、权限与跨会话限制、确认绑定与单次使用、文件和消息处理、工具选择、入站组件、申请通知、撤回上下文、平台事件感知和诊断页面。
-* 平台事件测试包含 17 类事件的真实适配器转换、默认模式、子类型、缺失字段、独立会话路由、掉线接收者校验、去重、写入失败和卸载清理。
+* 平台事件测试包含 18 类事件（含撤回）的真实适配器转换，以及 SnowLuma 的表情回应、输入状态和离线状态差异；覆盖默认模式、子类型、缺失字段、独立会话路由、掉线接收者校验、去重、写入失败和卸载清理。
 * 防抖测试包含独立用户历史、多媒体与特殊输入、预处理顺序、重复文本撤回、被动事件标签的保存顺序、历史写入失败、任务取消及 AstrBot 真实 Agent 运行器的取消传播。
 * 网页测试覆盖正文提取、中文编码、不可变快照、分页完整性、字面量查找、缓存隔离与过期、并发与取消、重定向校验、连接时 DNS 检查、压缩响应超限、部分响应及文件下载回归。HTTP 测试只使用本机临时服务器，不依赖外部站点。
 

@@ -104,6 +104,67 @@ def payload(kind: str, **details) -> dict:
     return raw
 
 
+# SnowLuma v1.14.22 to-notice.ts and instance.ts at
+# 87527cb7641a5a42f8f0efb73cb066102e004dee. The shared cases have identical fields.
+SNOWLUMA_CASES = (
+    [
+        (kind, payload(kind, **details), expected)
+        for kind, details, expected in CASES + EXTRA_CASES
+        if kind
+        not in {
+            "group_msg_emoji_like",
+            "notify/input_status",
+            "notify/gray_tip",
+            "online_file_receive",
+            "online_file_send",
+        }
+    ]
+    + [
+        (
+            "group_msg_emoji_like",
+            payload(
+                "group_msg_emoji_like",
+                sub_type=sub_type,
+                operator_id=7,
+                message_id=-123,
+                message_seq=4242,
+                likes=[{"emoji_id": "76", "count": 1}],
+            ),
+            expected,
+        )
+        for sub_type, expected in [("add", "表情回应新增"), ("remove", "表情回应减少")]
+    ]
+    + [
+        (
+            "notify/input_status",
+            {
+                "post_type": "notice",
+                "notice_type": "notify",
+                "sub_type": "input_status",
+                "self_id": 99,
+                "time": 1000,
+                "user_id": 7,
+                "event_type": 3,
+                "status_text": "对方正在讲话...",
+            },
+            "对方正在讲话...",
+        ),
+        (
+            "bot_offline",
+            {
+                "post_type": "notice",
+                "notice_type": "bot_status",
+                "sub_type": "offline",
+                "self_id": 99,
+                "time": 1000,
+                "user_id": 99,
+            },
+            "上报离线状态；上报未提供掉线原因",
+        ),
+    ]
+)
+
+
 class NoticeEvent:
     """An adapter notice whose inferred session must not determine routing."""
 
@@ -845,6 +906,127 @@ async def test_real_adapter_preserves_notice_payload_and_passive_delivery(plugin
         assert not event.is_at_or_wake_command
     assert manager.update_conversation.await_count == len(CASES + EXTRA_CASES)
     adapter.bot.call_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind,raw,expected", SNOWLUMA_CASES)
+@pytest.mark.asyncio
+async def test_snowluma_notices_pass_real_adapter_and_append_once_without_waking(
+    plugin, kind, raw, expected
+):
+    from aiocqhttp import Event
+    from astrbot.api.platform import PlatformMetadata
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
+        AiocqhttpAdapter,
+    )
+
+    raw = deepcopy(raw)
+    original = deepcopy(raw)
+    adapter = object.__new__(AiocqhttpAdapter)
+    adapter.metadata = PlatformMetadata(
+        name="aiocqhttp", description="", id="platform-a"
+    )
+    adapter.bot = AsyncMock()
+    plugin.config["notice_events"][kind]["mode"] = "context"
+    if kind == "bot_offline":
+        plugin.config["notice_events"][kind]["admin_user_ids"] = ["7"]
+    event = adapter.create_event(await adapter.convert_message(Event(raw)))
+    await plugin.capture_notice_context(event)
+    await drain(plugin)
+    await plugin.capture_notice_context(event)
+    await drain(plugin)
+    manager = plugin.context.conversation_manager
+    manager.update_conversation.assert_awaited_once()
+    umo, _ = manager.update_conversation.await_args.args
+    assert umo == (
+        "platform-a:GroupMessage:300"
+        if raw.get("group_id")
+        else "platform-a:FriendMessage:7"
+    )
+    content = manager.update_conversation.await_args.kwargs["history"][-1]["content"]
+    assert f"[QQ 平台事件|{kind}|" in content
+    assert expected in content
+    assert raw == original
+    assert not event.is_at_or_wake_command
+    plugin.context.get_event_queue.assert_not_called()
+    plugin.context.llm_generate.assert_not_called()
+    plugin.context.send_message.assert_not_called()
+    adapter.bot.call_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize("sub_type,is_add", [("add", True), ("remove", False)])
+@pytest.mark.parametrize("emoji_id", ["76", "aB12cdEF34"])
+def test_snowluma_reactions_keep_explicit_direction_and_opaque_identifiers(
+    sub_type, is_add, emoji_id
+):
+    raw = payload(
+        "group_msg_emoji_like",
+        sub_type=sub_type,
+        message_id=-123,
+        user_id=0,
+        operator_id=0,
+        likes=[{"emoji_id": emoji_id, "count": 1}],
+    )
+    notice = normalize_notice(raw)
+    assert notice.details == {
+        "message_id": -123,
+        "is_add": is_add,
+        "likes": [{"emoji_id": emoji_id, "count": 1}],
+    }
+    assert notice.user_id == "0"
+    assert "上报数量 1" in notice.description
+    assert "用户 0" not in notice.description
+    assert "is_add" not in raw
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [
+        {},
+        {"sub_type": "unknown"},
+        {"sub_type": []},
+        {"sub_type": "add", "is_add": None},
+        {"sub_type": "add", "is_add": False},
+        {"sub_type": "remove", "is_add": True},
+    ],
+)
+def test_reactions_reject_missing_invalid_or_conflicting_direction(direction):
+    with pytest.raises(ValueError):
+        normalize_notice(
+            payload(
+                "group_msg_emoji_like",
+                message_id=-123,
+                likes=[{"emoji_id": "76", "count": 1}],
+                **direction,
+            )
+        )
+
+
+@pytest.mark.parametrize("emoji_id", [None, True, -1, {}, "", "x" * 201, "76\n指令"])
+def test_reactions_reject_invalid_or_unbounded_identifiers(emoji_id):
+    with pytest.raises(ValueError):
+        normalize_notice(
+            payload(
+                "group_msg_emoji_like",
+                sub_type="add",
+                message_id=-123,
+                likes=[{"emoji_id": emoji_id, "count": 1}],
+            )
+        )
+
+
+def test_snowluma_bot_status_offline_preserves_source_without_inventing_reason():
+    raw = payload("bot_status", sub_type="offline", user_id=99)
+    raw.pop("group_id")
+    notice = normalize_notice(raw)
+    assert notice.kind == "bot_offline"
+    assert notice.user_id == notice.self_id == "99"
+    assert notice.details == {"source_notice_type": "bot_status", "sub_type": "offline"}
+    assert "上报未提供掉线原因" in notice.description
+    assert "不代表当前仍然离线" in notice.description
+    for sub_type in ("online", "unknown", None):
+        assert normalize_notice({**raw, "sub_type": sub_type}) is None
+    with pytest.raises(ValueError, match="user_id must match self_id"):
+        normalize_notice({**raw, "user_id": 7})
 
 
 def test_napcat_whole_group_ban_uses_negative_one_duration():

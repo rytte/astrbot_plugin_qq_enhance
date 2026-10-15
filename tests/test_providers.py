@@ -8,12 +8,34 @@ import pytest
 from astrbot_plugin_qq_enhance.capabilities import operation_availability
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, OPERATIONS
 from astrbot_plugin_qq_enhance.errors import QQToolError
-from astrbot_plugin_qq_enhance.providers import NAPCAT
+from astrbot_plugin_qq_enhance.providers import NAPCAT, resolve_provider
+from astrbot_plugin_qq_enhance.providers.base import VersionInfo
 from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 def test_napcat_contract_covers_every_declared_operation() -> None:
     assert all(NAPCAT.capability(spec).supported for spec in OPERATIONS)
+
+
+@pytest.mark.parametrize("version", ["4.18.19", "v4.99.0", "5.0.0", "6.0.0"])
+def test_napcat_accepts_versions_at_or_above_minimum(version):
+    binding = resolve_provider(VersionInfo("NapCat.OneBot", version))
+    assert binding.provider is NAPCAT
+
+
+@pytest.mark.parametrize(
+    "version,code",
+    [
+        ("4.18.18", "unsupported_version"),
+        ("4.17.99", "unsupported_version"),
+        ("3.99.99", "unsupported_version"),
+        ("unknown", "response_invalid"),
+    ],
+)
+def test_napcat_rejects_old_or_invalid_versions(version, code):
+    with pytest.raises(QQToolError) as caught:
+        resolve_provider(VersionInfo("NapCat.OneBot", version))
+    assert caught.value.code == code
 
 
 @pytest.mark.parametrize(

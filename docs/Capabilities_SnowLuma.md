@@ -2,7 +2,7 @@
 
 核对日期：2026-10-15。
 
-本文件复制 [Capabilities.md](./Capabilities.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，保留原有五列、行序和插件支持标记，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。原五列保留核对时的仓库快照；当前插件适配范围见下文“当前适配状态”和 README，表内原插件支持标记不代表 SnowLuma 的支持承诺。
+本文件复制 [Capabilities_NapCat.md](./Capabilities_NapCat.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，保留原有五列、行序和插件支持标记，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。原五列保留核对时的仓库快照；当前插件适配范围见下文“当前适配状态”和 README，表内原插件支持标记不代表 SnowLuma 的支持承诺。
 
 核对基线为 [SnowLuma v1.14.22 正式版](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，固定提交 [87527cb7641a5a42f8f0efb73cb066102e004dee](https://github.com/SnowLuma/SnowLuma/commit/87527cb7641a5a42f8f0efb73cb066102e004dee)。插件源码基线为 `e6ec4653a4ef3ff952e6ff666d0cdc853876a803`。
 
@@ -213,7 +213,7 @@ SnowLuma 列的状态口径：
 
 ## 当前适配状态
 
-已新增独立的 [SnowLuma provider](./providers/snowluma.py) 和 [v1.14.22 动作契约](./contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，仅接受 `1.14.22` / `1.14.22-node` 且协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](./README.md#snowluma-支持范围) 为准。
+已新增独立的 [SnowLuma provider](../providers/snowluma.py) 和 [v1.14.22 动作契约](../contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，接受 `>=1.14.22` 的版本，版本标识可为 `x.y.z` / `x.y.z-node`，且要求协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](../README.md#snowluma-支持范围) 为准。
 
 1. **动作注册与实际能力分别判断。** 74 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。
 2. **群文件移动已转换目录参数。** 公开的 `current_parent_directory` / `target_parent_directory` 转为 `parent_directory` / `target_directory`。
@@ -235,6 +235,35 @@ SnowLuma 列的状态口径：
 
 适配包含离线回归测试；当前在线验证记录见上文骰子与猜拳条目。
 
+## 平台事件支持情况
+
+以下按同一固定版本 v1.14.22 的事件注册、协议解析及 OneBot 转换代码核对。插件的 18 类平台事件中，15 类已接入，3 类因上游未上报而无法接入；“已接入”经过离线回归验证，不代表已在 QQ 逐项实测。事件是否写入历史仍由 `notice_events` 的各项模式决定。
+
+| 事件标识 | SnowLuma 支持情况 | 简要说明 |
+| --- | --- | --- |
+| `friend_add` | 已接入 | 使用好友添加成功上报。 |
+| `message_recall` | 已接入 | 接收 `friend_recall` / `group_recall`，允许负数消息 ID；仍须命中插件保存的原消息映射。 |
+| `group_increase` | 已接入 | 支持审批入群和邀请入群。 |
+| `group_decrease` | 已接入 | 支持退出、被踢、机器人被踢及群解散。 |
+| `group_admin` | 已接入 | 支持设置和取消管理员。 |
+| `group_ban` | 已接入 | 支持成员及全员禁言变化，按上报子类型和时长记录。 |
+| `group_card` | 已接入 | 上游在成员发言时比较非空的新旧名片；冷缓存、空名片变化可能不产生通知。 |
+| `notify/group_name` | 已接入 | 使用上报的新群名。 |
+| `notify/title` | 已接入 | 使用上报的成员及新头衔。 |
+| `essence` | 已接入 | 支持添加和移除精华，保留消息 ID、作者及操作者。 |
+| `group_msg_emoji_like` | 已补齐 | 将 `sub_type=add/remove` 规范化为增减；保留数字和字母数字表情标识，数量只按原值展示。 |
+| `notify/profile_like` | 已接入 | 按 `operator_id` 定位私聊，记录上报的点赞次数。 |
+| `notify/gray_tip` | 无法接入 | 上游仅解析部分已知灰条，不上报未知灰条原文，插件没有可用事件数据。 |
+| `notify/input_status` | 已补齐 | 接受不带 `group_id` 的私聊上报；保留原始状态码及文本，不推断状态含义。 |
+| `group_upload` | 已接入 | 记录上传者及文件元数据，不读取文件内容。 |
+| `online_file_receive` | 无法接入 | 上游没有在线文件取消事件；普通文件消息不能证明传输已取消。 |
+| `online_file_send` | 无法接入 | 上游没有在线文件接收或拒绝事件；发送成功不能证明对方已接收。 |
+| `bot_offline` | 已补齐 | 接收带原因的 `bot_offline`，同时将 `bot_status/offline` 作为无原因的离线事实，投递到原配置的接收者；不处理上线通知。 |
+
+字段适配直接使用两种协议端当前的上报格式，不新增配置。缺少方向或方向冲突的表情回应、错误的私聊群号、机器人账号不匹配的离线通知仍会拒绝，不从表情数量、心跳或普通消息推测事件。
+
+核对依据：[OneBot 事件注册表](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/event-converter/index.ts#L79)、[通知字段转换](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/event-converter/to-notice.ts#L27)、[离线状态通知](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/instance.ts#L688)、[群名片变化触发条件](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/protocol/src/packet-pipeline.ts#L362)、[群灰条解析范围](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/protocol/src/msg-push/decoders/event-0x2dc.ts#L81)。
+
 ## 核对来源
 
 - [统一动作注册表及分组绑定](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/index.ts)：普通动作、别名、流式动作及 raw action 的注册依据。
@@ -242,4 +271,4 @@ SnowLuma 列的状态口径：
 - [API 动作分派](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/api-handler.ts#L236)：未注册动作返回 UNKNOWN_ACTION；快速操作由 raw handler 执行。
 - [运行上下文绑定](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/instance-context.ts)：动作到真实查询、发送、媒体等模块的绑定。
 - [媒体查询与语音转写](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/modules/media-actions.ts)：缓存媒体解析、返回字段和语音转写依赖。
-- [原始能力表](./Capabilities.md)、[插件动作与参数声明](./catalog.py)、[插件运行时](./runtime.py)：保留原表并核对当前插件的参数组装、结果过滤及媒体引用行为。
+- [原始能力表](./Capabilities_NapCat.md)、[插件动作与参数声明](../catalog.py)、[插件运行时](../runtime.py)：保留原表并核对当前插件的参数组装、结果过滤及媒体引用行为。
