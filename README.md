@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + NapCat OneBot v11**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 [功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development)
 
@@ -20,7 +20,7 @@
 | 好友与账号 | 查询资料、点赞、修改备注、管理好友申请，以及由 AstrBot 管理员维护机器人资料 |
 | 群聊管理 | 查询成员、历史消息和公告，管理禁言、群名片、精华消息、群申请与群文件 |
 
-完整的 NapCat 动作对应关系见 [能力矩阵](./Capabilities.md)。
+完整的 NapCat 动作对应关系见 [能力矩阵](./Capabilities.md)，SnowLuma 的逐项源码核对见 [SnowLuma 能力矩阵](./Capabilities_SnowLuma.md)。
 
 ### 🧩 插件增强能力
 
@@ -81,7 +81,7 @@
 | --- | --- |
 | AstrBot | `>=4.27,<5` |
 | 平台适配器 | `aiocqhttp` |
-| QQ 协议端 | NapCat `>=4.18.19,<5.0.0`，使用 OneBot v11 |
+| QQ 协议端 | NapCat `>=4.18.19,<5.0.0` 或 SnowLuma `1.14.22`，使用 OneBot v11 |
 | 模型 | 在 AstrBot 中配置支持工具调用的模型，并为目标会话启用模型对话 |
 
 * 插件执行工具时会校验协议端实现与版本
@@ -96,6 +96,24 @@
   * AstrBot 4.27.4
   * NapCat 4.18.19
   * NTQQ 9.9.28-46928
+
+### SnowLuma 支持范围
+
+适配基线为 [SnowLuma v1.14.22](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，接受其 `1.14.22-node` 版本标识，且要求 `protocol_version=v11`。其他版本会明确拒绝，不自动视为兼容；无需添加协议端选择配置，由 `get_version_info` 自动识别。
+
+| 能力 | SnowLuma v1.14.22 的行为 |
+| --- | --- |
+| 最近联系人、扩展群资料 | `qq_recent_contacts.list` 与 `qq_group_info.detail_ex` 禁用：前者是空数组占位，后者只有普通群资料；普通群资料仍可查询 |
+| 历史消息 | 使用 `message_id` 作为有符号 32 位消息锚点，允许负数，省略或 `0` 查询最新记录；拒绝 `message_seq`。NapCat 继续使用 `message_seq`，两者不能改名或混用 |
+| 群文件移动 | 公开参数保持 `current_parent_directory` / `target_parent_directory`，适配器转换为 SnowLuma 的 `parent_directory` / `target_directory` |
+| OCR | 只接受 `url` 或 SnowLuma 图片缓存 `file_id`；拒绝 `path`、`base64`、`media_ref`。URL 经插件的 DNS、重定向及体积检查后，将最终 URL 交给 QQ 服务端识别；过期的图片地址应使用可刷新的缓存 `file_id` |
+| 语音转码 | `get_record(out_format=...)` 和 `convert_record` 的 Base64 输出保存为插件临时文件，返回 `media_ref`、实际文件名和大小；不将源语音 URL 当作转码文件，临时文件按配置过期清理 |
+| 私聊文件下载 | 可传原始文件消息中的 `file_hash`，并保留 `user_id`；NapCat 不接受 `file_hash`。不传 `file_id` 时仍查询当前私聊附件已有地址 |
+| 账号资料、好友审批、头衔、公告 | 明确拒绝不生效的 `company/email/college`、审批 `remark`、头衔 `duration`、公告独立 `title`；好友备注可在通过申请后单独修改，公告标题可写入 `content` |
+| 强制刷新、退群与群头像 | 在线设备、好友列表及陌生人资料不支持 `no_cache=true`；退群不支持 `is_dismiss=true`，群头像不支持 `cache=true` |
+| 查询数据限制 | 在线设备依赖本次会话的设备快照，无快照时失败；禁言列表可能延迟约 60 秒；部分成员资料字段是上游固定值。工具结果和诊断会提示这些限制 |
+
+消息发送、合并转发、语音识别及其他已登记动作共用现有工具流程。以上适配经过固定版本源码核对和离线回归测试，尚未完成登录 QQ 的在线联调；实际效果仍受 QQ 权限、登录状态和服务端限制影响。
 
 ### 2. 安装插件
 
@@ -129,7 +147,7 @@ QQ Enhance initialized
 
 ### 4. 查看运行状态
 
-在 AstrBot WebUI 的插件详情中打开 **“QQ 能力增强状态与诊断”**，可查看 NapCat 连接、登录账号、版本兼容性、有效配置摘要、启用能力、近期审计及待确认操作。能力列表区分配置开关与上游契约支持情况，并按平台实例列出支持状态，支持搜索和筛选；“上游支持”表示静态契约支持，实际调用仍可能受 QQ 权限、登录状态或服务端限制影响。
+在 AstrBot WebUI 的插件详情中打开 **“QQ 能力增强状态与诊断”**，可查看 OneBot 平台连接、登录账号、版本兼容性、有效配置摘要、启用能力、近期审计及待确认操作。能力列表区分配置开关与上游契约支持情况，并按平台实例列出支持状态，支持搜索和筛选；“上游支持”表示静态契约支持，实际调用仍可能受 QQ 权限、登录状态或服务端限制影响。
 
 <a id="configuration"></a>
 
@@ -145,7 +163,7 @@ QQ Enhance initialized
 
 ### 工具暴露模式
 
-插件将 NapCat 操作封装为模型工具，按平台与启用配置确定可用工具，再根据工具暴露模式决定本次请求提供哪些工具。精简和平衡模式按会话、权限与请求内容筛选工具，减少工具描述占用的上下文；完整模式在群聊中提供配置启用的全量工具，私聊中仍按会话与权限筛选。
+插件将 QQ 操作封装为模型工具，按平台与启用配置确定可用工具，再根据工具暴露模式决定本次请求提供哪些工具。精简和平衡模式按会话、权限与请求内容筛选工具，减少工具描述占用的上下文；完整模式在群聊中提供配置启用的全量工具，私聊中仍按会话与权限筛选。
 
 #### 常用配置
 
@@ -197,7 +215,7 @@ QQ Enhance initialized
 
 组件语义化与组件防伪覆盖组件：
 
-| 组件／内容 | OneBot/NapCat 上报类型或来源 | 防伪组件枚举值 | 语义化内容 |
+| 组件／内容 | OneBot 上报类型或来源 | 防伪组件枚举值 | 语义化内容 |
 | --- | --- | --- | --- |
 | QQ 标准表情 | `face` | `face` | 表情名称、连击次数；未知名称标注 ID |
 | QQ 商城表情 | `mface`，或带商城表情字段的 `image` | `market_face` | 表情名称或摘要 |
@@ -228,7 +246,7 @@ QQ Enhance initialized
 
 - **视频、合并转发和闪传文件**：只标注类型。
 - **普通文字、`@` 和引用回复**：沿用 AstrBot 的处理，本插件没有为它们额外添加组件语义描述。
-- **表情与卡片**：标准表情优先使用 NapCat 上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。卡片仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
+- **表情与卡片**：标准表情优先使用协议端上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。卡片仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
 - **群聊适配**：开启 AstrBot 的群聊上下文注入后，组件语义会随群消息进入缓存。先发送表情、骰子、卡片等组件，再唤醒机器人时，模型也能收到此前组件的语义；纯组件和文字混合消息均支持。
 
 #### 组件防伪
@@ -296,13 +314,13 @@ User-entered verification tags are replaced with
 
 ### 语音识别
 
-语音优先使用 AstrBot 已配置的 ASR 模型转写为文本；如果消息仍是 `Record`，可由 NapCat 补充识别。
+语音优先使用 AstrBot 已配置的 ASR 模型转写为文本；如果消息仍是 `Record`，可由 QQ 协议端补充识别。
 
 #### 常用配置
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
-| `voice_recognition.enhance_voice_messages` | `true` | AstrBot 没有语音转写时，尝试使用 NapCat 识别，支持当前消息及引用中的单条语音 |
+| `voice_recognition.enhance_voice_messages` | `true` | AstrBot 没有语音转写时，尝试使用 QQ 协议端识别，支持当前消息及引用中的单条语音 |
 
 关闭组件语义化时，识别成功后保留普通转写文本如 `我们下午三点见`，与 Astrbot 的 ASR 模型行为一致。
 
@@ -608,11 +626,11 @@ assistant：……
 
 本地文件仅允许来自 AstrBot 临时目录、插件专属数据目录，以及 `files.allowed_roots` 中已经存在的绝对目录。路径会在解析符号链接后再次检查，目录、设备文件和越界路径会被拒绝。
 
-本地文件与 HTTP(S) 下载初始上限为 100 MiB，Base64 解码和单次会话图片重载的初始上限为 10 MiB。插件创建的临时媒体初始保留 6 小时，NapCat 或 AstrBot 创建的文件不由本插件删除。模型获得的是媒体引用 `media_ref` 或会话图片 `image_ref`，不会获得 NapCat 返回的绝对媒体路径。
+本地文件与 HTTP(S) 下载初始上限为 100 MiB，Base64 解码和单次会话图片重载的初始上限为 10 MiB。插件创建的临时媒体初始保留 6 小时，协议端或 AstrBot 创建的文件不由本插件删除。模型获得的是媒体引用 `media_ref` 或会话图片 `image_ref`，不会获得协议端返回的绝对媒体路径。
 
 插件实际请求的 URL 会校验 HTTP(S) 协议、凭据、域名策略、DNS 结果和重定向。`network.allow_private_network=false` 时拒绝回环、私网、链路本地及保留地址。仅嵌入卡片而不由插件请求的 URL 不解析 DNS，但仍校验协议、凭据、域名、本地主机名及 IP 字面量。
 
-`qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 参数需要使用 OneBot/NapCat 提供的原始媒体标识，不能填写 AstrBot 本地临时路径。
+`qq_media.get_record` 和 `qq_media.convert_record` 的 `file` 参数需要使用 OneBot 提供的原始媒体标识，不能填写 AstrBot 本地临时路径。
 
 插件保存规范化的 OneBot `request`、`notice` 事件，申请事件会去重。申请通知展示申请编号，不暴露底层 request flag；审批时由插件在内部定位记录，随后执行权限校验。
 
@@ -683,7 +701,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 **为什么没有语音转写、戳一戳或红包回复？**
 
-语音回退仅在 AstrBot 尚未产生转写时调用 NapCat，识别失败会保留原语音。戳一戳只响应其他用户对机器人自身的互动。红包可从 JSON/XML 卡片识别；NapCat 的 `walletElement` 识别需要网络适配器开启 `debug`，使事件包含 `raw`。同时检查对应的 `interaction_response` 开关。
+语音回退仅在 AstrBot 尚未产生转写时调用 QQ 协议端，识别失败会保留原语音。戳一戳只响应其他用户对机器人自身的互动。红包可从 JSON/XML 卡片识别；NapCat 的 `walletElement` 识别需要网络适配器开启 `debug`，使事件包含 `raw`。同时检查对应的 `interaction_response` 开关。
 
 **撤回后为什么没有通知，或者机器人没有回复？**
 
@@ -691,7 +709,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 **为什么音乐卡片没有发出来？**
 
-音乐卡片需要单独发送。按歌名搜索只接受歌名及可选歌手完全匹配的结果；按平台歌曲 ID 发送时，ID 必须来自用户当前消息，并依赖 NapCat 的 `musicSignUrl` 服务。NapCat 接受发送请求后，仍需以 QQ 接收端的实际展示为准。
+音乐卡片需要单独发送。按歌名搜索只接受歌名及可选歌手完全匹配的结果；按平台歌曲 ID 发送时，ID 必须来自用户当前消息，并依赖 协议端的 `musicSignUrl` 服务。QQ 接口接受发送请求后，仍需以 QQ 接收端的实际展示为准。
 
 **为什么本地文件或下载链接被拒绝？**
 
@@ -798,7 +816,9 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 | `providers/` | OneBot 实现识别、版本范围、协议参数转换及上游媒体结果描述 |
 | `runtime.py` | 参数校验、授权、文件安全、二次确认、调用、结果脱敏与审计 |
 
-当前只注册 NapCat provider，支持范围仍为 `>=4.18.19,<5.0.0`，SnowLuma 尚未开放。首次识别前按配置生成候选工具；识别成功后按当前平台的能力筛选，实际执行和确认均要求已验证的平台及受支持的能力。确认执行直接复用已保存的协议参数，不重复转换。历史查询保留 NapCat 的 `message_seq` 语义。
+已注册 NapCat 和 SnowLuma provider，分别读取独立动作契约，共用授权、文件与网络校验、审计及消息构造。工具筛选前识别当前平台，再结合配置和上游能力生成候选；不同平台实例可分别连接两种实现。诊断 API 通过 `contracts` 列出契约，通过每个平台能力的 `reason` 和 `limitations` 说明限制。
+
+待确认记录绑定 `provider_id`；确认前重新检查实现与版本，并直接复用保存的协议参数。实现变化、版本不受支持或记录缺少实现标识时拒绝执行，需重新发起。升级前生成的待确认记录同样需要重新发起。
 
 准备可导入 AstrBot 的开发环境，先安装 requirements.txt 中的插件依赖，以及 Ruff、pytest、pytest-asyncio 后，在插件根目录运行：
 

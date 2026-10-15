@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from ..catalog import OperationSpec
 from ..errors import QQToolError
@@ -11,6 +11,7 @@ from ..errors import QQToolError
 class VersionInfo:
     implementation: str
     version: str
+    protocol_version: str = ""
 
     @classmethod
     def from_response(cls, data: Any) -> VersionInfo:
@@ -25,6 +26,7 @@ class VersionInfo:
                 or ""
             ),
             version=str(data.get("app_version") or data.get("version") or ""),
+            protocol_version=str(data.get("protocol_version") or ""),
         )
 
 
@@ -32,6 +34,7 @@ class VersionInfo:
 class Capability:
     supported: bool
     reason: str = ""
+    limitations: tuple[str, ...] = ()
 
     def require(self) -> None:
         if not self.supported:
@@ -45,6 +48,12 @@ class LocalMedia:
     path: str
     path_fields: tuple[str, ...]
     include_metadata: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedMedia:
+    data: str
+    format: str
 
 
 class OneBotProvider(Protocol):
@@ -61,16 +70,28 @@ class OneBotProvider(Protocol):
 
     def capability(self, spec: OperationSpec) -> Capability: ...
 
+    def validate_parameters(
+        self, spec: OperationSpec, params: dict[str, Any]
+    ) -> None: ...
+
+    def media_input(
+        self, spec: OperationSpec
+    ) -> Literal["local_file", "remote_image"]: ...
+
     def prepare_action(
         self,
         spec: OperationSpec,
         params: dict[str, Any],
         *,
         page_size: int,
-        resolved_file: str | None = None,
+        resolved_media: str | None = None,
     ) -> tuple[str | None, dict[str, Any]]: ...
 
     def local_media(self, spec: OperationSpec, data: Any) -> LocalMedia | None: ...
+
+    def encoded_media(
+        self, spec: OperationSpec, data: Any, params: dict[str, Any]
+    ) -> EncodedMedia | None: ...
 
 
 @dataclass(frozen=True, slots=True)

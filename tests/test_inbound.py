@@ -683,7 +683,7 @@ async def test_plugin_retries_when_napcat_stt_result_is_not_ready() -> None:
     assert sleep.await_args_list == [call(1), call(1)]
     assert log_info.call_count == 3
     assert log_info.call_args_list[-1] == call(
-        "NapCat fallback speech-to-text succeeded for the %s QQ voice message: %s",
+        "OneBot fallback speech-to-text succeeded for the %s QQ voice message: %s",
         "inbound",
         "稍后成功",
     )

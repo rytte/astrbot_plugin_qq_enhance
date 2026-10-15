@@ -16,6 +16,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
 )
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.providers import NAPCAT
 from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
 
 
@@ -50,6 +51,7 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
     plugin.config = validate_config({"toolsets": {"exposure_mode": exposure_mode}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
 
     await plugin.enrich_inbound_qq_components(event)

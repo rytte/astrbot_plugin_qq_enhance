@@ -2,7 +2,7 @@
 
 核对日期：2026-10-15。
 
-本文件复制 [Capabilities.md](./Capabilities.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，保留原有五列、行序和插件支持标记，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。原五列来自当前仓库快照，不代表插件已经适配 SnowLuma。
+本文件复制 [Capabilities.md](./Capabilities.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，保留原有五列、行序和插件支持标记，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。原五列保留核对时的仓库快照；当前插件适配范围见下文“当前适配状态”和 README，表内原插件支持标记不代表 SnowLuma 的支持承诺。
 
 核对基线为 [SnowLuma v1.14.22 正式版](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，固定提交 [87527cb7641a5a42f8f0efb73cb066102e004dee](https://github.com/SnowLuma/SnowLuma/commit/87527cb7641a5a42f8f0efb73cb066102e004dee)。插件源码基线为 `e6ec4653a4ef3ff952e6ff666d0cdc853876a803`。
 
@@ -211,16 +211,20 @@ SnowLuma 列的状态口径：
 | 其他接口 | `.ocr_image` | 图片 OCR 识别 (内部) | ❌️ | — | [⚠️ 别名／输入受限](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L2396) | 已注册为 `ocr_image` 的别名；同样只接受图片 URL 或缓存图片 ID，不接受插件当前生成的本地路径。 |
 
 
-## 对当前插件适配的直接影响
+## 当前适配状态
 
-1. **实现与版本校验仍然阻断接入。** [runtime.py](./runtime.py) 的 `verify_platform()` 和 [main.py](./main.py) 的诊断判断仍限定 NapCat；本次仅新增文档，没有改变运行时行为。
-2. **74 个契约名称覆盖不等于 74 个实际可用功能。** [插件动作契约](./contracts/napcat_v4_18_19.json) 的 74 个名称均已注册，但 `get_recent_contact` 固定返回空数组，且下述若干接口存在参数或输入输出差异。
-3. **群文件移动参数不一致。** [插件参数声明](./catalog.py) 使用 `current_parent_directory` / `target_parent_directory`，SnowLuma 要求 `parent_directory` / `target_directory`；现有调用会缺少必填字段。
-4. **历史消息锚点不一致。** 插件在 `QQRuntime.prepare_action()` 中发送 `message_seq`，SnowLuma 的群/好友历史处理器读取 `message_id`。该版本的 [参数解析器](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/action-kit.ts#L497) 只提取声明字段，因此非零 message_seq 不会成为查询锚点。
-5. **OCR 输入不一致。** 插件先把 URL/base64 等输入解析或下载为本地路径，再交给 `ocr_image`；SnowLuma 的 OCR 只接受 URL 或可解析为 URL 的缓存图片 ID，明确拒绝本地路径。
-6. **语音转码结果需要单独处理。** SnowLuma 在 `get_record(out_format=...)` 中附加转码后的 base64，并保留原资源信息；插件当前 [媒体结果处理](./runtime.py) 依赖可访问的本地文件路径生成 `media_ref`，且通用结果脱敏会删除 base64，不能据此得到现有约定的转码文件引用。
-7. **扩展参数不能按“调用成功”判断生效。** SnowLuma 只解析已声明字段；好友审批 `remark`、QQ 资料 `company/email/college`、退群 `is_dismiss`、头衔 `duration` 等在当前处理器中未被使用，已在表中逐项记录。
-8. **部分查询是快照或较窄的字段集合。** 在线设备不支持强制刷新；禁言列表由成员缓存派生；扩展群资料复用基础群信息。群系统消息返回数组，插件现有 `filter_group_data()` 可处理这一形状，不能仅因形状不同就认定该入口不可用。
+已新增独立的 [SnowLuma provider](./providers/snowluma.py) 和 [v1.14.22 动作契约](./contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，仅接受 `1.14.22` / `1.14.22-node` 且协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](./README.md#snowluma-支持范围) 为准。
+
+1. **动作注册与实际能力分别判断。** 74 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。
+2. **群文件移动已转换目录参数。** 公开的 `current_parent_directory` / `target_parent_directory` 转为 `parent_directory` / `target_directory`。
+3. **历史锚点按实现区分。** SnowLuma 使用允许负数的 `message_id`；NapCat 使用 `message_seq`。错用或混用明确报错，不做语义不等价的改名。
+4. **OCR 按输入语义接入。** SnowLuma 只开放 URL 和缓存图片 `file_id`，URL 通过现有网络校验后转发最终地址；本地路径、Base64 和 `media_ref` 明确拒绝。结构化 `texts` 结果支持分页。
+5. **转码结果单独保存。** SnowLuma 返回的转码 Base64 经大小和编码检查后生成可复用的 `media_ref`，返回生成文件的实际大小，不保留错误指向源语音的文件名、大小或下载地址。
+6. **不生效的扩展参数明确拒绝。** 包括好友审批 `remark`、资料 `company/email/college`、头衔 `duration`、公告 `title`、强制刷新 `no_cache=true`、解散群 `is_dismiss=true` 和群头像 `cache=true`。
+7. **查询限制随能力提供。** 设备快照、成员资料固定值、禁言缓存延迟会出现在工具结果和诊断中；群申请数组仍按已授权群过滤。私聊文件下载保留 `user_id`，支持显式 `file_hash`。
+8. **确认记录绑定协议实现。** 确认前重新识别并检查版本，拒绝实现变化或缺少实现标识的记录，需重新发起。
+
+适配已增加离线回归测试，尚未登录 QQ 执行在线联调。
 
 ## 核对来源
 

@@ -57,7 +57,7 @@ from .request_notification import (
     PlatformNotificationEvent,
     RequestNotificationEvent,
 )
-from .providers import NAPCAT, resolve_provider
+from .providers import provider_contracts, resolve_provider
 from .providers.base import VersionInfo
 from .runtime import QQRuntime, validate_config
 from .storage import Storage
@@ -492,6 +492,7 @@ class QQEnhancePlugin(Star):
                 "online": None,
                 "good": None,
                 "implementation": "",
+                "provider_id": "",
                 "version": "",
                 "compatible": None,
                 "account_id": "",
@@ -545,6 +546,7 @@ class QQEnhancePlugin(Star):
                     row["errors"].append(f"get_version_info: {exc.message}")
                 else:
                     row["compatible"] = True
+                    row["provider_id"] = binding.provider.id
                     platform_providers[platform_id] = binding.provider
             status_info = normalized_results.get("get_status")
             if isinstance(status_info, dict):
@@ -579,11 +581,19 @@ class QQEnhancePlugin(Star):
                     continue
                 provider = platform_providers.get(platform["platform_id"])
                 state = operation_availability(self.config, spec, provider)
+                capability = provider.capability(spec) if provider else None
                 supported = state.supported
                 if spec.category != "web" and platform["compatible"] is False:
                     supported = False
                 support_by_platform.append(
-                    {"platform_id": platform["platform_id"], "supported": supported}
+                    {
+                        "platform_id": platform["platform_id"],
+                        "supported": supported,
+                        "reason": capability.reason if capability else "",
+                        "limitations": list(capability.limitations)
+                        if capability
+                        else [],
+                    }
                 )
             support_values = [item["supported"] for item in support_by_platform]
             supported = None
@@ -671,10 +681,7 @@ class QQEnhancePlugin(Star):
         return json_response(
             {
                 "generated_at": now,
-                "contract": {
-                    "version": NAPCAT.contract_version,
-                    "supported_versions": NAPCAT.supported_versions,
-                },
+                "contracts": provider_contracts(),
                 "summary": {
                     "platforms": len(platforms),
                     "reachable_platforms": sum(
@@ -765,7 +772,7 @@ class QQEnhancePlugin(Star):
             params: Validated operation parameters.
             target_kind: Resolved group or private target kind.
             target_id: Resolved numeric target ID.
-            data: Successful NapCat response data.
+            data: Successful OneBot response data.
             source_override: Original source metadata retained through confirmation.
 
         """
@@ -1453,7 +1460,7 @@ class QQEnhancePlugin(Star):
     async def _enhance_inbound_qq_voice(
         self, event: AstrMessageEvent, raw: object
     ) -> None:
-        """Semanticize voice text and optionally use NapCat as an STT fallback.
+        """Semanticize voice text and optionally use OneBot as an STT fallback.
 
         Args:
             event: Current QQ message event.
@@ -1461,8 +1468,8 @@ class QQEnhancePlugin(Star):
         """
 
         semanticize = self.config["inbound"]["semanticize_components"]
-        use_napcat_fallback = self.config["voice_recognition"]["enhance_voice_messages"]
-        if not semanticize and not use_napcat_fallback:
+        use_onebot_fallback = self.config["voice_recognition"]["enhance_voice_messages"]
+        if not semanticize and not use_onebot_fallback:
             return
         if not isinstance(raw, dict) or raw.get("post_type") not in {None, "message"}:
             return
@@ -1524,7 +1531,7 @@ class QQEnhancePlugin(Star):
             return
         if not isinstance(component, Record):
             return
-        if not use_napcat_fallback:
+        if not use_onebot_fallback:
             return
         if (
             not isinstance(message_id, (str, int))
@@ -1533,7 +1540,7 @@ class QQEnhancePlugin(Star):
             or int(message_id) == 0
         ):
             logger.warning(
-                "NapCat fallback speech-to-text skipped because the QQ %s message "
+                "OneBot fallback speech-to-text skipped because the QQ %s message "
                 "ID is invalid",
                 "referenced" if is_referenced_voice else "inbound",
             )
@@ -1556,7 +1563,7 @@ class QQEnhancePlugin(Star):
                     )
                     if result_not_ready and attempt < 2:
                         logger.info(
-                            "NapCat speech-to-text result is not ready for the %s QQ "
+                            "OneBot speech-to-text result is not ready for the %s QQ "
                             "voice message; retrying in 1 second (%d/2)",
                             "referenced" if is_referenced_voice else "inbound",
                             attempt + 1,
@@ -1566,7 +1573,7 @@ class QQEnhancePlugin(Star):
                     raise
         except QQToolError as exc:
             logger.warning(
-                "NapCat fallback speech-to-text failed; keeping the original "
+                "OneBot fallback speech-to-text failed; keeping the original "
                 "%svoice component: "
                 "code=%s, message=%s",
                 "referenced " if is_referenced_voice else "",
@@ -1576,7 +1583,7 @@ class QQEnhancePlugin(Star):
             return
         except Exception:
             logger.exception(
-                "NapCat fallback speech-to-text failed unexpectedly; keeping the "
+                "OneBot fallback speech-to-text failed unexpectedly; keeping the "
                 "original %svoice component",
                 "referenced " if is_referenced_voice else "",
             )
@@ -1584,7 +1591,7 @@ class QQEnhancePlugin(Star):
         text = result.get("text") if isinstance(result, dict) else None
         if not isinstance(text, str) or not text.strip():
             logger.warning(
-                "NapCat fallback speech-to-text returned an invalid or empty result; "
+                "OneBot fallback speech-to-text returned an invalid or empty result; "
                 "keeping the original %svoice component",
                 "referenced " if is_referenced_voice else "",
             )
@@ -1597,7 +1604,7 @@ class QQEnhancePlugin(Star):
         )
         target_chain[0] = Plain(formatted)
         logger.info(
-            "NapCat fallback speech-to-text succeeded for the %s QQ voice message: %s",
+            "OneBot fallback speech-to-text succeeded for the %s QQ voice message: %s",
             "referenced" if is_referenced_voice else "inbound",
             transcript,
         )
@@ -1906,7 +1913,15 @@ class QQEnhancePlugin(Star):
             return
 
         mode = self.config["toolsets"]["exposure_mode"]
-        provider = self.runtime.cached_provider(event.get_platform_id())
+        try:
+            provider = await self.runtime.verify_platform(event)
+        except QQToolError as exc:
+            logger.debug(
+                "QQ tools unavailable for platform %s: %s",
+                event.get_platform_id(),
+                exc.code,
+            )
+            provider = None
         is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
         raw = getattr(event.message_obj, "raw_message", {})
@@ -1916,6 +1931,8 @@ class QQEnhancePlugin(Star):
         for tool_name, operations in TOOL_OPERATIONS.items():
             for operation in operations:
                 operation_id = f"{tool_name}.{operation}"
+                if provider is None and OPERATION_MAP[operation_id].category != "web":
+                    continue
                 if not operation_availability(
                     self.config, OPERATION_MAP[operation_id], provider
                 ).enabled:
@@ -2134,6 +2151,18 @@ class QQEnhancePlugin(Star):
         visible &= self.runtime.enabled_tools(provider)
         for tool_name in plugin_tools - visible:
             request.func_tool.remove_tool(tool_name)
+        if provider and any(
+            request.func_tool.get_tool(tool_name)
+            for tool_name in visible - WEB_TOOL_NAMES
+        ):
+            implementation_prompt = (
+                f"QQ 工具当前连接的协议实现：{provider.display_name}。"
+                f"参数说明涉及不同实现时，仅使用 {provider.display_name} 对应的规则。"
+            )
+            if implementation_prompt not in (request.system_prompt or ""):
+                request.system_prompt = (
+                    f"{request.system_prompt or ''}\n{implementation_prompt}\n"
+                )
         dialogue_prompt = self.config["toolsets"]["dialogue_prompt"]
         if (
             self.config["toolsets"]["inject_dialogue_prompt"]

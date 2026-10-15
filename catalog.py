@@ -48,7 +48,7 @@ OPERATION_DISPLAY_NAMES = {
     "find_in_page.find": "查找网页正文",
     "qq_status.login": "获取登录账号信息",
     "qq_status.runtime": "获取运行状态",
-    "qq_status.version": "获取 NapCat 版本信息",
+    "qq_status.version": "获取 OneBot 实现与版本信息",
     "qq_status.clients": "获取在线客户端列表",
     "qq_status.capabilities": "查看插件能力目录",
     "qq_account_manage.set_profile": "修改机器人账号资料",
@@ -144,7 +144,7 @@ def _op(
     Args:
         tool: Model-visible tool name.
         operation: Operation enum value.
-        action: NapCat action name.
+        action: OneBot action name.
         category: Feature pack name.
         risk: Risk level.
         permission: Minimum caller permission.
@@ -739,7 +739,7 @@ OPERATION_PARAMETERS = {
         optional=("ext_status", "battery_status"),
         hint=(
             "status 支持 online、qme、leave、busy、dont_disturb、invisible、"
-            "listening、weather、meet_spring 或对应 NapCat 基础状态码。"
+            "listening、weather、meet_spring 或对应 QQ 基础状态码。"
         ),
     ),
     "qq_user_info.stranger": _params("user_id", optional=("no_cache",)),
@@ -747,7 +747,9 @@ OPERATION_PARAMETERS = {
     "qq_friend_list.friends": _params(optional=(*PAGE_PARAMS, "no_cache")),
     "qq_friend_list.unidirectional": _params(optional=PAGE_PARAMS),
     "qq_friend_history.list": _params(
-        "user_id", optional=("message_seq", "count", *PAGE_PARAMS)
+        "user_id",
+        optional=("message_seq", "message_id", "count", *PAGE_PARAMS),
+        hint="NapCat 锚点使用 message_seq；SnowLuma 锚点使用 message_id（允许负数）。不传锚点读取最新记录；两种锚点不能混用或互相改名。",
     ),
     "qq_friend_interact.like": _params("user_id", optional=("times",)),
     "qq_friend_interact.poke": _params("user_id"),
@@ -771,7 +773,9 @@ OPERATION_PARAMETERS = {
     "qq_group_members.list": _params("group_id", optional=("no_cache", *PAGE_PARAMS)),
     "qq_group_members.detail": _params("group_id", "user_id", optional=("no_cache",)),
     "qq_group_history.list": _params(
-        "group_id", optional=("message_seq", "count", *PAGE_PARAMS)
+        "group_id",
+        optional=("message_seq", "message_id", "count", *PAGE_PARAMS),
+        hint="NapCat 锚点使用 message_seq；SnowLuma 锚点使用 message_id（允许负数）。不传锚点读取最新记录；两种锚点不能混用或互相改名。",
     ),
     "qq_group_request.list": _params(optional=("group_id",)),
     "qq_group_request.ignored": _params("group_id", optional=PAGE_PARAMS),
@@ -833,13 +837,13 @@ OPERATION_PARAMETERS = {
             '"artist":"可选歌手"}，插件会查询并校验 QQ 音乐结果；不得凭记忆猜歌曲 ID。'
             "只有平台 ID 明确出现在用户当前消息中时才可使用平台 ID 卡片 "
             '{"type":"music","music_type":"qq","id":"歌曲ID"}，平台支持 '
-            "qq、163、kugou、kuwo、migu；该模式依赖 NapCat 的 musicSignUrl "
+            "qq、163、kugou、kuwo、migu；该模式依赖协议端的 musicSignUrl "
             "支持 ID 解析。签名服务不支持 ID 时，使用 "
             '{"type":"music","music_type":"custom","url":"跳转地址",'
             '"image":"封面地址","audio":"可选音频地址","title":"可选标题",'
             '"content":"可选简介"}。不要先发送测试或占位消息。'
             "音乐卡片必须作为唯一组件单独发送；如需附带说明文字，请在最终回复中简短说明。"
-            "调用成功仅表示 NapCat 已接受发送请求，最终回复不得重复其中的正文或卡片。"
+            "调用成功仅表示 QQ 接口已接受发送请求，最终回复不得重复其中的正文或卡片。"
         ),
     ),
     "qq_send_forward.send": _params(
@@ -847,7 +851,7 @@ OPERATION_PARAMETERS = {
         "nodes",
         hint=(
             'target 优先使用 {"type":"current"}。转发现有消息时，nodes 中每项'
-            '使用 {"message_id":正整数}；自定义节点使用 '
+            '使用 {"message_id":整数}；自定义节点使用 '
             '{"sender_id":正整数,"sender_name":"名称","components":['
             '{"type":"text","text":"内容"}]}。节点字段直接放在对象中，'
             "不得使用 type、data、name、uin 或 content 包装。"
@@ -876,7 +880,7 @@ OPERATION_PARAMETERS = {
         "file",
         optional=("out_format",),
         hint=(
-            "file 必须是 OneBot/NapCat 消息段提供的原始媒体标识；"
+            "file 必须是 OneBot 消息段提供的原始媒体标识；"
             "不得传入 AstrBot Record 中的本地临时路径。"
         ),
     ),
@@ -884,12 +888,13 @@ OPERATION_PARAMETERS = {
         "file",
         "out_format",
         hint=(
-            "file 必须是 OneBot/NapCat 消息段提供的原始媒体标识；"
+            "file 必须是 OneBot 消息段提供的原始媒体标识；"
             "不得传入 AstrBot Record 中的本地临时路径。"
         ),
     ),
     "qq_media.ocr": _params(
-        optional=("path", "url", "base64", "media_ref", *PAGE_PARAMS)
+        optional=("path", "url", "base64", "media_ref", "file_id", *PAGE_PARAMS),
+        hint="SnowLuma 只接受 url 或图片缓存 file_id；NapCat 使用 path、url、base64 或 media_ref。来源必须且只能提供一项。",
     ),
     "qq_group_files.info": _params("group_id"),
     "qq_group_files.list_root": _params("group_id", optional=PAGE_PARAMS),
@@ -911,8 +916,8 @@ OPERATION_PARAMETERS = {
     ),
     "qq_group_files.transfer": _params("group_id", "file_id"),
     "qq_private_files.url": _params(
-        optional=("user_id", "file_id"),
-        hint="不传 file_id 时返回当前私聊附件已有的 QQ 下载地址。",
+        optional=("user_id", "file_id", "file_hash"),
+        hint="不传 file_id 时返回当前私聊附件已有的 QQ 下载地址。SnowLuma 可附原始文件消息中的 file_hash，NapCat 不接受该字段。",
     ),
     "qq_private_files.upload": _params(
         "user_id", optional=("path", "url", "base64", "media_ref", "name")
@@ -961,7 +966,7 @@ TOOL_DESCRIPTIONS = {
     "qq_send_message": (
         "向当前或获授权的 QQ 会话发送结构化消息；音乐卡片必须作为唯一组件单独发送。"
         "发送猜拳或骰子后会自动回查并返回最终随机结果。"
-        "调用成功仅表示 NapCat 已接受发送请求；不要在最终回复中重复消息正文或卡片。"
+        "调用成功仅表示 QQ 接口已接受发送请求；不要在最终回复中重复消息正文或卡片。"
     ),
     "qq_send_forward": "发送群聊或私聊合并转发。",
     "qq_message_get": "根据消息 ID 获取并规范化消息。",
@@ -971,7 +976,7 @@ TOOL_DESCRIPTIONS = {
     "qq_media": (
         "按 ImageRef 重新查看当前会话原图，或获取图片或语音、转码语音、执行图片 OCR。"
         "inspect 只能使用当前会话历史中的 image_ref。读取或转换语音时只能使用 "
-        "OneBot/NapCat 原始媒体标识，不能使用 AstrBot 本地临时路径。"
+        "OneBot 原始媒体标识，不能使用 AstrBot 本地临时路径。"
     ),
     "qq_group_files": "查询或管理群文件与文件夹。",
     "qq_private_files": "获取私聊文件链接或上传私聊文件。",

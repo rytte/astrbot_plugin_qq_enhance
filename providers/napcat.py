@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..catalog import OperationSpec
 from ..errors import QQToolError
-from .base import Capability, LocalMedia, VersionInfo
+from .base import Capability, EncodedMedia, LocalMedia, VersionInfo
+from .common import HISTORY_OPERATIONS, prepare_common_action
 
 
 class NapCatProvider:
@@ -49,61 +49,51 @@ class NapCatProvider:
             False, f"NapCat 契约未支持操作 {spec.operation_id}：{spec.action}"
         )
 
+    def validate_parameters(self, spec: OperationSpec, params: dict[str, Any]) -> None:
+        if spec.operation_id in HISTORY_OPERATIONS and "message_id" in params:
+            raise QQToolError(
+                "invalid_parameters",
+                "NapCat 历史查询使用 message_seq，不接受 message_id 锚点",
+            )
+        if spec.operation_id == "qq_media.ocr" and "file_id" in params:
+            raise QQToolError(
+                "invalid_parameters",
+                "NapCat OCR 不接受 file_id，请使用 path、url、base64 或 media_ref",
+            )
+        if spec.operation_id == "qq_private_files.url" and "file_hash" in params:
+            raise QQToolError(
+                "invalid_parameters", "NapCat 私聊文件下载不接受 file_hash"
+            )
+
+    def media_input(self, spec: OperationSpec) -> Literal["local_file", "remote_image"]:
+        return "local_file"
+
     def prepare_action(
         self,
         spec: OperationSpec,
         params: dict[str, Any],
         *,
         page_size: int,
-        resolved_file: str | None = None,
+        resolved_media: str | None = None,
     ) -> tuple[str | None, dict[str, Any]]:
-        """Map business parameters to the pinned NapCat action contract."""
         self.capability(spec).require()
-        operation_id = spec.operation_id
-        result = deepcopy(params)
-        if resolved_file is not None:
-            if operation_id == "qq_account_manage.set_avatar":
-                result = {"file": resolved_file}
-            else:
-                result["image" if operation_id == "qq_media.ocr" else "file"] = (
-                    resolved_file
-                )
-        if operation_id == "qq_group_info.honor":
-            result["type"] = result.pop("honor_type", "all")
-        elif operation_id in {"qq_friend_request.approve", "qq_friend_request.reject"}:
-            result["approve"] = spec.operation == "approve"
-        elif operation_id in {"qq_group_request.approve", "qq_group_request.reject"}:
-            result.pop("group_id", None)
-            result["approve"] = spec.operation == "approve"
-        elif operation_id in {
-            "qq_message_manage.reaction_add",
-            "qq_message_manage.reaction_remove",
-        }:
-            result["set"] = spec.operation == "reaction_add"
-        elif operation_id in {
-            "qq_essence.add",
-            "qq_essence.remove",
-            "qq_group_request.list",
-            "qq_group_request.ignored",
-        }:
-            result.pop("group_id", None)
-        elif operation_id == "qq_private_files.url":
-            result.pop("user_id", None)
-        elif operation_id == "qq_notice.detail":
-            result.pop("notice_id", None)
-        elif operation_id == "qq_recent_contacts.list":
-            result.setdefault("count", page_size)
-        elif operation_id in {"qq_group_history.list", "qq_friend_history.list"}:
-            # message_seq is a NapCat sequence anchor, not a message_id alias.
+        self.validate_parameters(spec, params)
+        result = prepare_common_action(
+            spec, params, page_size=page_size, resolved_media=resolved_media
+        )
+        if spec.operation_id in HISTORY_OPERATIONS:
+            # A NapCat sequence is not a SnowLuma message hash.
             result.setdefault("message_seq", 0)
-            result.setdefault("count", min(page_size, 100))
-        elif operation_id == "qq_forward_get.get":
-            result.pop("depth", None)
-            reference = result.pop("message_id", None)
-            if reference is None:
-                reference = result.pop("res_id")
-            result["message_id"] = str(reference)
+        elif spec.operation_id == "qq_group_request.list":
+            result.pop("group_id", None)
+        elif spec.operation_id == "qq_private_files.url":
+            result.pop("user_id", None)
         return spec.action, result
+
+    def encoded_media(
+        self, spec: OperationSpec, data: Any, params: dict[str, Any]
+    ) -> EncodedMedia | None:
+        return None
 
     def local_media(self, spec: OperationSpec, data: Any) -> LocalMedia | None:
         if spec.tool != "qq_media" or not isinstance(data, dict):

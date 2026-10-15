@@ -249,8 +249,8 @@
     "items": {
       "enhance_voice_messages": {
         "type": "bool",
-        "description": "使用 NapCat 语音识别作为回退",
-        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat；支持顶层和引用语音。",
+        "description": "使用 QQ 协议端语音识别作为回退",
+        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat 或 SnowLuma；支持顶层和引用语音。",
         "default": true
       }
     }

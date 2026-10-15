@@ -713,8 +713,11 @@ class QQRuntime:
             if not self.operation_enabled(operation_id):
                 raise QQToolError("capability_unavailable", "该 QQ 操作已被配置禁用")
             provider = await self.verify_platform(event)
-            provider.capability(spec).require()
+            capability = provider.capability(spec)
+            capability.require()
+            warnings.extend(capability.limitations)
             normalized = self.validate_parameters(operation_id, params)
+            provider.validate_parameters(spec, normalized)
             if (
                 operation_id in REQUEST_DECISION_OPERATIONS
                 and "request_id" in normalized
@@ -773,6 +776,7 @@ class QQRuntime:
                         "operation_id": operation_id,
                         "action": action,
                         "params": {
+                            "provider_id": provider.id,
                             "authorization_params": normalized,
                             "action_params": action_params,
                             "handoff_source": event.get_extra(
@@ -964,7 +968,7 @@ class QQRuntime:
                     int((time.monotonic() - started) * 1000),
                 )
                 return data
-            data = await self.normalize_media_result(event, spec, data)
+            data = await self.normalize_media_result(event, spec, data, normalized)
             result = self.success_result(
                 operation_id, data, normalized, provider_name=provider.display_name
             )
@@ -1058,15 +1062,21 @@ class QQRuntime:
         try:
             if not self.operation_enabled(spec.operation_id):
                 raise QQToolError("capability_unavailable", "该操作已被配置禁用")
-            provider = await self.verify_platform(event)
+            provider = await self.verify_platform(event, refresh=True)
             provider.capability(spec).require()
             stored_params = record["params"]
+            if stored_params.get("provider_id") != provider.id:
+                raise QQToolError(
+                    "response_invalid",
+                    "待确认记录的协议实现不匹配或缺少实现标识，请重新发起操作",
+                )
             authorization_params = stored_params.get("authorization_params")
             action_params = stored_params.get("action_params")
             if not isinstance(authorization_params, dict) or not isinstance(
                 action_params, dict
             ):
                 raise QQToolError("response_invalid", "待确认参数格式无效")
+            provider.validate_parameters(spec, authorization_params)
             _, target_id, _ = await self.authorize(event, spec, authorization_params)
             await self.audit(
                 event,
@@ -1159,11 +1169,14 @@ class QQRuntime:
                 logger.exception("Failed to finish confirmation record")
                 result["message"] += "确认记录收尾失败，请勿重复操作。"
 
-    async def verify_platform(self, event: Any) -> OneBotProvider:
+    async def verify_platform(
+        self, event: Any, *, refresh: bool = False
+    ) -> OneBotProvider:
         """Validate adapter authorization and resolve its protocol provider.
 
         Args:
             event: Current AstrBot event.
+            refresh: Recheck identity and version instead of using the cached binding.
 
         Raises:
             QQToolError: If the platform or upstream version is unsupported.
@@ -1175,8 +1188,9 @@ class QQRuntime:
         if configured_id and event.get_platform_id() != configured_id:
             raise QQToolError("unsupported_platform", "当前 aiocqhttp 实例未被插件授权")
         platform_id = event.get_platform_id()
-        if platform_id in self._verified_platforms:
+        if not refresh and platform_id in self._verified_platforms:
             return self._verified_platforms[platform_id].provider
+        self._verified_platforms.pop(platform_id, None)
         result = await self.call_action(
             event, "get_version_info", {}, skip_contract=True
         )
@@ -1231,6 +1245,14 @@ class QQRuntime:
                     raise QQToolError("invalid_parameters", f"{key} 必须是正整数")
                 normalized[key] = int(value)
             elif key in INTEGER_KEYS:
+                if (
+                    operation_id in {"qq_group_history.list", "qq_friend_history.list"}
+                    and key == "message_id"
+                    and not re.fullmatch(r"-?\d+", str(value))
+                ):
+                    raise QQToolError(
+                        "invalid_parameters", "历史锚点 message_id 必须是整数"
+                    )
                 if isinstance(value, bool):
                     raise QQToolError("invalid_parameters", f"{key} 必须是整数")
                 try:
@@ -1250,6 +1272,14 @@ class QQRuntime:
             raise QQToolError("invalid_parameters", "page_size 超出配置上限")
         if "count" in normalized and not 1 <= normalized["count"] <= 100:
             raise QQToolError("invalid_parameters", "count 必须在 1～100 之间")
+        if (
+            operation_id in {"qq_group_history.list", "qq_friend_history.list"}
+            and {"message_seq", "message_id"} <= normalized.keys()
+        ):
+            raise QQToolError(
+                "invalid_parameters",
+                "历史锚点 message_seq 与 message_id 必须二选一，不能混用",
+            )
         if "times" in normalized and not 1 <= normalized["times"] <= 10:
             raise QQToolError("invalid_parameters", "times 必须在 1～10 之间")
         if "duration" in normalized and not 0 <= normalized["duration"] <= 2592000:
@@ -1337,19 +1367,21 @@ class QQRuntime:
             if Path(file_ref).is_absolute() or WINDOWS_ABSOLUTE_PATH.match(file_ref):
                 raise QQToolError(
                     "invalid_parameters",
-                    "file 必须是 OneBot/NapCat 原始媒体标识，不能使用 AstrBot "
-                    "本地临时路径",
+                    "file 必须是 OneBot 原始媒体标识，不能使用 AstrBot 本地临时路径",
                 )
-        if any(key in rule.allowed for key in MEDIA_SOURCE_KEYS):
+        source_keys = (
+            (*MEDIA_SOURCE_KEYS, "file_id")
+            if operation_id == "qq_media.ocr"
+            else MEDIA_SOURCE_KEYS
+        )
+        if any(key in rule.allowed for key in source_keys):
             supplied = [
-                key
-                for key in MEDIA_SOURCE_KEYS
-                if normalized.get(key) not in (None, "")
+                key for key in source_keys if normalized.get(key) not in (None, "")
             ]
             if len(supplied) != 1:
                 raise QQToolError(
                     "invalid_parameters",
-                    "必须且只能提供 path、url、base64、media_ref 中的一项",
+                    "必须且只能提供 " + "、".join(source_keys) + " 中的一项",
                 )
         if operation_id == "qq_send_message.send":
             if not isinstance(normalized["target"], dict) or not isinstance(
@@ -1590,6 +1622,7 @@ class QQRuntime:
         operation_id = spec.operation_id
         provider = await self.verify_platform(event)
         provider.capability(spec).require()
+        provider.validate_parameters(spec, params)
         action = spec.action
         action_params = deepcopy(params)
         if operation_id in REQUEST_DECISION_OPERATIONS:
@@ -1604,6 +1637,7 @@ class QQRuntime:
                     "action": item.action,
                     "risk": item.risk,
                     "permission": item.permission,
+                    "limitations": list(provider.capability(item).limitations),
                 }
                 for item in OPERATIONS
                 if operation_availability(self.config, item, provider).enabled
@@ -1651,7 +1685,7 @@ class QQRuntime:
         elif operation_id == "qq_send_forward.send":
             action, action_params = await self.prepare_forward(event, action_params)
         else:
-            resolved_file = None
+            resolved_media = None
             if operation_id in {
                 "qq_account_manage.set_avatar",
                 "qq_group_manage.avatar",
@@ -1659,10 +1693,23 @@ class QQRuntime:
                 "qq_private_files.upload",
                 "qq_media.ocr",
             }:
-                path = await self.resolve_input_file(event, action_params)
-                for key in MEDIA_SOURCE_KEYS:
+                if provider.media_input(spec) == "remote_image":
+                    if "file_id" in action_params:
+                        resolved_media = action_params["file_id"]
+                    else:
+                        # Validate DNS, redirects and response size through the
+                        # same transport used for downloads; forward its final URL.
+                        resource = await self.fetch_url(str(action_params["url"]))
+                        try:
+                            resolved_media = resource.url
+                        finally:
+                            resource.path.unlink(missing_ok=True)
+                else:
+                    resolved_media = str(
+                        await self.resolve_input_file(event, action_params)
+                    )
+                for key in (*MEDIA_SOURCE_KEYS, "file_id"):
                     action_params.pop(key, None)
-                resolved_file = str(path)
             if operation_id == "qq_notice.send":
                 image = action_params.get("image")
                 if image:
@@ -1674,7 +1721,7 @@ class QQRuntime:
                         await self.resolve_input_file(event, image)
                     )
             action, action_params = provider.prepare_action(
-                spec, action_params, page_size=page_size, resolved_file=resolved_file
+                spec, action_params, page_size=page_size, resolved_media=resolved_media
             )
         if local_result is not None and not isinstance(local_result, CallToolResult):
             local_result = self.paginate(local_result, cursor, page_size)
@@ -2198,7 +2245,7 @@ class QQRuntime:
             if not {"sender_id", "sender_name", "components"} <= set(node):
                 raise QQToolError(
                     "invalid_parameters",
-                    f'nodes[{index}] 必须是 {{"message_id":正整数}}，或同时提供 '
+                    f'nodes[{index}] 必须是 {{"message_id":整数}}，或同时提供 '
                     "sender_id、sender_name、components",
                 )
             _, prepared = await self.prepare_message(
@@ -2438,14 +2485,19 @@ class QQRuntime:
                 str(source[key]), str(event.get_sender_id() or "")
             )
 
-        raw = str(source[key])
+        path, _media_ref = await self.store_base64_media(event, str(source[key]))
+        return path
+
+    async def store_base64_media(
+        self, event: Any, raw: str, *, output_format: str | None = None
+    ) -> tuple[Path, str]:
+        """Store bounded inline bytes as plugin-owned media, eligible for cleanup."""
         if raw.startswith("data:"):
             header, separator, raw = raw.partition(",")
             if not separator or ";base64" not in header:
                 raise QQToolError("invalid_parameters", "data URL 必须使用 Base64 编码")
-        estimated_size = len(raw) * 3 // 4
         maximum = self.config["files"]["max_base64_size_mb"] * 1048576
-        if estimated_size > maximum:
+        if len(raw) > ((maximum + 2) // 3) * 4:
             raise QQToolError("invalid_parameters", "Base64 解码结果超过配置上限")
         try:
             decoded = base64.b64decode(raw, validate=True)
@@ -2453,6 +2505,8 @@ class QQRuntime:
             raise QQToolError("invalid_parameters", "Base64 编码无效") from exc
         if len(decoded) > maximum:
             raise QQToolError("invalid_parameters", "Base64 解码结果超过配置上限")
+        if not decoded:
+            raise QQToolError("invalid_parameters", "Base64 解码结果不能为空")
         suffix = ".bin"
         signatures = (
             (b"\x89PNG\r\n\x1a\n", ".png"),
@@ -2471,10 +2525,16 @@ class QQRuntime:
             suffix = ".mp4"
         if decoded.startswith(b"RIFF") and decoded[8:12] == b"WEBP":
             suffix = ".webp"
+        if output_format is not None:
+            suffix = "." + output_format
         path = self.temp_dir / f"b64_{secrets.token_hex(12)}{suffix}"
         await asyncio.to_thread(path.write_bytes, decoded)
-        await self.register_owned_media(event, path, "base64")
-        return path
+        try:
+            media_ref = await self.register_owned_media(event, path, "base64")
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path, media_ref
 
     async def download_url(self, raw_url: str, owner_id: str) -> Path:
         """Download media through the shared safe HTTP transport.
@@ -2727,7 +2787,7 @@ class QQRuntime:
         return media_ref
 
     async def normalize_media_result(
-        self, event: Any, spec: OperationSpec, data: Any
+        self, event: Any, spec: OperationSpec, data: Any, params: dict[str, Any]
     ) -> Any:
         """Replace provider-generated absolute media paths with opaque refs.
 
@@ -2735,14 +2795,38 @@ class QQRuntime:
             event: Current AstrBot event.
             spec: Executed operation.
             data: Raw OneBot response data.
+            params: Validated public parameters, including requested output format.
 
         Returns:
             Response safe to expose to the model.
         """
 
-        if spec.tool != "qq_media" or not isinstance(data, dict):
+        if spec.tool != "qq_media":
             return self.sanitize_data(data)
         provider = await self.verify_platform(event)
+        encoded = provider.encoded_media(spec, data, params)
+        if encoded is not None:
+            try:
+                path, media_ref = await self.store_base64_media(
+                    event, encoded.data, output_format=encoded.format
+                )
+            except QQToolError as exc:
+                raise QQToolError(
+                    "response_invalid", f"上游语音转码数据无效：{exc.message}"
+                ) from exc
+            result = self.sanitize_data(data)
+            for key in ("file", "path", "url", "file_name", "file_size"):
+                result.pop(key, None)
+            result.update(
+                {
+                    "media_ref": media_ref,
+                    "file_name": path.name,
+                    "file_size": path.stat().st_size,
+                }
+            )
+            return result
+        if not isinstance(data, dict):
+            return self.sanitize_data(data)
         media = provider.local_media(spec, data)
         result = self.sanitize_data(data)
         if (
@@ -2792,6 +2876,20 @@ class QQRuntime:
 
         cursor = params.get("cursor")
         page_size = params.get("page_size", self.config["limits"]["page_size"])
+        if (
+            operation_id == "qq_media.ocr"
+            and isinstance(data, dict)
+            and isinstance(data.get("texts"), list)
+        ):
+            paged = self.paginate(data["texts"], cursor, page_size)
+            return {
+                "ok": True,
+                "operation": operation_id,
+                "summary": paged["summary"],
+                "data": {**data, "texts": paged["data"]},
+                "next_cursor": paged["next_cursor"],
+                "warnings": [],
+            }
         if isinstance(data, list):
             paged = self.paginate(data, cursor, page_size)
             return {
@@ -2839,7 +2937,7 @@ class QQRuntime:
         }
 
     def compact_history_result(self, value: Any) -> list[dict[str, Any]]:
-        """Reduce NapCat history messages to model-relevant fields.
+        """Reduce OneBot history messages to model-relevant fields.
 
         Args:
             value: Raw ``get_group_msg_history`` or ``get_friend_msg_history`` data.

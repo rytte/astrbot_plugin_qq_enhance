@@ -82,10 +82,10 @@ function appendCell(row, value, useCode = false) {
 function renderSummary(data) {
   const summary = data.summary;
   const cards = [
-    ["NapCat 平台", `${summary.reachable_platforms}/${summary.platforms}`, "可访问 / 已发现"],
+    ["OneBot 平台", `${summary.reachable_platforms}/${summary.platforms}`, "可访问 / 已发现"],
     ["模型工具", `${summary.tools_enabled}/${summary.tools_total}`, "已启用 / 总数"],
     ["插件操作", `${summary.operations_enabled}/${summary.operations_total}`, "已启用 / 总数"],
-    ["兼容实例", summary.compatible_platforms, data.contract.supported_versions],
+    ["兼容实例", summary.compatible_platforms, data.contracts.map((item) => `${item.implementation} ${item.supported_versions}`).join(" / ")],
     ["待确认", summary.pending_confirmations, "当前有效操作"],
   ];
   const container = document.getElementById("summary-cards");
@@ -103,7 +103,7 @@ function renderSummary(data) {
     container.append(card);
   }
   document.getElementById("updated-at").textContent = `更新时间 ${formatTime(data.generated_at)}`;
-  document.getElementById("contract-range").textContent = `契约 ${data.contract.version} · 支持 ${data.contract.supported_versions}`;
+  document.getElementById("contract-range").textContent = data.contracts.map((item) => `${item.implementation} ${item.supported_versions}（契约 ${item.version}）`).join(" · ");
 }
 
 function renderPlatforms(platforms) {
@@ -147,7 +147,7 @@ function renderConfiguration(config) {
     ["启用分类", config.enabled_packs.length ? config.enabled_packs.join(", ") : "全部"],
     ["显式禁用操作", config.disabled_operations],
     ["组件语义化", config.semanticize_components ? "开启" : "关闭"],
-    ["NapCat 语音回退", config.enhance_voice_messages ? "开启" : "关闭"],
+    ["QQ 语音回退", config.enhance_voice_messages ? "开启" : "关闭"],
     ["组件防伪", config.component_spoof_protection_enabled ? "开启" : "关闭"],
     ["验证标签保存到历史", config.persist_verification_in_history ? "开启" : "关闭"],
     ["防伪类型", config.protected_types.join(", ")],
@@ -215,7 +215,7 @@ function renderCapabilities() {
       item.supported === true ? "success" : item.supported === false ? "danger" : "warning",
     );
     supportBadge.title = item.platforms.map((platform) =>
-      `${platform.platform_id}: ${platform.supported === true ? "支持" : platform.supported === false ? "不支持" : "待验证"}`
+      `${platform.platform_id}: ${platform.supported === true ? "支持" : platform.supported === false ? "不支持" : "待验证"}${platform.reason ? `；${platform.reason}` : ""}${platform.limitations.length ? `；${platform.limitations.join("；")}` : ""}`
     ).join("；");
     stateCell.append(" ", supportBadge);
     row.append(stateCell);

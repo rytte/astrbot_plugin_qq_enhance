@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.providers.base import ProviderBinding, VersionInfo
 from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
 from astrbot_plugin_qq_enhance.runtime import (
@@ -112,6 +113,7 @@ async def test_full_group_tools_and_prompts_stay_stable_across_roles_and_topics(
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     event = SelectionEvent()
     event.message_obj = SimpleNamespace(raw_message={"sender": {"role": role}})
@@ -155,6 +157,7 @@ async def test_full_group_omits_tools_disabled_by_configuration() -> None:
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     request = ProviderRequest(
         prompt="你好",
@@ -195,6 +198,7 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     event = event_type()
     request = ProviderRequest(
@@ -244,6 +248,7 @@ async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(
         )
         plugin.runtime = object.__new__(QQRuntime)
         plugin.runtime._verified_platforms = {}
+        plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
         plugin.runtime.config = plugin.config
         request = ProviderRequest(
             prompt="读取 https://example.test",
@@ -294,6 +299,7 @@ async def test_qq_tool_dialogue_prompt_does_not_affect_unrelated_requests(
     plugin.config = validate_config(config)
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     event = SelectionEvent()
     event.get_platform_name = lambda: platform_name
@@ -344,6 +350,7 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin.storage = SimpleNamespace(initialize=AsyncMock())
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     plugin.runtime.cleanup = AsyncMock()
     plugin.cleanup_task = None
@@ -400,14 +407,14 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     assert '"music_type":"qq_search"' in params_description
     assert "不得凭记忆猜歌曲 ID" in params_description
     assert "音乐卡片必须作为唯一组件单独发送" in params_description
-    assert "调用成功仅表示 NapCat 已接受发送请求" in params_description
+    assert "调用成功仅表示 QQ 接口已接受发送请求" in params_description
     assert "最终回复不得重复其中的正文或卡片" in params_description
     request_tool = manager.get_func("qq_group_request")
     request_description = request_tool.parameters["properties"]["params"]["description"]
     assert "通知中的 request_id" in request_description
     forward_tool = manager.get_func("qq_send_forward")
     forward_description = forward_tool.parameters["properties"]["params"]["description"]
-    assert '{"message_id":正整数}' in forward_description
+    assert '{"message_id":整数}' in forward_description
     assert "不得使用 type、data、name、uin 或 content 包装" in forward_description
     await plugin.terminate()
 
@@ -445,6 +452,7 @@ async def test_web_switch_controls_tools_for_urls_and_followups(
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     request = ProviderRequest(
         prompt="接着说" if contexts else "读取 HTTPS://example.test/article",
@@ -488,6 +496,7 @@ async def test_web_pack_restriction_preserves_unrelated_builtin_tools() -> None:
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     request = ProviderRequest(
         prompt="读取 https://example.test",
@@ -517,6 +526,7 @@ async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -551,6 +561,7 @@ async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -572,6 +583,7 @@ async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -593,6 +605,7 @@ async def test_private_admin_balanced_exposes_friend_request_without_keyword() -
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -614,6 +627,7 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -647,6 +661,7 @@ async def test_request_notification_follow_up_uses_trusted_input(
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     text = "新事件事实"
     binding = {
@@ -706,6 +721,7 @@ async def test_request_notification_follow_up_does_not_trust_assistant_title(
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     text = "新事件事实"
     bindings = (
@@ -745,6 +761,7 @@ async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> No
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -767,6 +784,7 @@ async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -793,6 +811,7 @@ async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() 
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -819,6 +838,7 @@ async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -840,6 +860,7 @@ async def test_private_file_attachment_exposes_private_files_tool() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -861,6 +882,7 @@ async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -888,6 +910,7 @@ async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -909,6 +932,7 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -930,6 +954,7 @@ async def test_group_management_prompt_exposes_group_manage_tool() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -956,6 +981,7 @@ async def test_private_admin_leave_group_prompt_ignores_stale_request_context() 
     )
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -984,6 +1010,7 @@ async def test_group_poke_follow_up_uses_previous_user_context() -> None:
     plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
     plugin.runtime.config = plugin.config
     tools = [
         FunctionTool(name=name, description="", parameters={"type": "object"})
@@ -1005,9 +1032,14 @@ async def test_group_poke_follow_up_uses_previous_user_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_visibility_uses_the_verified_platform_capabilities() -> None:
+@pytest.mark.parametrize("implementation", ["napcat", "snowluma"])
+async def test_tool_visibility_uses_the_verified_platform_capabilities(
+    implementation,
+) -> None:
     provider = NapCatProvider()
     provider.actions -= {"get_recent_contact"}
+    if implementation == "snowluma":
+        provider = SNOWLUMA
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"toolsets": {"exposure_mode": "full"}})
     plugin.runtime = object.__new__(QQRuntime)
@@ -1027,3 +1059,30 @@ async def test_tool_visibility_uses_the_verified_platform_capabilities() -> None
     await plugin.select_tools(GroupAstrBotAdminSelectionEvent(), request)
     assert request.func_tool.get_tool("qq_recent_contacts") is None
     assert request.func_tool.get_tool("qq_status") is not None
+    assert f"协议实现：{provider.display_name}" in request.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_hides_qq_tools_but_preserves_local_web_tools():
+    from astrbot_plugin_qq_enhance.errors import QQToolError
+
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(None)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.config = plugin.config
+    plugin.runtime.verify_platform = AsyncMock(
+        side_effect=QQToolError("unsupported_version", "未知协议实现")
+    )
+    request = ProviderRequest(
+        prompt="读取 https://example.test",
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in [*TOOL_OPERATIONS, "unrelated_tool"]
+            ]
+        ),
+    )
+    await plugin.select_tools(SelectionEvent(), request)
+    assert {tool.name for tool in request.func_tool.tools} == WEB_TOOL_NAMES | {
+        "unrelated_tool"
+    }

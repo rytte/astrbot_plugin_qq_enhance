@@ -17,10 +17,11 @@ from astrbot.core.provider.entities import ProviderRequest
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.errors import QQToolError
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
-from astrbot_plugin_qq_enhance.providers import NAPCAT
+from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.providers.base import ProviderBinding, VersionInfo
 from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
 from astrbot_plugin_qq_enhance.runtime import (
+    DownloadedResource,
     QQRuntime,
     validate_config,
 )
@@ -30,13 +31,17 @@ from astrbot_plugin_qq_enhance.storage import Storage
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.version_info = {"app_name": "NapCat.Onebot", "app_version": "4.18.19"}
+        self.responses: dict = {}
         self.roles = {10001: "admin", 20001: "member", 99999: "owner"}
         self.missing_members: set[tuple[int, int]] = set()
 
     async def call_action(self, action: str, **params):
         self.calls.append((action, params))
+        if action in self.responses:
+            return self.responses[action]
         if action == "get_version_info":
-            return {"app_name": "NapCat.Onebot", "app_version": "4.18.19"}
+            return self.version_info
         if action == "get_group_member_info":
             if (params["group_id"], params["user_id"]) in self.missing_members:
                 raise RuntimeError("group member not found")
@@ -188,15 +193,18 @@ async def test_provider_detection_is_scoped_to_each_platform(tmp_path) -> None:
     runtime.call_action = AsyncMock(
         side_effect=[
             {"app_name": "NapCat.OneBot", "app_version": "4.18.19"},
-            {"app_name": "SnowLuma", "app_version": "1.14.22-node"},
+            {
+                "app_name": "SnowLuma",
+                "app_version": "1.14.22-node",
+                "protocol_version": "v11",
+            },
         ]
     )
     assert await runtime.verify_platform(first) is NAPCAT
     assert await runtime.verify_platform(first) is NAPCAT
-    with pytest.raises(QQToolError, match="不是 NapCat"):
-        await runtime.verify_platform(other)
+    assert await runtime.verify_platform(other) is SNOWLUMA
     assert runtime.call_action.await_count == 2
-    assert runtime.cached_provider("platform-b") is None
+    assert runtime.cached_provider("platform-b") is SNOWLUMA
 
 
 @pytest.mark.asyncio
@@ -227,7 +235,7 @@ async def test_unsupported_capability_fails_before_file_access_and_dispatch(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("still_supported", [True, False])
 async def test_confirmation_checks_support_and_reuses_exact_wire_params(
-    tmp_path, still_supported
+    tmp_path, still_supported, monkeypatch
 ) -> None:
     runtime, client, _ = await make_runtime(
         tmp_path,
@@ -251,6 +259,7 @@ async def test_confirmation_checks_support_and_reuses_exact_wire_params(
     runtime._verified_platforms["platform-a"] = ProviderBinding(
         VersionInfo("NapCat", "4.18.19"), provider
     )
+    monkeypatch.setattr("astrbot_plugin_qq_enhance.providers.PROVIDERS", (provider,))
     with patch.object(
         provider, "prepare_action", side_effect=AssertionError("必须复用已确认参数")
     ):
@@ -1463,6 +1472,7 @@ async def test_convert_record_reports_generated_file_and_usable_ref(tmp_path) ->
             "file_name": "voice.amr",
             "file_size": "2070",
         },
+        {"out_format": "mp3"},
     )
 
     assert result == {
@@ -1902,3 +1912,447 @@ async def test_share_component_is_converted_to_bounded_json(tmp_path) -> None:
                 ],
             },
         )
+
+
+async def make_snowluma_runtime(tmp_path, config=None):
+    runtime, client, storage = await make_runtime(tmp_path, config)
+    client.version_info = {
+        "app_name": "SnowLuma",
+        "app_version": "1.14.22-node",
+        "protocol_version": "v11",
+    }
+    return runtime, client, storage
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,target",
+    [
+        ("qq_group_history", {"group_id": 30001}),
+        ("qq_friend_history", {"user_id": 10001}),
+    ],
+)
+@pytest.mark.parametrize("anchor", [None, -123, -(2**31), 2**31 - 1])
+async def test_snowluma_history_uses_message_hash_and_compacts_response(
+    tmp_path, tool, target, anchor
+):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    action = OPERATION_MAP[f"{tool}.list"].action
+    client.responses[action] = {
+        "messages": [
+            {
+                "message_id": -123,
+                "sender": {"user_id": 10001, "nickname": "tester", "extra": "discard"},
+                "message": [{"type": "text", "data": {"text": "hello"}}],
+                "extra": "discard",
+            }
+        ]
+    }
+    params = {**target, "count": 2}
+    if anchor is not None:
+        params["message_id"] = str(anchor)
+    event = FakeEvent(group_id="30001") if "group_id" in target else FakeEvent()
+    result = json.loads(await runtime.execute(event, tool, "list", params))
+    assert result["ok"] is True
+    assert client.calls[-1] == (
+        action,
+        {**target, "count": 2, "message_id": anchor or 0},
+    )
+    assert result["data"][0]["message_id"] == -123
+    assert "extra" not in result["data"][0]
+    assert "extra" not in result["data"][0]["sender"]
+    assert any("message_id" in item for item in result["warnings"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"message_seq": 1},
+        {"message_seq": 0, "message_id": -123},
+        {"message_id": 1.5},
+        {"message_id": 2**31},
+        {"message_id": True},
+    ],
+)
+async def test_snowluma_history_rejects_invalid_anchor_before_dispatch(
+    tmp_path, params
+):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001"),
+            "qq_group_history",
+            "list",
+            {"group_id": 30001, **params},
+        )
+    )
+    assert result["error"]["code"] == "invalid_parameters"
+    assert [action for action, _ in client.calls] == ["get_version_info"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,operation,params",
+    [
+        ("qq_recent_contacts", "list", {}),
+        ("qq_group_info", "detail_ex", {"group_id": 30001}),
+        ("qq_media", "ocr", {"path": "unread-image.png"}),
+        (
+            "qq_group_manage",
+            "avatar",
+            {"group_id": 30001, "path": "unread-image.png", "cache": True},
+        ),
+        ("qq_account_manage", "set_profile", {"company": "test"}),
+    ],
+)
+async def test_snowluma_unsupported_calls_fail_before_authorization_and_media_io(
+    tmp_path, tool, operation, params
+):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    runtime.authorize = AsyncMock()
+    runtime.resolve_input_file = AsyncMock()
+    runtime.fetch_url = AsyncMock()
+    result = json.loads(
+        await runtime.execute(FakeEvent(group_id="30001"), tool, operation, params)
+    )
+    assert result["error"]["code"] in {"capability_unavailable", "invalid_parameters"}
+    runtime.authorize.assert_not_awaited()
+    runtime.resolve_input_file.assert_not_awaited()
+    runtime.fetch_url.assert_not_awaited()
+    assert [action for action, _ in client.calls] == ["get_version_info"]
+
+
+@pytest.mark.asyncio
+async def test_snowluma_ocr_cached_image_and_structured_pagination(tmp_path):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["ocr_image"] = {
+        "texts": [{"text": str(i), "confidence": 99} for i in range(3)],
+        "language": "zh",
+    }
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(), "qq_media", "ocr", {"file_id": "cached-image", "page_size": 2}
+        )
+    )
+    assert result["ok"] is True
+    assert client.calls[-1] == ("ocr_image", {"image": "cached-image"})
+    assert result["data"] == {
+        "language": "zh",
+        "texts": [{"text": "0", "confidence": 99}, {"text": "1", "confidence": 99}],
+    }
+    assert result["next_cursor"] is not None
+    second = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_media",
+            "ocr",
+            {
+                "file_id": "cached-image",
+                "page_size": 2,
+                "cursor": result["next_cursor"],
+            },
+        )
+    )
+    assert second["data"]["texts"] == [{"text": "2", "confidence": 99}]
+    assert second["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_snowluma_ocr_validates_url_and_forwards_final_url_without_local_path(
+    tmp_path,
+):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    downloaded = tmp_path / "preflight.png"
+    downloaded.write_bytes(b"image")
+    runtime.fetch_url = AsyncMock(
+        return_value=DownloadedResource(
+            path=downloaded,
+            url="https://cdn.example.test/final.png",
+            content_type="image/png",
+            charset=None,
+        )
+    )
+    first = "https://example.test/image.png"
+    result = json.loads(
+        await runtime.execute(FakeEvent(), "qq_media", "ocr", {"url": first})
+    )
+    assert result["ok"] is True
+    runtime.fetch_url.assert_awaited_once_with(first)
+    assert client.calls[-1] == (
+        "ocr_image",
+        {"image": "https://cdn.example.test/final.png"},
+    )
+    assert not downloaded.exists()
+    runtime.fetch_url = AsyncMock(
+        side_effect=QQToolError("invalid_parameters", "禁止访问的重定向")
+    )
+    client.calls.clear()
+    result = json.loads(
+        await runtime.execute(FakeEvent(), "qq_media", "ocr", {"url": first})
+    )
+    assert result["error"]["code"] == "invalid_parameters"
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["get_record", "convert_record"])
+async def test_snowluma_converted_audio_has_owned_ref_and_actual_metadata(
+    tmp_path, operation
+):
+    runtime, client, storage = await make_snowluma_runtime(tmp_path)
+    audio = b"ID3-converted-audio"
+    client.responses["get_record"] = {
+        "file": "https://example.test/source.amr",
+        "url": "https://example.test/source.amr",
+        "file_name": "source.amr",
+        "file_size": 999,
+        "out_format": "mp3",
+        "base64": base64.b64encode(audio).decode(),
+    }
+    event = FakeEvent()
+    result = json.loads(
+        await runtime.execute(
+            event, "qq_media", operation, {"file": "cached-record", "out_format": "mp3"}
+        )
+    )
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["file_size"] == len(audio)
+    assert data["file_name"].endswith(".mp3")
+    assert not {"base64", "file", "path", "url"} & data.keys()
+    path = await storage.resolve_media_ref(data["media_ref"], event.get_sender_id())
+    assert path.read_bytes() == audio
+    assert (
+        await runtime.resolve_input_file(event, {"media_ref": data["media_ref"]})
+        == path
+    )
+    with patch(
+        "astrbot_plugin_qq_enhance.storage.time.time", return_value=time.time() + 100000
+    ):
+        assert path in await storage.cleanup(7, 7)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        [],
+        {},
+        {"base64": "aGVsbG8=", "out_format": "wav"},
+        {"base64": "%%%", "out_format": "mp3"},
+        {"base64": "data:audio/mp3;base64,", "out_format": "mp3"},
+        {"base64": "AAAA" * 350000, "out_format": "mp3"},
+    ],
+)
+async def test_snowluma_invalid_or_oversized_transcode_is_rejected(tmp_path, response):
+    runtime, client, _ = await make_snowluma_runtime(
+        tmp_path, {"files": {"max_base64_size_mb": 1}}
+    )
+    client.responses["get_record"] = response
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_media",
+            "convert_record",
+            {"file": "cached-record", "out_format": "mp3"},
+        )
+    )
+    assert result["error"]["code"] == "response_invalid"
+    assert not list(runtime.temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_snowluma_get_record_without_conversion_preserves_source_metadata(
+    tmp_path,
+):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    response = {
+        "url": "https://example.test/source.amr",
+        "file_size": 999,
+        "file_name": "source.amr",
+    }
+    client.responses["get_record"] = response
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(), "qq_media", "get_record", {"file": "cached-record"}
+        )
+    )
+    assert result["ok"] is True
+    assert result["data"] == response
+    assert "media_ref" not in result["data"]
+
+
+@pytest.mark.asyncio
+async def test_snowluma_group_request_array_remains_scoped(tmp_path):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_group_system_msg"] = [
+        {"group_id": 30001, "requester_uin": 10001},
+        {"group_id": 30002, "requester_uin": 20001},
+    ]
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001"), "qq_group_request", "list", {"group_id": 30001}
+        )
+    )
+    assert result["ok"] is True
+    assert result["data"] == [{"group_id": 30001, "requester_uin": 10001}]
+    assert client.calls[-1] == ("get_group_system_msg", {"group_id": 30001})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["provider", "missing_id", "version"])
+async def test_confirmation_reprobes_and_rejects_changed_or_missing_provider(
+    tmp_path, change
+):
+    runtime, client, storage = await make_runtime(tmp_path)
+    event = FakeEvent()
+    pending = json.loads(
+        await runtime.execute(event, "qq_friend_manage", "delete", {"user_id": 10001})
+    )
+    if change == "provider":
+        client.version_info = {
+            "app_name": "SnowLuma",
+            "app_version": "1.14.22-node",
+            "protocol_version": "v11",
+        }
+    elif change == "version":
+        client.version_info = {"app_name": "NapCat", "app_version": "5.0.0"}
+    else:
+        claim = storage.claim_pending
+
+        async def without_id(*args):
+            record = await claim(*args)
+            record["params"].pop("provider_id")
+            return record
+
+        storage.claim_pending = without_id
+    result = await runtime.confirm(event, pending["pending_id"])
+    assert result["status"] == "not_executed"
+    assert not any(action == "delete_friend" for action, _ in client.calls)
+    assert sum(action == "get_version_info" for action, _ in client.calls) == 2
+    if change == "version":
+        assert runtime.cached_provider(event.get_platform_id()) is None
+    else:
+        assert "重新发起" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_snowluma_move_confirmation_uses_exact_prepared_wire_params(tmp_path):
+    runtime, client, _ = await make_snowluma_runtime(
+        tmp_path, {"confirmation": {"operations": ["qq_group_files.move"]}}
+    )
+    event = FakeEvent(group_id="30001")
+    pending = json.loads(
+        await runtime.execute(
+            event,
+            "qq_group_files",
+            "move",
+            {
+                "group_id": 30001,
+                "file_id": "file",
+                "current_parent_directory": "/",
+                "target_parent_directory": "/folder",
+            },
+        )
+    )
+    assert pending["error"]["code"] == "confirmation_required"
+    with patch.object(
+        SNOWLUMA, "prepare_action", side_effect=AssertionError("不得重复组装")
+    ):
+        result = await runtime.confirm(event, pending["pending_id"])
+    assert result["status"] == "executed"
+    assert client.calls[-1] == (
+        "move_group_file",
+        {
+            "group_id": 30001,
+            "file_id": "file",
+            "parent_directory": "/",
+            "target_directory": "/folder",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_snowluma_uses_common_message_forward_and_voice_actions(tmp_path):
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    event = FakeEvent()
+    sent = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "text", "text": "hello"}],
+            },
+        )
+    )
+    assert sent["ok"] is True
+    assert (
+        "send_private_msg",
+        {"user_id": 10001, "message": [{"type": "text", "data": {"text": "hello"}}]},
+    ) in client.calls
+    forwarded = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_forward",
+            "send",
+            {
+                "target": {"type": "current"},
+                "nodes": [
+                    {
+                        "sender_id": 10001,
+                        "sender_name": "tester",
+                        "components": [{"type": "text", "text": "forward"}],
+                    }
+                ],
+            },
+        )
+    )
+    assert forwarded["ok"] is True
+    assert client.calls[-1][0] == "send_private_forward_msg"
+    assert await runtime.call_action(
+        event, "fetch_ptt_text", {"message_id": -123}, skip_contract=True
+    ) == {"text": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_snowluma_audio_at_decoded_size_limit_and_negative_forward_reference(
+    tmp_path,
+):
+    runtime, client, storage = await make_snowluma_runtime(
+        tmp_path, {"files": {"max_base64_size_mb": 1}}
+    )
+    audio = b"x" * 1048576
+    client.responses["get_record"] = {
+        "out_format": "mp3",
+        "base64": base64.b64encode(audio).decode(),
+    }
+    event = FakeEvent()
+    result = json.loads(
+        await runtime.execute(
+            event,
+            "qq_media",
+            "convert_record",
+            {"file": "cached-record", "out_format": "mp3"},
+        )
+    )
+    assert result["ok"] is True
+    path = await storage.resolve_media_ref(
+        result["data"]["media_ref"], event.get_sender_id()
+    )
+    assert path.read_bytes() == audio
+    result = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_forward",
+            "send",
+            {"target": {"type": "current"}, "nodes": [{"message_id": -123}]},
+        )
+    )
+    assert result["ok"] is True
+    assert client.calls[-1] == (
+        "send_private_forward_msg",
+        {"user_id": 10001, "messages": [{"type": "node", "data": {"id": "-123"}}]},
+    )

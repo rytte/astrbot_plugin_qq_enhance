@@ -179,7 +179,9 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
     assert payload["summary"]["compatible_platforms"] == 1
     assert payload["summary"]["tools_total"] == len(TOOL_OPERATIONS)
     assert payload["summary"]["operations_total"] == len(OPERATIONS)
-    assert payload["contract"]["supported_versions"] == ">=4.18.19,<5.0.0"
+    assert {
+        row["provider_id"]: row["supported_versions"] for row in payload["contracts"]
+    } == {"napcat": ">=4.18.19,<5.0.0", "snowluma": "1.14.22"}
     assert payload["platforms"][0] == {
         "platform_id": "platform-a",
         "selected": True,
@@ -187,6 +189,7 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
         "online": True,
         "good": True,
         "implementation": "NapCat.OneBot",
+        "provider_id": "napcat",
         "version": "4.18.19",
         "compatible": True,
         "account_id": "20002",
@@ -205,7 +208,12 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
     assert runtime_capability["configured"] is True
     assert runtime_capability["supported"] is True
     assert runtime_capability["platforms"] == [
-        {"platform_id": "platform-a", "supported": True}
+        {
+            "platform_id": "platform-a",
+            "supported": True,
+            "reason": "",
+            "limitations": [],
+        }
     ]
     assert "session_id" not in payload["audits"][0]
     assert "params_hash" not in payload["audits"][0]
@@ -228,6 +236,30 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
         ({"app_name": "NapCat.OneBot", "app_version": "unknown"}, "response_invalid"),
         (
             {"app_name": "SnowLuma", "app_version": "1.14.22-node"},
+            "unsupported_version",
+        ),
+        (
+            {
+                "app_name": "SnowLuma",
+                "app_version": "1.14.22-node",
+                "protocol_version": "v11",
+            },
+            None,
+        ),
+        (
+            {
+                "app_name": "SnowLuma",
+                "app_version": "1.14.23-node",
+                "protocol_version": "v11",
+            },
+            "unsupported_version",
+        ),
+        (
+            {
+                "app_name": "SnowLuma",
+                "app_version": "1.14.22-node",
+                "protocol_version": "v12",
+            },
             "unsupported_version",
         ),
         ({"app_name": "Other", "app_version": "4.18.19"}, "unsupported_version"),
@@ -321,7 +353,11 @@ async def test_diagnostics_reports_capabilities_per_selected_platform(
     expected = [{"platform_id": "platform-b", "supported": False}]
     if not platform_id:
         expected.insert(0, {"platform_id": "platform-a", "supported": False})
-    assert recent["platforms"] == expected
+    assert [
+        {"platform_id": row["platform_id"], "supported": row["supported"]}
+        for row in recent["platforms"]
+    ] == expected
+    assert all("reason" in row and "limitations" in row for row in recent["platforms"])
 
 
 def test_diagnostics_page_assets_and_titles_exist() -> None:
@@ -334,3 +370,36 @@ def test_diagnostics_page_assets_and_titles_exist() -> None:
         i18n_path = plugin_root / ".astrbot-plugin" / "i18n" / f"{locale}.json"
         translations = json.loads(i18n_path.read_text(encoding="utf-8"))
         assert translations["pages"]["diagnostics"]["title"]
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_explains_snowluma_limits_alongside_napcat():
+    first, second = PagePlatform("platform-a"), PagePlatform("platform-b")
+    second.client.version_info = {
+        "app_name": "SnowLuma",
+        "app_version": "1.14.22-node",
+        "protocol_version": "v11",
+    }
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(None)
+    plugin.context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[first, second])
+    )
+    plugin.storage = SimpleNamespace(
+        list_audit=AsyncMock(return_value=[]),
+        list_live_pending=AsyncMock(return_value=[]),
+    )
+    payload = json.loads((await plugin.page_diagnostics()).body)
+    assert [row["provider_id"] for row in payload["platforms"]] == [
+        "napcat",
+        "snowluma",
+    ]
+    capabilities = {row["operation_id"]: row for row in payload["capabilities"]}
+    for operation in ("qq_recent_contacts.list", "qq_group_info.detail_ex"):
+        row = capabilities[operation]
+        assert row["supported"] is True
+        assert [platform["supported"] for platform in row["platforms"]] == [True, False]
+        assert row["platforms"][1]["reason"]
+    ocr = capabilities["qq_media.ocr"]["platforms"]
+    assert not ocr[0]["limitations"]
+    assert any("file_id" in item for item in ocr[1]["limitations"])
