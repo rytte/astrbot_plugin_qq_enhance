@@ -10,7 +10,7 @@ class OperationSpec:
     Args:
         tool: Model-visible tool name.
         operation: Operation enum value inside the tool.
-        action: NapCat action name, or ``None`` for local orchestration.
+        action: Default OneBot action name, or ``None`` for local orchestration.
         category: Feature pack name.
         display_name: Short Chinese operation name for user interfaces.
         risk: Risk level.
@@ -1037,8 +1037,3 @@ KEYWORD_TOOLS = {
     "昵称": {"qq_account_manage"},
     "备注": {"qq_friend_manage"},
 }
-
-
-NAPCAT_CONTRACT_VERSION = "4.18.19"
-NAPCAT_MIN_VERSION = (4, 18, 19)
-NAPCAT_MAX_VERSION = (5, 0, 0)

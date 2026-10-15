@@ -29,11 +29,9 @@ from astrbot.core.utils.astrbot_path import (
 )
 from astrbot.core.utils.session_lock import session_lock_manager
 
+from .capabilities import operation_availability
 from .catalog import (
     KEYWORD_TOOLS,
-    NAPCAT_CONTRACT_VERSION,
-    NAPCAT_MAX_VERSION,
-    NAPCAT_MIN_VERSION,
     OPERATION_MAP,
     OPERATION_PARAMETERS,
     OPERATIONS,
@@ -41,6 +39,7 @@ from .catalog import (
     TOOL_OPERATIONS,
 )
 from .context_images import ContextImageError
+from .errors import QQToolError
 from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
 from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
@@ -58,7 +57,9 @@ from .request_notification import (
     PlatformNotificationEvent,
     RequestNotificationEvent,
 )
-from .runtime import QQRuntime, QQToolError, validate_config
+from .providers import NAPCAT, resolve_provider
+from .providers.base import VersionInfo
+from .runtime import QQRuntime, validate_config
 from .storage import Storage
 from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, WebReader
 
@@ -472,6 +473,7 @@ class QQEnhancePlugin(Star):
         platform_manager = getattr(self.context, "platform_manager", None)
         platform_instances = getattr(platform_manager, "platform_insts", [])
         platforms = []
+        platform_providers = {}
         for platform in platform_instances:
             try:
                 metadata = platform.meta()
@@ -532,24 +534,18 @@ class QQEnhancePlugin(Star):
                 normalized_results[action_name] = result
             row["reachable"] = bool(normalized_results)
             version_info = normalized_results.get("get_version_info")
-            if isinstance(version_info, dict):
-                row["implementation"] = str(
-                    version_info.get("app_name")
-                    or version_info.get("implementation")
-                    or version_info.get("app_full_name")
-                    or ""
-                )
-                row["version"] = str(
-                    version_info.get("app_version") or version_info.get("version") or ""
-                )
-                version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", row["version"])
-                if "napcat" not in row["implementation"].lower():
+            if "get_version_info" in normalized_results:
+                try:
+                    info = VersionInfo.from_response(version_info)
+                    row["implementation"] = info.implementation
+                    row["version"] = info.version
+                    binding = resolve_provider(info)
+                except QQToolError as exc:
                     row["compatible"] = False
-                elif version_match:
-                    version = tuple(int(part) for part in version_match.groups())
-                    row["compatible"] = (
-                        NAPCAT_MIN_VERSION <= version < NAPCAT_MAX_VERSION
-                    )
+                    row["errors"].append(f"get_version_info: {exc.message}")
+                else:
+                    row["compatible"] = True
+                    platform_providers[platform_id] = binding.provider
             status_info = normalized_results.get("get_status")
             if isinstance(status_info, dict):
                 if type(status_info.get("online")) is bool:
@@ -576,13 +572,29 @@ class QQEnhancePlugin(Star):
             OPERATIONS,
             key=lambda item: (item.category, item.tool, item.operation),
         ):
-            enabled = self.runtime.operation_enabled(spec.operation_id)
-            reason = ""
-            enabled_packs = self.config["toolsets"]["enabled_packs"]
-            if enabled_packs and spec.category not in enabled_packs:
-                reason = "pack_not_enabled"
-            elif spec.operation_id in self.config["toolsets"]["disabled_operations"]:
-                reason = "disabled_by_config"
+            configured = operation_availability(self.config, spec)
+            support_by_platform = []
+            for platform in platforms:
+                if not platform["selected"]:
+                    continue
+                provider = platform_providers.get(platform["platform_id"])
+                state = operation_availability(self.config, spec, provider)
+                supported = state.supported
+                if spec.category != "web" and platform["compatible"] is False:
+                    supported = False
+                support_by_platform.append(
+                    {"platform_id": platform["platform_id"], "supported": supported}
+                )
+            support_values = [item["supported"] for item in support_by_platform]
+            supported = None
+            if spec.category == "web" or any(value is True for value in support_values):
+                supported = True
+            elif support_values and all(value is False for value in support_values):
+                supported = False
+            enabled = configured.configured and supported is not False
+            reason = configured.disabled_reason
+            if configured.configured and supported is False:
+                reason = "provider_unsupported"
             capabilities.append(
                 {
                     "category": spec.category,
@@ -594,6 +606,9 @@ class QQEnhancePlugin(Star):
                     "risk": spec.risk,
                     "permission": spec.permission,
                     "contexts": list(spec.contexts),
+                    "configured": configured.configured,
+                    "supported": supported,
+                    "platforms": support_by_platform,
                     "enabled": enabled,
                     "disabled_reason": reason,
                 }
@@ -657,11 +672,8 @@ class QQEnhancePlugin(Star):
             {
                 "generated_at": now,
                 "contract": {
-                    "version": NAPCAT_CONTRACT_VERSION,
-                    "supported_versions": (
-                        f">={'.'.join(map(str, NAPCAT_MIN_VERSION))},"
-                        f"<{'.'.join(map(str, NAPCAT_MAX_VERSION))}"
-                    ),
+                    "version": NAPCAT.contract_version,
+                    "supported_versions": NAPCAT.supported_versions,
                 },
                 "summary": {
                     "platforms": len(platforms),
@@ -671,7 +683,9 @@ class QQEnhancePlugin(Star):
                     "compatible_platforms": sum(
                         1 for row in platforms if row["compatible"] is True
                     ),
-                    "tools_enabled": len(self.runtime.enabled_tools()),
+                    "tools_enabled": len(
+                        {item["tool"] for item in capabilities if item["enabled"]}
+                    ),
                     "tools_total": len(TOOL_OPERATIONS),
                     "operations_enabled": enabled_operation_count,
                     "operations_total": len(capabilities),
@@ -1194,9 +1208,9 @@ class QQEnhancePlugin(Star):
         if inbound["component_spoof_protection"]["enabled"]:
             self._verify_inbound_components(event, raw)
         await self._enhance_inbound_qq_voice(event, raw)
-        red_packet = interaction_response["respond_to_red_packet"] and is_red_packet_event(
-            raw, self.config["limits"]["max_components"]
-        )
+        red_packet = interaction_response[
+            "respond_to_red_packet"
+        ] and is_red_packet_event(raw, self.config["limits"]["max_components"])
         semantics = describe_inbound_event(
             raw,
             str(event.get_self_id() or ""),
@@ -1447,9 +1461,7 @@ class QQEnhancePlugin(Star):
         """
 
         semanticize = self.config["inbound"]["semanticize_components"]
-        use_napcat_fallback = self.config["voice_recognition"][
-            "enhance_voice_messages"
-        ]
+        use_napcat_fallback = self.config["voice_recognition"]["enhance_voice_messages"]
         if not semanticize and not use_napcat_fallback:
             return
         if not isinstance(raw, dict) or raw.get("post_type") not in {None, "message"}:
@@ -1832,7 +1844,9 @@ class QQEnhancePlugin(Star):
             return
         item = event.get_extra("_qq_enhance_recall_input")
         if hasattr(self, "debouncer") and entry["arrival"] is not None:
-            item = self._submit_recall_input(event, key, entry["arrival"], notice.render())
+            item = self._submit_recall_input(
+                event, key, entry["arrival"], notice.render()
+            )
         if item is not None:
             item.content = notice.render()
         entry["pending"] = True
@@ -1850,7 +1864,9 @@ class QQEnhancePlugin(Star):
     def _submit_recall_input(self, event, key, related, content=""):
         item = event.get_extra("_qq_enhance_recall_input")
         if item is None:
-            item = ContextInput(key, asyncio.get_running_loop().create_future(), content)
+            item = ContextInput(
+                key, asyncio.get_running_loop().create_future(), content
+            )
             event.set_extra("_qq_enhance_recall_input", item)
             self.debouncer.submit_context(related, item)
         return item
@@ -1890,6 +1906,7 @@ class QQEnhancePlugin(Star):
             return
 
         mode = self.config["toolsets"]["exposure_mode"]
+        provider = self.runtime.cached_provider(event.get_platform_id())
         is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
         raw = getattr(event.message_obj, "raw_message", {})
@@ -1899,7 +1916,9 @@ class QQEnhancePlugin(Star):
         for tool_name, operations in TOOL_OPERATIONS.items():
             for operation in operations:
                 operation_id = f"{tool_name}.{operation}"
-                if not self.runtime.operation_enabled(operation_id):
+                if not operation_availability(
+                    self.config, OPERATION_MAP[operation_id], provider
+                ).enabled:
                     continue
                 if mode == "full" and current_group:
                     # Group tool visibility stays stable; execution authorizes callers.
@@ -2112,7 +2131,7 @@ class QQEnhancePlugin(Star):
                 ),
             )
             visible &= set(ordered[:maximum])
-        visible &= self.runtime.enabled_tools()
+        visible &= self.runtime.enabled_tools(provider)
         for tool_name in plugin_tools - visible:
             request.func_tool.remove_tool(tool_name)
         dialogue_prompt = self.config["toolsets"]["dialogue_prompt"]

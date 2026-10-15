@@ -49,6 +49,7 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config({"toolsets": {"exposure_mode": exposure_mode}})
     plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime._verified_platforms = {}
     plugin.runtime.config = plugin.config
 
     await plugin.enrich_inbound_qq_components(event)

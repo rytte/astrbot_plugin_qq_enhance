@@ -8,17 +8,22 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from astrbot_plugin_qq_enhance.catalog import OPERATIONS, TOOL_OPERATIONS
+from astrbot_plugin_qq_enhance.errors import QQToolError
 from astrbot_plugin_qq_enhance.main import (
     PLUGIN_NAME,
     QQEnhancePlugin,
 )
-from astrbot_plugin_qq_enhance.runtime import validate_config
+from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
+from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
 
 
 class PageClient:
     """Provide deterministic read-only OneBot diagnostics for Page tests."""
 
-    async def call_action(self, action: str) -> dict:
+    def __init__(self) -> None:
+        self.version_info = {"app_name": "NapCat.OneBot", "app_version": "4.18.19"}
+
+    async def call_action(self, action: str, **params) -> dict:
         """Return a fixture response for one diagnostic action.
 
         Args:
@@ -32,10 +37,7 @@ class PageClient:
         """
 
         responses = {
-            "get_version_info": {
-                "app_name": "NapCat.OneBot",
-                "app_version": "4.18.19",
-            },
+            "get_version_info": self.version_info,
             "get_status": {"online": True, "good": True},
             "get_login_info": {"user_id": 20002, "nickname": "Test Bot"},
         }
@@ -200,11 +202,126 @@ async def test_diagnostics_page_api_returns_sanitized_read_only_state(
         if item["operation_id"] == "qq_status.runtime"
     )
     assert runtime_capability["display_name"] == "获取运行状态"
+    assert runtime_capability["configured"] is True
+    assert runtime_capability["supported"] is True
+    assert runtime_capability["platforms"] == [
+        {"platform_id": "platform-a", "supported": True}
+    ]
     assert "session_id" not in payload["audits"][0]
     assert "params_hash" not in payload["audits"][0]
     assert "session_id" not in payload["pending_confirmations"][0]
     assert "action" not in payload["pending_confirmations"][0]
     assert "params_json" not in payload["pending_confirmations"][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version_info", "error_code"),
+    [
+        ({"app_name": "NapCat.OneBot", "app_version": "4.18.19"}, None),
+        ({"app_name": "NapCat.OneBot", "app_version": "v4.99.0"}, None),
+        (
+            {"app_name": "NapCat.OneBot", "app_version": "4.18.18"},
+            "unsupported_version",
+        ),
+        ({"app_name": "NapCat.OneBot", "app_version": "5.0.0"}, "unsupported_version"),
+        ({"app_name": "NapCat.OneBot", "app_version": "unknown"}, "response_invalid"),
+        (
+            {"app_name": "SnowLuma", "app_version": "1.14.22-node"},
+            "unsupported_version",
+        ),
+        ({"app_name": "Other", "app_version": "4.18.19"}, "unsupported_version"),
+        ([], "response_invalid"),
+    ],
+)
+async def test_diagnostics_and_execution_share_provider_validation(
+    version_info, error_code
+) -> None:
+    platform = PagePlatform("platform-a")
+    platform.client.version_info = version_info
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(None)
+    plugin.context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[platform]),
+        get_platform_inst=lambda _platform_id: platform,
+    )
+    plugin.storage = SimpleNamespace(
+        list_audit=AsyncMock(return_value=[]),
+        list_live_pending=AsyncMock(return_value=[]),
+    )
+    runtime = object.__new__(QQRuntime)
+    runtime.config = plugin.config
+    runtime.context = plugin.context
+    runtime._verified_platforms = {}
+    event = SimpleNamespace(
+        get_platform_name=lambda: "aiocqhttp", get_platform_id=lambda: "platform-a"
+    )
+    if error_code:
+        with pytest.raises(QQToolError) as caught:
+            await runtime.verify_platform(event)
+        assert caught.value.code == error_code
+    else:
+        await runtime.verify_platform(event)
+    payload = json.loads((await plugin.page_diagnostics()).body)
+    assert payload["platforms"][0]["compatible"] is (error_code is None)
+    capability = next(
+        item
+        for item in payload["capabilities"]
+        if item["operation_id"] == "qq_status.runtime"
+    )
+    assert capability["configured"] is True
+    assert capability["supported"] is (error_code is None)
+    assert capability["enabled"] is (error_code is None)
+    if error_code:
+        assert caught.value.message in payload["platforms"][0]["errors"][0]
+        assert capability["disabled_reason"] == "provider_unsupported"
+    web = next(
+        item
+        for item in payload["capabilities"]
+        if item["operation_id"] == "read_url.read"
+    )
+    assert web["supported"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform_id", ["", "platform-b"])
+async def test_diagnostics_reports_capabilities_per_selected_platform(
+    monkeypatch, platform_id
+) -> None:
+    provider = NapCatProvider()
+    provider.actions -= {"get_recent_contact"}
+    monkeypatch.setattr("astrbot_plugin_qq_enhance.providers.PROVIDERS", (provider,))
+    first = PagePlatform("platform-a")
+    second = PagePlatform("platform-b")
+    second.client.version_info = {"app_name": "SnowLuma", "app_version": "1.14.22-node"}
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config({"platform": {"platform_id": platform_id}})
+    plugin.context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[first, second])
+    )
+    plugin.storage = SimpleNamespace(
+        list_audit=AsyncMock(return_value=[]),
+        list_live_pending=AsyncMock(return_value=[]),
+    )
+    payload = json.loads((await plugin.page_diagnostics()).body)
+    recent = next(
+        item
+        for item in payload["capabilities"]
+        if item["operation_id"] == "qq_recent_contacts.list"
+    )
+    status = next(
+        item
+        for item in payload["capabilities"]
+        if item["operation_id"] == "qq_status.runtime"
+    )
+    assert recent["configured"] is True
+    assert recent["supported"] is False
+    assert recent["enabled"] is False
+    assert status["supported"] is (not platform_id)
+    expected = [{"platform_id": "platform-b", "supported": False}]
+    if not platform_id:
+        expected.insert(0, {"platform_id": "platform-a", "supported": False})
+    assert recent["platforms"] == expected
 
 
 def test_diagnostics_page_assets_and_titles_exist() -> None:

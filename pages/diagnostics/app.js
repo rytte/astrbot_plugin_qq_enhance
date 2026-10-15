@@ -25,6 +25,9 @@ const permissionLabels = {
 const disabledReasonLabels = {
   pack_not_enabled: "分类未启用",
   disabled_by_config: "配置已禁用",
+  web_reader_disabled: "网页阅读已关闭",
+  context_images_disabled: "会话图片已关闭",
+  provider_unsupported: "上游不支持",
 };
 const auditResultLabels = {
   ok: "成功",
@@ -203,10 +206,18 @@ function renderCapabilities() {
     const stateCell = document.createElement("td");
     stateCell.append(
       makeBadge(
-        item.enabled ? "已启用" : disabledReasonLabels[item.disabled_reason] || "已禁用",
-        item.enabled ? "success" : "danger",
+        item.configured ? "配置已启用" : disabledReasonLabels[item.disabled_reason] || "配置已禁用",
+        item.configured ? "success" : "danger",
       ),
     );
+    const supportBadge = makeBadge(
+      item.supported === true ? "上游支持" : item.supported === false ? "上游不支持" : "上游待验证",
+      item.supported === true ? "success" : item.supported === false ? "danger" : "warning",
+    );
+    supportBadge.title = item.platforms.map((platform) =>
+      `${platform.platform_id}: ${platform.supported === true ? "支持" : platform.supported === false ? "不支持" : "待验证"}`
+    ).join("；");
+    stateCell.append(" ", supportBadge);
     row.append(stateCell);
     body.append(row);
   }

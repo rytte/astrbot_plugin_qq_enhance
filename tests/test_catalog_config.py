@@ -12,14 +12,13 @@ import pytest
 
 from astrbot.api import AstrBotConfig
 from astrbot_plugin_qq_enhance.catalog import (
-    NAPCAT_MAX_VERSION,
-    NAPCAT_MIN_VERSION,
     OPERATION_MAP,
     OPERATION_PARAMETERS,
     OPERATIONS,
     TOOL_OPERATIONS,
 )
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.providers import NAPCAT
 from astrbot_plugin_qq_enhance.runtime import (
     DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
     PROTECTED_COMPONENT_TYPES,
@@ -42,8 +41,8 @@ def test_catalog_is_complete_and_matches_contract() -> None:
 
 
 def test_version_range_is_explicit() -> None:
-    assert NAPCAT_MIN_VERSION == (4, 18, 19)
-    assert NAPCAT_MAX_VERSION == (5, 0, 0)
+    assert NAPCAT.min_version == (4, 18, 19)
+    assert NAPCAT.max_version == (5, 0, 0)
 
 
 @pytest.mark.parametrize("config", [None, {}, {"toolsets": {}}])

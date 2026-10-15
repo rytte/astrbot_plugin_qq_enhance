@@ -14,11 +14,11 @@ import pytest_asyncio
 from aiohttp import web
 
 from astrbot_plugin_qq_enhance import runtime as runtime_module
+from astrbot_plugin_qq_enhance.errors import QQToolError
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
 from astrbot_plugin_qq_enhance.runtime import (
     DownloadedResource,
     QQRuntime,
-    QQToolError,
     _ValidatedResolver,
     validate_config,
 )

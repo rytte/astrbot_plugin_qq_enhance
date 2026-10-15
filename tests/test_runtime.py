@@ -15,10 +15,13 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import File, Image
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, TOOL_OPERATIONS
+from astrbot_plugin_qq_enhance.errors import QQToolError
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.providers import NAPCAT
+from astrbot_plugin_qq_enhance.providers.base import ProviderBinding, VersionInfo
+from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
 from astrbot_plugin_qq_enhance.runtime import (
     QQRuntime,
-    QQToolError,
     validate_config,
 )
 from astrbot_plugin_qq_enhance.storage import Storage
@@ -174,6 +177,92 @@ async def make_runtime(tmp_path, config: dict | None = None):
     ):
         runtime = QQRuntime(FakeContext(client), validate_config(config), storage)
     return runtime, client, storage
+
+
+@pytest.mark.asyncio
+async def test_provider_detection_is_scoped_to_each_platform(tmp_path) -> None:
+    runtime, _, _ = await make_runtime(tmp_path)
+    first = FakeEvent()
+    other = FakeEvent()
+    other.get_platform_id = lambda: "platform-b"
+    runtime.call_action = AsyncMock(
+        side_effect=[
+            {"app_name": "NapCat.OneBot", "app_version": "4.18.19"},
+            {"app_name": "SnowLuma", "app_version": "1.14.22-node"},
+        ]
+    )
+    assert await runtime.verify_platform(first) is NAPCAT
+    assert await runtime.verify_platform(first) is NAPCAT
+    with pytest.raises(QQToolError, match="不是 NapCat"):
+        await runtime.verify_platform(other)
+    assert runtime.call_action.await_count == 2
+    assert runtime.cached_provider("platform-b") is None
+
+
+@pytest.mark.asyncio
+async def test_unsupported_capability_fails_before_file_access_and_dispatch(
+    tmp_path,
+) -> None:
+    runtime, client, storage = await make_runtime(tmp_path)
+    provider = NapCatProvider()
+    provider.actions -= {"upload_group_file"}
+    runtime._verified_platforms["platform-a"] = ProviderBinding(
+        VersionInfo("NapCat", "4.18.19"), provider
+    )
+    runtime.resolve_input_file = AsyncMock()
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001"),
+            "qq_group_files",
+            "upload",
+            {"group_id": 30001, "path": str(tmp_path / "unread-file"), "name": "file"},
+        )
+    )
+    assert result["error"]["code"] == "capability_unavailable"
+    runtime.resolve_input_file.assert_not_awaited()
+    assert client.calls == []
+    assert (await storage.list_audit(1))[0]["result_code"] == "capability_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("still_supported", [True, False])
+async def test_confirmation_checks_support_and_reuses_exact_wire_params(
+    tmp_path, still_supported
+) -> None:
+    runtime, client, _ = await make_runtime(
+        tmp_path,
+        {
+            "confirmation": {"operations": ["qq_message_manage.reaction_add"]},
+        },
+    )
+    event = FakeEvent(group_id="30001")
+    pending = json.loads(
+        await runtime.execute(
+            event,
+            "qq_message_manage",
+            "reaction_add",
+            {"message_id": -123, "emoji_id": "1"},
+        )
+    )
+    assert pending["error"]["code"] == "confirmation_required"
+    provider = NapCatProvider()
+    if not still_supported:
+        provider.actions -= {"set_msg_emoji_like"}
+    runtime._verified_platforms["platform-a"] = ProviderBinding(
+        VersionInfo("NapCat", "4.18.19"), provider
+    )
+    with patch.object(
+        provider, "prepare_action", side_effect=AssertionError("必须复用已确认参数")
+    ):
+        result = await runtime.confirm(event, pending["pending_id"])
+    sent = [params for action, params in client.calls if action == "set_msg_emoji_like"]
+    if still_supported:
+        assert result["status"] == "executed"
+        assert sent == [{"message_id": -123, "emoji_id": "1", "set": True}]
+    else:
+        assert result["status"] == "not_executed"
+        assert "契约未支持" in result["message"]
+        assert not sent
 
 
 def test_context_images_switch_defaults_enabled_and_controls_inspect() -> None:
@@ -1711,6 +1800,7 @@ def test_send_success_result_tells_model_not_to_repeat_content() -> None:
         "qq_send_message.send",
         {"message_id": 123},
         {},
+        provider_name="NapCat",
     )
 
     assert result["ok"] is True

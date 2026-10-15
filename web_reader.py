@@ -16,7 +16,8 @@ from trafilatura.utils import detect_encoding
 from astrbot.api import logger
 
 from .catalog import OPERATION_MAP, TOOL_OPERATIONS
-from .runtime import QQRuntime, QQToolError
+from .errors import QQToolError
+from .runtime import QQRuntime
 
 
 WEB_TOOL_NAMES = frozenset({"read_url", "read_page_section", "find_in_page"})

@@ -27,9 +27,8 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
 )
 
+from .capabilities import operation_availability
 from .catalog import (
-    NAPCAT_MAX_VERSION,
-    NAPCAT_MIN_VERSION,
     OPERATION_MAP,
     OPERATION_PARAMETERS,
     OPERATIONS,
@@ -37,8 +36,11 @@ from .catalog import (
     OperationSpec,
 )
 from .context_images import ContextImageError, ContextImageManager
+from .errors import QQToolError
 from .group_image_cache import GroupImageCache
 from .notice_context import DEFAULT_NOTICE_POLICIES
+from .providers import resolve_provider
+from .providers.base import OneBotProvider, ProviderBinding, VersionInfo
 from .request_notification import PlatformNotificationEvent
 from .storage import Storage
 
@@ -267,20 +269,6 @@ REQUEST_DECISION_OPERATIONS = frozenset(
 GROUP_REQUEST_DECISION_OPERATIONS = frozenset(
     {"qq_group_request.approve", "qq_group_request.reject"}
 )
-
-
-class QQToolError(Exception):
-    """Represent a stable error returned by QQ tools.
-
-    Args:
-        code: Stable machine-readable error code.
-        message: Concise Chinese explanation.
-    """
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
 
 
 class _ValidatedResolver(aiohttp.abc.AbstractResolver):
@@ -654,7 +642,7 @@ class QQRuntime:
             ),
         )
         self._last_context_image_cleanup_day: tuple[int, int, int] | None = None
-        self._verified_platforms: dict[str, tuple[int, int, int]] = {}
+        self._verified_platforms: dict[str, ProviderBinding] = {}
 
     def operation_enabled(self, operation_id: str) -> bool:
         """Check configuration-only capability availability.
@@ -666,22 +654,16 @@ class QQRuntime:
             Whether the operation is enabled by the current configuration.
         """
 
-        spec = OPERATION_MAP[operation_id]
-        if spec.category == "web" and not self.config["web_reader"]["enabled"]:
-            return False
-        if (
-            operation_id == "qq_media.inspect"
-            and not self.config["context_images"]["enabled"]
-        ):
-            return False
-        packs = self.config["toolsets"]["enabled_packs"]
-        if packs and spec.category not in packs:
-            return False
-        if operation_id in self.config["toolsets"]["disabled_operations"]:
-            return False
-        return True
+        return operation_availability(
+            self.config, OPERATION_MAP[operation_id]
+        ).configured
 
-    def enabled_tools(self) -> set[str]:
+    def cached_provider(self, platform_id: str) -> OneBotProvider | None:
+        """Return only an already verified provider for the exact platform."""
+        binding = self._verified_platforms.get(platform_id)
+        return binding.provider if binding else None
+
+    def enabled_tools(self, provider: OneBotProvider | None = None) -> set[str]:
         """Return tools with at least one enabled operation.
 
         Returns:
@@ -692,7 +674,9 @@ class QQRuntime:
             tool
             for tool, operations in TOOL_OPERATIONS.items()
             if any(
-                self.operation_enabled(f"{tool}.{operation}")
+                operation_availability(
+                    self.config, OPERATION_MAP[f"{tool}.{operation}"], provider
+                ).enabled
                 for operation in operations
             )
         }
@@ -728,7 +712,8 @@ class QQRuntime:
                 )
             if not self.operation_enabled(operation_id):
                 raise QQToolError("capability_unavailable", "该 QQ 操作已被配置禁用")
-            await self.verify_platform(event)
+            provider = await self.verify_platform(event)
+            provider.capability(spec).require()
             normalized = self.validate_parameters(operation_id, params)
             if (
                 operation_id in REQUEST_DECISION_OPERATIONS
@@ -980,7 +965,9 @@ class QQRuntime:
                 )
                 return data
             data = await self.normalize_media_result(event, spec, data)
-            result = self.success_result(operation_id, data, normalized)
+            result = self.success_result(
+                operation_id, data, normalized, provider_name=provider.display_name
+            )
             if warnings:
                 result["warnings"] = warnings
             await self.audit(
@@ -1071,7 +1058,8 @@ class QQRuntime:
         try:
             if not self.operation_enabled(spec.operation_id):
                 raise QQToolError("capability_unavailable", "该操作已被配置禁用")
-            await self.verify_platform(event)
+            provider = await self.verify_platform(event)
+            provider.capability(spec).require()
             stored_params = record["params"]
             authorization_params = stored_params.get("authorization_params")
             action_params = stored_params.get("action_params")
@@ -1171,14 +1159,14 @@ class QQRuntime:
                 logger.exception("Failed to finish confirmation record")
                 result["message"] += "确认记录收尾失败，请勿重复操作。"
 
-    async def verify_platform(self, event: Any) -> None:
-        """Validate adapter identity and the supported NapCat version range.
+    async def verify_platform(self, event: Any) -> OneBotProvider:
+        """Validate adapter authorization and resolve its protocol provider.
 
         Args:
             event: Current AstrBot event.
 
         Raises:
-            QQToolError: If platform or NapCat version is unsupported.
+            QQToolError: If the platform or upstream version is unsupported.
         """
 
         if event.get_platform_name() != "aiocqhttp":
@@ -1188,31 +1176,13 @@ class QQRuntime:
             raise QQToolError("unsupported_platform", "当前 aiocqhttp 实例未被插件授权")
         platform_id = event.get_platform_id()
         if platform_id in self._verified_platforms:
-            return
+            return self._verified_platforms[platform_id].provider
         result = await self.call_action(
             event, "get_version_info", {}, skip_contract=True
         )
-        if not isinstance(result, dict):
-            raise QQToolError("response_invalid", "get_version_info 返回格式无效")
-        implementation = str(
-            result.get("app_name")
-            or result.get("implementation")
-            or result.get("app_full_name")
-            or ""
-        )
-        if "napcat" not in implementation.lower():
-            raise QQToolError("unsupported_version", "当前 OneBot 实现不是 NapCat")
-        raw_version = str(result.get("app_version") or result.get("version") or "")
-        match = re.search(r"(\d+)\.(\d+)\.(\d+)", raw_version)
-        if not match:
-            raise QQToolError("response_invalid", "无法识别 NapCat 版本号")
-        version = tuple(int(part) for part in match.groups())
-        if version < NAPCAT_MIN_VERSION or version >= NAPCAT_MAX_VERSION:
-            raise QQToolError(
-                "unsupported_version",
-                "仅支持 NapCat >=4.18.19,<5.0.0，当前版本为 " + raw_version,
-            )
-        self._verified_platforms[platform_id] = version
+        binding = resolve_provider(VersionInfo.from_response(result))
+        self._verified_platforms[platform_id] = binding
+        return binding.provider
 
     def validate_parameters(
         self, operation_id: str, params: dict[str, Any] | None
@@ -1618,6 +1588,8 @@ class QQRuntime:
         """
 
         operation_id = spec.operation_id
+        provider = await self.verify_platform(event)
+        provider.capability(spec).require()
         action = spec.action
         action_params = deepcopy(params)
         if operation_id in REQUEST_DECISION_OPERATIONS:
@@ -1634,7 +1606,7 @@ class QQRuntime:
                     "permission": item.permission,
                 }
                 for item in OPERATIONS
-                if self.operation_enabled(item.operation_id)
+                if operation_availability(self.config, item, provider).enabled
             ]
         elif operation_id == "qq_media.inspect":
             try:
@@ -1649,8 +1621,6 @@ class QQRuntime:
                 str(action_params.pop("status", "pending")),
                 self.config["limits"]["max_page_size"],
             )
-        elif operation_id == "qq_group_request.list":
-            action_params.pop("group_id", None)
         elif operation_id == "qq_private_files.url" and not action_params.get(
             "file_id"
         ):
@@ -1681,11 +1651,9 @@ class QQRuntime:
         elif operation_id == "qq_send_forward.send":
             action, action_params = await self.prepare_forward(event, action_params)
         else:
-            if operation_id == "qq_account_manage.set_avatar":
-                action_params = {
-                    "file": str(await self.resolve_input_file(event, action_params))
-                }
-            elif operation_id in {
+            resolved_file = None
+            if operation_id in {
+                "qq_account_manage.set_avatar",
                 "qq_group_manage.avatar",
                 "qq_group_files.upload",
                 "qq_private_files.upload",
@@ -1694,34 +1662,8 @@ class QQRuntime:
                 path = await self.resolve_input_file(event, action_params)
                 for key in MEDIA_SOURCE_KEYS:
                     action_params.pop(key, None)
-                action_params["image" if operation_id == "qq_media.ocr" else "file"] = (
-                    str(path)
-                )
-            if operation_id == "qq_account_manage.set_online_status":
-                pass
-            elif operation_id == "qq_group_info.honor":
-                action_params["type"] = action_params.pop("honor_type", "all")
-            elif operation_id == "qq_friend_request.approve":
-                action_params["approve"] = True
-            elif operation_id == "qq_friend_request.reject":
-                action_params["approve"] = False
-            elif operation_id == "qq_group_request.approve":
-                action_params.pop("group_id", None)
-                action_params["approve"] = True
-            elif operation_id == "qq_group_request.reject":
-                action_params.pop("group_id", None)
-                action_params["approve"] = False
-            elif operation_id == "qq_message_manage.reaction_add":
-                action_params["set"] = True
-            elif operation_id == "qq_message_manage.reaction_remove":
-                action_params["set"] = False
-            elif operation_id in {"qq_essence.add", "qq_essence.remove"}:
-                action_params.pop("group_id", None)
-            elif operation_id == "qq_private_files.url":
-                action_params.pop("user_id", None)
-            elif operation_id == "qq_notice.detail":
-                action_params.pop("notice_id", None)
-            elif operation_id == "qq_notice.send":
+                resolved_file = str(path)
+            if operation_id == "qq_notice.send":
                 image = action_params.get("image")
                 if image:
                     if not isinstance(image, dict):
@@ -1731,25 +1673,9 @@ class QQRuntime:
                     action_params["image"] = str(
                         await self.resolve_input_file(event, image)
                     )
-            elif (
-                operation_id == "qq_recent_contacts.list"
-                and "count" not in action_params
-            ):
-                action_params["count"] = page_size
-            elif operation_id in {
-                "qq_group_history.list",
-                "qq_friend_history.list",
-            }:
-                action_params.setdefault("message_seq", 0)
-                action_params.setdefault("count", min(page_size, 100))
-            elif operation_id == "qq_forward_get.get":
-                action_params.pop("depth", None)
-                reference = action_params.pop("message_id", None)
-                if reference is None:
-                    reference = action_params.pop("res_id")
-                action_params["message_id"] = str(reference)
-            elif operation_id == "qq_group_request.ignored":
-                action_params.pop("group_id", None)
+            action, action_params = provider.prepare_action(
+                spec, action_params, page_size=page_size, resolved_file=resolved_file
+            )
         if local_result is not None and not isinstance(local_result, CallToolResult):
             local_result = self.paginate(local_result, cursor, page_size)
         return action, action_params, local_result
@@ -2816,27 +2742,28 @@ class QQRuntime:
 
         if spec.tool != "qq_media" or not isinstance(data, dict):
             return self.sanitize_data(data)
+        provider = await self.verify_platform(event)
+        media = provider.local_media(spec, data)
         result = self.sanitize_data(data)
-        raw_path = data.get("file") or data.get("path")
         if (
-            raw_path
-            and Path(str(raw_path)).is_absolute()
-            and Path(str(raw_path)).is_file()
+            media is not None
+            and Path(media.path).is_absolute()
+            and Path(media.path).is_file()
         ):
-            resolved_path = Path(str(raw_path)).resolve(strict=True)
+            resolved_path = Path(media.path).resolve(strict=True)
             media_ref = secrets.token_hex(12)
             await self.storage.add_media_ref(
                 media_ref,
                 str(event.get_sender_id() or ""),
-                "napcat",
+                provider.id,
                 resolved_path,
                 int(time.time()) + self.config["files"]["temp_ttl_seconds"],
             )
             if not isinstance(result, dict):
                 result = {}
-            result.pop("file", None)
-            result.pop("path", None)
-            if spec.operation_id == "qq_media.convert_record":
+            for key in media.path_fields:
+                result.pop(key, None)
+            if media.include_metadata:
                 if result.get("url") == "[local-path]":
                     result.pop("url")
                 result["file_name"] = resolved_path.name
@@ -2845,7 +2772,12 @@ class QQRuntime:
         return result
 
     def success_result(
-        self, operation_id: str, data: Any, params: dict[str, Any]
+        self,
+        operation_id: str,
+        data: Any,
+        params: dict[str, Any],
+        *,
+        provider_name: str,
     ) -> dict[str, Any]:
         """Build a stable successful result and apply local pagination.
 
@@ -2883,10 +2815,10 @@ class QQRuntime:
             "qq_send_message.send",
             "qq_send_forward.send",
         }:
-            summary = "NapCat 已接受发送请求；最终回复不要重复消息正文或卡片"
+            summary = f"{provider_name} 已接受发送请求；最终回复不要重复消息正文或卡片"
             if isinstance(data, dict) and data.get("random_results"):
                 summary = (
-                    "NapCat 已接受发送请求；随机组件最终结果见 data.random_results；"
+                    f"{provider_name} 已接受发送请求；随机组件最终结果见 data.random_results；"
                     "最终回复不要重复消息正文或卡片"
                 )
             return {
