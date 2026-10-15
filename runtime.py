@@ -52,6 +52,9 @@ DEFAULT_QQ_TOOL_DIALOGUE_PROMPT = """QQ工具调用前后，发言是可选的�
 可以继续自然聊天，没有新内容就结束，不必补发回复。
 查询结果、用户追问、必要澄清和失败信息仍应正常交代；不要提前或虚假宣称成功。"""
 
+SENT_RANDOM_RESULT_TIMEOUT = 10.0
+SENT_RANDOM_HISTORY_DELAYS = (0.0, 0.5, 1.0, 2.0, 4.0)
+
 DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
@@ -843,57 +846,15 @@ class QQRuntime:
                     else Counter()
                 )
                 if expected_random:
-                    message_id = (
-                        data.get("message_id") if isinstance(data, dict) else None
+                    data = await self.resolve_sent_random_results(
+                        event,
+                        provider,
+                        action,
+                        action_params,
+                        data,
+                        expected_random,
+                        warnings,
                     )
-                    if (
-                        isinstance(message_id, (str, int))
-                        and not isinstance(message_id, bool)
-                        and str(message_id).lstrip("-").isdecimal()
-                    ):
-                        try:
-                            sent_message = await self.call_action(
-                                event, "get_msg", {"message_id": message_id}
-                            )
-                        except QQToolError as exc:
-                            warnings.append(f"随机结果自动回查失败：{exc.message}")
-                        else:
-                            message = (
-                                sent_message.get("message")
-                                if isinstance(sent_message, dict)
-                                else None
-                            )
-                            random_results = []
-                            resolved_random = Counter()
-                            if isinstance(message, list):
-                                for component in message:
-                                    random_component = parse_random_component(component)
-                                    if (
-                                        random_component is None
-                                        or random_component.result is None
-                                        or resolved_random[random_component.kind]
-                                        >= expected_random[random_component.kind]
-                                    ):
-                                        continue
-                                    resolved_random[random_component.kind] += 1
-                                    random_results.append(
-                                        {
-                                            "type": random_component.kind,
-                                            "result": random_component.result,
-                                        }
-                                    )
-                            if random_results:
-                                data = {**data, "random_results": random_results}
-                            if resolved_random != expected_random:
-                                warnings.append(
-                                    "消息已发送，但部分随机组件的最终结果未能读取"
-                                    if random_results
-                                    else "消息已发送，但未能读取随机组件的最终结果"
-                                )
-                    else:
-                        warnings.append(
-                            "消息已发送，但响应中没有可用于回查的 message_id"
-                        )
                 if operation_id in {
                     "qq_group_request.list",
                     "qq_group_request.ignored",
@@ -1016,6 +977,161 @@ class QQRuntime:
                     },
                 }
             )
+
+    async def resolve_sent_random_results(
+        self,
+        event: Any,
+        provider: OneBotProvider,
+        send_action: str,
+        send_params: dict[str, Any],
+        data: Any,
+        expected: Counter[str],
+        warnings: list[str],
+    ) -> Any:
+        """Read the sent result within one deadline, allowing history to catch up."""
+        message_id = data.get("message_id") if isinstance(data, dict) else None
+        if (
+            not isinstance(message_id, (str, int))
+            or isinstance(message_id, bool)
+            or not re.fullmatch(r"-?[0-9]+", str(message_id))
+            or int(message_id) == 0
+        ):
+            warnings.append("消息已发送，但响应中没有可用于回查的 message_id")
+            return data
+        message_id = int(message_id)
+        errors: list[str] = []
+        results: list[dict[str, str]] = []
+        started = time.monotonic()
+        attempts = 0
+        returned_ids: list[Any] = []
+        matched = False
+        try:
+            async with asyncio.timeout(SENT_RANDOM_RESULT_TIMEOUT):
+                try:
+                    sent_message = await self.call_action(
+                        event, "get_msg", {"message_id": message_id}
+                    )
+                except QQToolError as exc:
+                    errors.append(f"随机结果自动回查失败：{exc.message}")
+                else:
+                    results = self.sent_random_results(sent_message, expected)
+
+                history_action = (
+                    provider.sent_random_history_action(
+                        send_action, send_params, message_id
+                    )
+                    if len(results) < expected.total()
+                    else None
+                )
+                if history_action is not None:
+                    action, params = history_action
+                    for delay in SENT_RANDOM_HISTORY_DELAYS:
+                        if delay:
+                            await asyncio.sleep(delay)
+                        attempts += 1
+                        try:
+                            history = await self.call_action(event, action, params)
+                        except QQToolError as exc:
+                            errors.append(f"随机结果历史补查失败：{exc.message}")
+                            break
+                        messages = (
+                            history.get("messages")
+                            if isinstance(history, dict)
+                            else None
+                        )
+                        if not isinstance(messages, list):
+                            break
+                        returned_ids = [
+                            item.get("message_id")
+                            for item in messages
+                            if isinstance(item, dict)
+                        ]
+                        matched = False
+                        for message in messages:
+                            if not self.matches_sent_history(
+                                message, event, send_action, send_params, message_id
+                            ):
+                                continue
+                            matched = True
+                            candidate = self.sent_random_results(message, expected)
+                            # Keep one snapshot; repeated reads must not count
+                            # the same random component more than once.
+                            if len(candidate) >= len(results):
+                                results = candidate
+                            break
+                        if len(results) == expected.total():
+                            break
+        except TimeoutError:
+            errors.append(f"随机结果回查等待超时（{SENT_RANDOM_RESULT_TIMEOUT:g} 秒）")
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if attempts:
+            detail = (
+                f"message_id={message_id}, attempts={attempts}, "
+                f"elapsed_ms={elapsed_ms}, resolved={len(results)}/{expected.total()}"
+            )
+            if len(results) == expected.total():
+                logger.info(f"QQ 随机结果历史补查成功：{detail}")
+            else:
+                logger.warning(
+                    f"QQ 随机结果历史补查未完成：{detail}, matched={matched}, "
+                    f"self_id={event.get_self_id()}, returned_message_ids={returned_ids}"
+                )
+        if results:
+            data = {**data, "random_results": results}
+        if len(results) < expected.total():
+            warnings.extend(errors)
+            warnings.append(
+                "消息已发送，但部分随机组件的最终结果未能读取"
+                if results
+                else "消息已发送，但未能读取随机组件的最终结果"
+            )
+        return data
+
+    @staticmethod
+    def sent_random_results(
+        message: Any, expected: Counter[str]
+    ) -> list[dict[str, str]]:
+        components = message.get("message") if isinstance(message, dict) else None
+        results: list[dict[str, str]] = []
+        resolved: Counter[str] = Counter()
+        if isinstance(components, list):
+            for component in components:
+                parsed = parse_random_component(component)
+                if (
+                    parsed is None
+                    or parsed.result is None
+                    or resolved[parsed.kind] >= expected[parsed.kind]
+                ):
+                    continue
+                resolved[parsed.kind] += 1
+                results.append({"type": parsed.kind, "result": parsed.result})
+        return results
+
+    @staticmethod
+    def matches_sent_history(
+        message: Any,
+        event: Any,
+        send_action: str,
+        send_params: dict[str, Any],
+        message_id: int,
+    ) -> bool:
+        if not isinstance(message, dict):
+            return False
+        self_id = str(event.get_self_id() or "")
+        if (
+            not self_id.isdecimal()
+            or int(self_id) <= 0
+            or str(message.get("message_id")) != str(message_id)
+            or str(message.get("user_id")) != self_id
+        ):
+            return False
+        if send_action == "send_group_msg":
+            return message.get("message_type") == "group" and str(
+                message.get("group_id")
+            ) == str(send_params["group_id"])
+        return message.get("message_type") == "private" and str(
+            message.get("target_id")
+        ) == str(send_params["user_id"])
 
     async def confirm(self, event: Any, pending_id: str) -> dict:
         """Execute an exact pending operation after a real user command.

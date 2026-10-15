@@ -95,6 +95,11 @@ class NapCatProvider:
     ) -> EncodedMedia | None:
         return None
 
+    def sent_random_history_action(
+        self, send_action: str, send_params: dict[str, Any], message_id: int
+    ) -> tuple[str, dict[str, Any]] | None:
+        return None
+
     def local_media(self, spec: OperationSpec, data: Any) -> LocalMedia | None:
         if spec.tool != "qq_media" or not isinstance(data, dict):
             return None

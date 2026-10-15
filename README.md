@@ -20,7 +20,7 @@
 | 好友与账号 | 查询资料、点赞、修改备注、管理好友申请，以及由 AstrBot 管理员维护机器人资料 |
 | 群聊管理 | 查询成员、历史消息和公告，管理禁言、群名片、精华消息、群申请与群文件 |
 
-完整的 NapCat 动作对应关系见 [能力矩阵](./Capabilities.md)，SnowLuma 的逐项源码核对见 [SnowLuma 能力矩阵](./Capabilities_SnowLuma.md)。
+完整的动作对应关系见 [NapCat 能力矩阵](./Capabilities.md) / [SnowLuma 能力矩阵](./Capabilities_SnowLuma.md)。
 
 ### 🧩 插件增强能力
 
@@ -94,26 +94,8 @@
 
   * Windows11
   * AstrBot 4.27.4
-  * NapCat 4.18.19
+  * NapCat 4.18.19 / SnowLuma 1.14.22
   * NTQQ 9.9.28-46928
-
-### SnowLuma 支持范围
-
-适配基线为 [SnowLuma v1.14.22](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，接受其 `1.14.22-node` 版本标识，且要求 `protocol_version=v11`。其他版本会明确拒绝，不自动视为兼容；无需添加协议端选择配置，由 `get_version_info` 自动识别。
-
-| 能力 | SnowLuma v1.14.22 的行为 |
-| --- | --- |
-| 最近联系人、扩展群资料 | `qq_recent_contacts.list` 与 `qq_group_info.detail_ex` 禁用：前者是空数组占位，后者只有普通群资料；普通群资料仍可查询 |
-| 历史消息 | 使用 `message_id` 作为有符号 32 位消息锚点，允许负数，省略或 `0` 查询最新记录；拒绝 `message_seq`。NapCat 继续使用 `message_seq`，两者不能改名或混用 |
-| 群文件移动 | 公开参数保持 `current_parent_directory` / `target_parent_directory`，适配器转换为 SnowLuma 的 `parent_directory` / `target_directory` |
-| OCR | 只接受 `url` 或 SnowLuma 图片缓存 `file_id`；拒绝 `path`、`base64`、`media_ref`。URL 经插件的 DNS、重定向及体积检查后，将最终 URL 交给 QQ 服务端识别；过期的图片地址应使用可刷新的缓存 `file_id` |
-| 语音转码 | `get_record(out_format=...)` 和 `convert_record` 的 Base64 输出保存为插件临时文件，返回 `media_ref`、实际文件名和大小；不将源语音 URL 当作转码文件，临时文件按配置过期清理 |
-| 私聊文件下载 | 可传原始文件消息中的 `file_hash`，并保留 `user_id`；NapCat 不接受 `file_hash`。不传 `file_id` 时仍查询当前私聊附件已有地址 |
-| 账号资料、好友审批、头衔、公告 | 明确拒绝不生效的 `company/email/college`、审批 `remark`、头衔 `duration`、公告独立 `title`；好友备注可在通过申请后单独修改，公告标题可写入 `content` |
-| 强制刷新、退群与群头像 | 在线设备、好友列表及陌生人资料不支持 `no_cache=true`；退群不支持 `is_dismiss=true`，群头像不支持 `cache=true` |
-| 查询数据限制 | 在线设备依赖本次会话的设备快照，无快照时失败；禁言列表可能延迟约 60 秒；部分成员资料字段是上游固定值。工具结果和诊断会提示这些限制 |
-
-消息发送、合并转发、语音识别及其他已登记动作共用现有工具流程。以上适配经过固定版本源码核对和离线回归测试，尚未完成登录 QQ 的在线联调；实际效果仍受 QQ 权限、登录状态和服务端限制影响。
 
 ### 2. 安装插件
 
@@ -160,6 +142,24 @@ QQ Enhance initialized
 > 插件加载时由 AstrBot 按当前 Schema 自动清理已删除字段并补齐新增字段，无需用户手动删除旧字段；
 >
 > 随后插件校验整理后的配置，类型、取值范围、操作名称或依赖关系不合法时仍会明确报错。
+
+### SnowLuma 支持范围
+
+适配基线为 [SnowLuma v1.14.22](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，接受其 `1.14.22-node` 版本标识，且要求 `protocol_version=v11`。其他版本会明确拒绝，不自动视为兼容；无需添加协议端选择配置，由 `get_version_info` 自动识别。
+
+| 能力                           | SnowLuma v1.14.22 的行为                                     |
+| ------------------------------ | ------------------------------------------------------------ |
+| 最近联系人、扩展群资料         | `qq_recent_contacts.list` 与 `qq_group_info.detail_ex` 禁用：前者是空数组占位，后者只有普通群资料；普通群资料仍可查询 |
+| 历史消息                       | 使用 `message_id` 作为有符号 32 位消息锚点，允许负数，省略或 `0` 查询最新记录；拒绝 `message_seq`。NapCat 继续使用 `message_seq`，两者不能改名或混用 |
+| 群文件移动                     | 公开参数保持 `current_parent_directory` / `target_parent_directory`，适配器转换为 SnowLuma 的 `parent_directory` / `target_directory` |
+| OCR                            | 只接受 `url` 或 SnowLuma 图片缓存 `file_id`；拒绝 `path`、`base64`、`media_ref`。URL 经插件的 DNS、重定向及体积检查后，将最终 URL 交给 QQ 服务端识别；过期的图片地址应使用可刷新的缓存 `file_id` |
+| 语音转码                       | `get_record(out_format=...)` 和 `convert_record` 的 Base64 输出保存为插件临时文件，返回 `media_ref`、实际文件名和大小；不将源语音 URL 当作转码文件，临时文件按配置过期清理 |
+| 私聊文件下载                   | 可传原始文件消息中的 `file_hash`，并保留 `user_id`；NapCat 不接受 `file_hash`。不传 `file_id` 时仍查询当前私聊附件已有地址 |
+| 账号资料、好友审批、头衔、公告 | 明确拒绝不生效的 `company/email/college`、审批 `remark`、头衔 `duration`、公告独立 `title`；好友备注可在通过申请后单独修改，公告标题可写入 `content` |
+| 强制刷新、退群与群头像         | 在线设备、好友列表及陌生人资料不支持 `no_cache=true`；退群不支持 `is_dismiss=true`，群头像不支持 `cache=true` |
+| 查询数据限制                   | 在线设备依赖本次会话的设备快照，无快照时失败；禁言列表可能延迟约 60 秒；部分成员资料字段是上游固定值。工具结果和诊断会提示这些限制 |
+
+消息发送、合并转发、语音识别及其他已登记动作共用现有工具流程。以上适配经过固定版本源码核对和离线回归测试；私聊自发骰子与猜拳的结果回查已通过用户提供的在线日志验证，群聊补查尚待实测。实际效果仍受 QQ 权限、登录状态和服务端限制影响。
 
 ### 工具暴露模式
 

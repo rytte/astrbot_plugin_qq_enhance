@@ -184,6 +184,33 @@ class SnowLumaProvider:
         # SnowLuma exposes cache URLs and inline converted bytes, never local paths.
         return None
 
+    def sent_random_history_action(
+        self, send_action: str, send_params: dict[str, Any], message_id: int
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Fetch the server copy when the synthetic send cache has no resultId."""
+        if not -(2**31) <= message_id < 2**31 or message_id == 0:
+            return None
+        if send_action == "send_group_msg":
+            action = "get_group_msg_history"
+            target = {"group_id": send_params["group_id"]}
+            anchor, count = message_id, 1
+        elif send_action == "send_private_msg" and "group_id" not in send_params:
+            action = "get_friend_msg_history"
+            target = {"user_id": send_params["user_id"]}
+            # A private send's cached anchor can select an earlier text row.
+            # Unanchored requests use QQ roaming history, independently of that
+            # sequence. The runtime still requires the original message_id.
+            anchor, count = 0, 20
+        else:
+            # Temporary sessions are not friend-history conversations.
+            return None
+        return action, {
+            **target,
+            "message_id": anchor,
+            "count": count,
+            "reverse_order": True,
+        }
+
     def encoded_media(
         self, spec: OperationSpec, data: Any, params: dict[str, Any]
     ) -> EncodedMedia | None:

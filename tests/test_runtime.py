@@ -21,11 +21,20 @@ from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.providers.base import ProviderBinding, VersionInfo
 from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
 from astrbot_plugin_qq_enhance.runtime import (
+    SENT_RANDOM_HISTORY_DELAYS,
     DownloadedResource,
     QQRuntime,
     validate_config,
 )
 from astrbot_plugin_qq_enhance.storage import Storage
+
+
+@pytest.fixture(autouse=True)
+def fast_random_history_retries(monkeypatch):
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.runtime.SENT_RANDOM_HISTORY_DELAYS",
+        (0.0,) * len(SENT_RANDOM_HISTORY_DELAYS),
+    )
 
 
 class FakeClient:
@@ -1846,6 +1855,7 @@ async def test_random_components_are_resolved_after_send(tmp_path) -> None:
     assert "随机组件最终结果见 data.random_results" in result["summary"]
     assert result["warnings"] == []
     assert ("get_msg", {"message_id": 125}) in client.calls
+    assert not any(action.endswith("_msg_history") for action, _ in client.calls)
 
 
 @pytest.mark.asyncio
@@ -1892,6 +1902,576 @@ async def test_snowluma_random_faces_are_resolved_after_send(tmp_path) -> None:
     assert result["warnings"] == []
     assert ("get_msg", {"message_id": -341295321}) in client.calls
     assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+    assert not any(action.endswith("_msg_history") for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "group_id,target,send_action,history_action,scope",
+    [
+        (
+            "",
+            {"type": "current"},
+            "send_private_msg",
+            "get_friend_msg_history",
+            {"user_id": 10001},
+        ),
+        (
+            "30001",
+            {"type": "current"},
+            "send_group_msg",
+            "get_group_msg_history",
+            {"group_id": 30001},
+        ),
+        (
+            "30001",
+            {"type": "private", "id": 20001},
+            "send_private_msg",
+            "get_friend_msg_history",
+            {"user_id": 20001},
+        ),
+        (
+            "",
+            {"type": "group", "id": 30001},
+            "send_group_msg",
+            "get_group_msg_history",
+            {"group_id": 30001},
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "kind,face_id,result_id,result_text",
+    [("dice", "358", "6", "6"), ("rps", "359", "2", "剪刀")],
+)
+@pytest.mark.parametrize("message_id", [395675369, -341295321])
+async def test_snowluma_sent_random_result_is_fetched_from_exact_history(
+    tmp_path,
+    group_id,
+    target,
+    send_action,
+    history_action,
+    scope,
+    kind,
+    face_id,
+    result_id,
+    result_text,
+    message_id,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses[send_action] = {"message_id": message_id}
+    client.responses["get_msg"] = {
+        "message_id": message_id,
+        "message_seq": 151563297,
+        "message": [{"type": "face", "data": {"id": face_id}}],
+    }
+    is_group = send_action == "send_group_msg"
+    client.responses[history_action] = {
+        "status": "ok",
+        "retcode": 0,
+        "data": {
+            "messages": [
+                {
+                    "message_id": message_id,
+                    "message_seq": 44065,
+                    "message_type": "group" if is_group else "private",
+                    "user_id": 99999,
+                    **(
+                        {"group_id": scope["group_id"]}
+                        if is_group
+                        else {"target_id": scope["user_id"]}
+                    ),
+                    "message": [
+                        {"type": "face", "data": {"id": face_id, "resultId": result_id}}
+                    ],
+                }
+            ]
+        },
+    }
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id=group_id),
+            "qq_send_message",
+            "send",
+            {"target": target, "components": [{"type": kind}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "message_id": message_id,
+        "random_results": [{"type": kind, "result": result_text}],
+    }
+    assert result["warnings"] == []
+    assert [params for action, params in client.calls if action == history_action] == [
+        {
+            **scope,
+            "message_id": message_id if is_group else 0,
+            "count": 1 if is_group else 20,
+            "reverse_order": True,
+        }
+    ]
+    assert sum(action == send_action for action, _ in client.calls) == 1
+    assert sum(action == "get_msg" for action, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_present", [True, False])
+async def test_snowluma_random_lookup_uses_roaming_history_when_anchor_selects_text(
+    tmp_path,
+    target_present,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    event = FakeEvent(sender_id="1661851214")
+    event.get_self_id = lambda: "2569553292"
+    client.responses["send_private_msg"] = {"message_id": 1216507570}
+    client.responses["get_msg"] = {
+        "message_id": 1216507570,
+        "message": [{"type": "face", "data": {"id": "359"}}],
+    }
+    earlier_text = {
+        "time": 1792055858,
+        "message_type": "private",
+        "sub_type": "friend",
+        "message_id": 1873809679,
+        "message_seq": 44089,
+        "user_id": 2569553292,
+        "target_id": 1661851214,
+        "message": [{"type": "text", "data": {"text": "我这里没回显"}}],
+    }
+    target = {
+        "time": 1792055861,
+        "message_seq": 44090,
+        "message_type": "private",
+        "message_id": 1216507570,
+        "user_id": 2569553292,
+        "target_id": 1661851214,
+        "message": [{"type": "face", "data": {"id": "359", "resultId": "3"}}],
+    }
+    other_random_message = {**target, "message_id": 123456}
+    original_call = client.call_action
+
+    async def call_action(action, **params):
+        if action != "get_friend_msg_history":
+            return await original_call(action, **params)
+        client.calls.append((action, params))
+        if params["message_id"] != 0:
+            return {"messages": [earlier_text]}
+        return {
+            "messages": [
+                earlier_text,
+                other_random_message,
+                *([target] if target_present else []),
+            ]
+        }
+
+    client.call_action = call_action
+    result = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_message",
+            "send",
+            {"target": {"type": "current"}, "components": [{"type": "rps"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    if target_present:
+        assert result["data"]["random_results"] == [{"type": "rps", "result": "石头"}]
+        assert result["warnings"] == []
+    else:
+        assert "random_results" not in result["data"]
+        assert result["warnings"] == ["消息已发送，但未能读取随机组件的最终结果"]
+    assert [
+        params for action, params in client.calls if action == "get_friend_msg_history"
+    ] == [
+        {
+            "user_id": 1661851214,
+            "message_id": 0,
+            "count": 20,
+            "reverse_order": True,
+        }
+    ] * (1 if target_present else len(SENT_RANDOM_HISTORY_DELAYS))
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible_after", [1, 2, 5])
+@pytest.mark.parametrize("present_without_result", [False, True])
+async def test_snowluma_random_history_waits_for_server_visibility(
+    tmp_path,
+    monkeypatch,
+    visible_after,
+    present_without_result,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.runtime.SENT_RANDOM_HISTORY_DELAYS",
+        SENT_RANDOM_HISTORY_DELAYS,
+    )
+    event = FakeEvent(sender_id="1661851214")
+    event.get_self_id = lambda: "2569553292"
+    client.responses["send_private_msg"] = {"message_id": 1359877983}
+    client.responses["get_msg"] = {
+        "message_id": 1359877983,
+        "message": [{"type": "face", "data": {"id": "358"}}],
+    }
+    target = {
+        "message_id": 1359877983,
+        "message_type": "private",
+        "user_id": 2569553292,
+        "target_id": 1661851214,
+        "message": [{"type": "face", "data": {"id": "358", "resultId": "4"}}],
+    }
+    previous_round = {**target, "message_id": 677311847}
+    not_yet_ready = [previous_round]
+    if present_without_result:
+        not_yet_ready.append(
+            {**target, "message": [{"type": "face", "data": {"id": "358"}}]}
+        )
+    original_call = client.call_action
+    attempts = 0
+
+    async def call_action(action, **params):
+        nonlocal attempts
+        if action != "get_friend_msg_history":
+            return await original_call(action, **params)
+        attempts += 1
+        client.calls.append((action, params))
+        return {
+            "messages": not_yet_ready
+            if attempts < visible_after
+            else [previous_round, target]
+        }
+
+    client.call_action = call_action
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.runtime.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
+        patch("astrbot_plugin_qq_enhance.runtime.logger.info") as info,
+        patch("astrbot_plugin_qq_enhance.runtime.logger.warning") as warning,
+    ):
+        result = json.loads(
+            await runtime.execute(
+                event,
+                "qq_send_message",
+                "send",
+                {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+            )
+        )
+
+    assert result["ok"] is True
+    assert result["data"]["random_results"] == [{"type": "dice", "result": "4"}]
+    assert result["warnings"] == []
+    assert attempts == visible_after
+    assert [call.args[0] for call in sleep.await_args_list] == list(
+        SENT_RANDOM_HISTORY_DELAYS[1:visible_after]
+    )
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+    warning.assert_not_called()
+    assert any(
+        f"attempts={visible_after}" in call.args[0] and "elapsed_ms=" in call.args[0]
+        for call in info.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["get_msg", "history", "delay"])
+async def test_snowluma_random_result_deadline_preserves_send_and_partial_results(
+    tmp_path,
+    monkeypatch,
+    phase,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.runtime.SENT_RANDOM_RESULT_TIMEOUT", 0.05
+    )
+    monkeypatch.setattr(
+        "astrbot_plugin_qq_enhance.runtime.SENT_RANDOM_HISTORY_DELAYS", (0.0, 1.0)
+    )
+    client.responses["get_msg"] = {
+        "message": [{"type": "face", "data": {"id": "358", "resultId": "4"}}],
+    }
+    original_call = client.call_action
+    cancelled = False
+
+    async def call_action(action, **params):
+        nonlocal cancelled
+        if (phase == "get_msg" and action == "get_msg") or (
+            phase == "history" and action == "get_friend_msg_history"
+        ):
+            client.calls.append((action, params))
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled = True
+        if action == "get_friend_msg_history":
+            client.calls.append((action, params))
+            return {"messages": []}
+        return await original_call(action, **params)
+
+    client.call_action = call_action
+    started = time.monotonic()
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "dice"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert time.monotonic() - started < 1.0
+    assert result["ok"] is True
+    assert any("随机结果回查等待超时" in message for message in result["warnings"])
+    if phase == "get_msg":
+        assert "random_results" not in result["data"]
+        assert not any(action == "get_friend_msg_history" for action, _ in client.calls)
+    else:
+        assert result["data"]["random_results"] == [{"type": "dice", "result": "4"}]
+        assert (
+            sum(action == "get_friend_msg_history" for action, _ in client.calls) == 1
+        )
+    assert cancelled is (phase != "delay")
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_snowluma_random_history_stops_at_retry_limit_and_logs_once(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_msg"] = {"message": [{"type": "face", "data": {"id": "358"}}]}
+    client.responses["get_friend_msg_history"] = {"messages": []}
+
+    with patch("astrbot_plugin_qq_enhance.runtime.logger.warning") as warning:
+        result = json.loads(
+            await runtime.execute(
+                FakeEvent(),
+                "qq_send_message",
+                "send",
+                {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+            )
+        )
+
+    assert result["ok"] is True
+    assert "random_results" not in result["data"]
+    assert result["warnings"] == ["消息已发送，但未能读取随机组件的最终结果"]
+    assert sum(action == "get_friend_msg_history" for action, _ in client.calls) == len(
+        SENT_RANDOM_HISTORY_DELAYS
+    )
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+    warning.assert_called_once()
+    assert "attempts=5" in warning.call_args.args[0]
+    assert "elapsed_ms=" in warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_id", ["", "30001"])
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "message_id",
+        "user_id",
+        "scope",
+        "message_type",
+        "missing_sender",
+        "missing_scope",
+    ],
+)
+async def test_snowluma_random_history_rejects_other_messages_and_sessions(
+    tmp_path,
+    group_id,
+    changed_field,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_msg"] = {"message": [{"type": "face", "data": {"id": "358"}}]}
+    scope_key = "group_id" if group_id else "target_id"
+    message = {
+        "message_id": 125,
+        "user_id": 99999,
+        "message_type": "group" if group_id else "private",
+        scope_key: int(group_id or "10001"),
+        "message": [{"type": "face", "data": {"id": "358", "resultId": "6"}}],
+    }
+    if changed_field == "scope":
+        message[scope_key] = 20002
+    elif changed_field == "missing_scope":
+        message.pop(scope_key)
+    elif changed_field == "missing_sender":
+        message.pop("user_id")
+    elif changed_field == "message_type":
+        message[changed_field] = "private" if group_id else "group"
+    else:
+        message[changed_field] = 20002
+    history_action = "get_group_msg_history" if group_id else "get_friend_msg_history"
+    client.responses[history_action] = {"messages": [None, message]}
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id=group_id),
+            "qq_send_message",
+            "send",
+            {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert "random_results" not in result["data"]
+    assert result["warnings"] == ["消息已发送，但未能读取随机组件的最终结果"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history_results,expected_results,has_warning",
+    [
+        (["4", "6"], ["4", "6"], False),
+        ([None, None], ["4"], True),
+        (["4", None], ["4"], True),
+    ],
+)
+async def test_snowluma_partial_random_history_does_not_duplicate_cached_results(
+    tmp_path,
+    history_results,
+    expected_results,
+    has_warning,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_msg"] = {
+        "message": [
+            {"type": "face", "data": {"id": "358", "resultId": "4"}},
+            {"type": "face", "data": {"id": "358"}},
+        ]
+    }
+    client.responses["get_friend_msg_history"] = {
+        "messages": [
+            {
+                "message_id": 125,
+                "message_type": "private",
+                "user_id": 99999,
+                "target_id": 10001,
+                "message": [
+                    {"type": "face", "data": {"id": "358", "resultId": value}}
+                    for value in history_results
+                ],
+            }
+        ]
+    }
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "dice"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert result["data"]["random_results"] == [
+        {"type": "dice", "result": value} for value in expected_results
+    ]
+    assert result["warnings"] == (
+        ["消息已发送，但部分随机组件的最终结果未能读取"] if has_warning else []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history_response",
+    [None, [], {"messages": None}, {"messages": []}, {"retcode": 1400}],
+)
+async def test_snowluma_history_failure_keeps_send_success_and_partial_results(
+    tmp_path,
+    history_response,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_msg"] = {
+        "message": [{"type": "face", "data": {"id": "358", "resultId": "4"}}]
+    }
+    client.responses["get_friend_msg_history"] = history_response
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "dice"}, {"type": "dice"}],
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["random_results"] == [{"type": "dice", "result": "4"}]
+    assert result["warnings"][-1] == "消息已发送，但部分随机组件的最终结果未能读取"
+    assert sum(action == "send_private_msg" for action, _ in client.calls) == 1
+    assert sum(action == "get_friend_msg_history" for action, _ in client.calls) == (
+        len(SENT_RANDOM_HISTORY_DELAYS) if history_response == {"messages": []} else 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_snowluma_random_history_can_resolve_after_get_msg_failure(
+    tmp_path,
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["get_msg"] = {"retcode": 1400}
+    client.responses["get_friend_msg_history"] = {
+        "messages": [
+            {
+                "message_id": 125,
+                "message_type": "private",
+                "user_id": 99999,
+                "target_id": 10001,
+                "message": [{"type": "face", "data": {"id": "358", "resultId": "6"}}],
+            }
+        ]
+    }
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["random_results"] == [{"type": "dice", "result": "6"}]
+    assert result["warnings"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_id", [0, "0", True, None, "--125", "abc"])
+async def test_invalid_sent_message_id_never_queries_unanchored_history(
+    tmp_path, message_id
+) -> None:
+    runtime, client, _ = await make_snowluma_runtime(tmp_path)
+    client.responses["send_private_msg"] = {"message_id": message_id}
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(),
+            "qq_send_message",
+            "send",
+            {"target": {"type": "current"}, "components": [{"type": "dice"}]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["warnings"] == ["消息已发送，但响应中没有可用于回查的 message_id"]
+    assert not any(
+        action in {"get_msg", "get_friend_msg_history"} for action, _ in client.calls
+    )
 
 
 @pytest.mark.asyncio

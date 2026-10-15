@@ -93,6 +93,10 @@ class OneBotProvider(Protocol):
         self, spec: OperationSpec, data: Any, params: dict[str, Any]
     ) -> EncodedMedia | None: ...
 
+    def sent_random_history_action(
+        self, send_action: str, send_params: dict[str, Any], message_id: int
+    ) -> tuple[str, dict[str, Any]] | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderBinding:
