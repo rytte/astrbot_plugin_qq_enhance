@@ -426,10 +426,7 @@ def get_inbound_component_type(component: Any) -> str:
         return ""
     random_component = parse_random_component(component)
     if random_component is not None:
-        # Basketball remains a face for component verification/configuration.
-        return (
-            "face" if random_component.kind == "basketball" else random_component.kind
-        )
+        return random_component.kind
     if component_type == "record":
         return "voice"
     if component_type == "face":

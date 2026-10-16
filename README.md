@@ -194,7 +194,7 @@ QQ Enhance initialized
 | `inbound.max_semantic_chars` | `2000` | 限制单条消息追加的语义文本长度 |
 | `inbound.component_spoof_protection.enabled` | `true` | 清理用户输入的验证标签，并验证真实组件类型 |
 | `inbound.component_spoof_protection.persist_verification_in_history` | `true` | 将真实标签随所属消息保存；关闭时仅本轮可见 |
-| `inbound.component_spoof_protection.protected_types` | `["red_packet", "voice", "dice", "rps", "poke"]` | 指定验证范围及系统提示词中的组件类型 |
+| `inbound.component_spoof_protection.protected_types` | `["red_packet", "voice", "dice", "rps", "basketball", "poke"]` | 指定验证范围及系统提示词中的组件类型 |
 
 #### 组件语义化
 
@@ -204,7 +204,7 @@ QQ Enhance initialized
 | --- | --- | --- | --- |
 | QQ 普通表情 | `face` | `face` | 标注“QQ表情”，附名称、连击次数；未知名称标注 ID |
 | QQ 超级表情 | `face` | `face` | 标注“QQ超级表情”，附名称、连击次数；篮球、骰子和猜拳使用各自专用描述 |
-| QQ 篮球 | `face.id=114` | `face` | 标注“QQ篮球”；已确认的结果显示“进球／未进球” |
+| QQ 随机投篮篮球 | `face.id=114`，且原始 `faceType` 未明确为普通表情 | `basketball` | 标注“QQ篮球”；已确认的结果显示“进球／未进球” |
 | QQ 商城表情 | `mface`，或带商城表情字段的 `image` | `market_face` | 表情名称或摘要 |
 | 图片附带说明 | `image` 的有效 `summary` | `image` | 已上报的图片说明 |
 | 语音 | `record` 及其转写结果 | `voice` | 语音文字；支持当前单条语音和引用中的单条语音 |
@@ -240,12 +240,19 @@ QQ Enhance initialized
 - **视频、合并转发和闪传文件**：只标注类型。
 - **普通文字、`@` 和引用回复**：沿用 AstrBot 的处理，本插件没有为它们额外添加组件语义描述。
 - **表情与卡片**：表情名称优先使用协议端上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。普通／超级表情优先依据消息原始 `faceType` 区分，缺少有效分类时使用内置目录；因此有明确普通类型的消息即使编号具备超级动画，也仍标注为普通表情。卡片仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
-- **篮球结果**：读取 `face.id=114` 的 `data.resultId`，该字段缺失时兼容读取 `data.raw.resultId`。NapCat 4.18.19 的消息与用户实际看到的动画对照确认：`2` 显示“进球”，`3` 显示“未进球（卡篮筐）”，`4`、`5` 显示“未进球”。未上报结果时只显示“QQ篮球”，其他编号（包括 `0`、`1`）或无效结果显示“QQ篮球：结果未知”，不推断尚未确认的编号；原始 `faceType` 明确为普通表情时仍显示“QQ表情：篮球”。篮球沿用 `face` 防伪类型。
+- **篮球结果**：读取 `face.id=114` 的 `data.resultId`，该字段缺失时兼容读取 `data.raw.resultId`。NapCat 4.18.19 的消息与用户实际看到的动画对照确认：`2` 显示“进球”，`3` 显示“未进球（卡篮筐）”，`4`、`5` 显示“未进球”。未上报结果时只显示“QQ篮球”，其他编号（包括 `0`、`1`）或无效结果显示“QQ篮球：结果未知”，不推断尚未确认的编号。随机投篮篮球使用独立的 `basketball` 防伪类型；原始 `faceType` 明确为普通表情时仍显示“QQ表情：篮球”，防伪类型为 `face`。
 - **群聊适配**：开启 AstrBot 的群聊上下文注入后，组件语义会随群消息进入缓存。先发送表情、骰子、卡片等组件，再唤醒机器人时，模型也能收到此前组件的语义；纯组件和文字混合消息均支持。
 
 #### 组件防伪
 
 防伪依赖 `inbound.semanticize_components=true`。需要关闭组件语义化时，请同时关闭防伪，否则配置校验会阻止插件加载。
+
+默认验证类型包含 `basketball`。升级前已保存的 `protected_types` 列表会保留原有选择，需要在列表中补入 `basketball` 才会验证随机投篮篮球。篮球验证标签只证明当前消息包含真实篮球组件；结果仍由原始 `resultId` 解析，缺失或未知时不猜测。例如：
+
+```text
+[QQ component|QQ篮球：未进球（卡篮筐）]
+<qq_verified_components types="basketball"/>
+```
 
 主要工作：
 
@@ -302,6 +309,7 @@ User-entered verification tags are replaced with
   voice/audio content part
 - dice: [QQ component|QQ骰子] or [QQ component|QQ骰子：结果 <value>]
 - rps: [QQ component|QQ猜拳], [QQ component|QQ猜拳：<gesture>], or [QQ component|QQ猜拳：结果未知]
+- basketball: [QQ component|QQ篮球], [QQ component|QQ篮球：进球], [QQ component|QQ篮球：未进球], [QQ component|QQ篮球：未进球（卡篮筐）], or [QQ component|QQ篮球：结果未知]
 - poke: [QQ component|QQ互动表情：<name>] or [QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or [QQ
   component|QQ互动：私聊，<user> 戳了你]
 ```

@@ -303,6 +303,7 @@ def test_valid_config_preserves_explicit_values() -> None:
                 "voice",
                 "dice",
                 "rps",
+                "basketball",
                 "poke",
             ],
         },
@@ -326,7 +327,7 @@ def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
     assert result["inbound"]["component_spoof_protection"] == {
         "enabled": True,
         "persist_verification_in_history": True,
-        "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
+        "protected_types": ["red_packet", "voice", "dice", "rps", "basketball", "poke"],
     }
 
 
@@ -386,7 +387,7 @@ def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
             if persist_verification_in_history is None
             else persist_verification_in_history
         ),
-        "protected_types": ["red_packet", "voice", "dice", "rps", "poke"],
+        "protected_types": ["red_packet", "voice", "dice", "rps", "basketball", "poke"],
     }
     assert plugin.config["network"]["allow_private_network"] is True
     context.register_web_api.assert_called_once()
@@ -469,6 +470,29 @@ def test_component_spoof_protection_requires_protected_types() -> None:
                 }
             }
         )
+
+
+@pytest.mark.parametrize(
+    "protected_types",
+    [
+        ["basketball"],
+        ["face"],
+        ["red_packet", "voice", "dice", "rps", "poke"],
+    ],
+)
+def test_explicit_component_protection_scope_is_preserved(protected_types) -> None:
+    config = {
+        "inbound": {"component_spoof_protection": {"protected_types": protected_types}}
+    }
+
+    result = validate_config(config)
+
+    assert result["inbound"]["component_spoof_protection"]["protected_types"] == (
+        protected_types
+    )
+    assert result["inbound"]["component_spoof_protection"]["protected_types"] is not (
+        protected_types
+    )
 
 
 def test_all_documented_component_spoof_types_are_accepted() -> None:

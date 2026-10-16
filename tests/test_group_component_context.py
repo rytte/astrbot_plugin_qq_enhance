@@ -165,6 +165,10 @@ async def test_component_semantics_reach_later_group_request(
     assert "what happened?" not in history
     assert earlier.message_str.count(expected) == 1
     assert earlier.get_messages()[: len(original_chain)] == original_chain
+    if semantics.startswith("QQ篮球"):
+        assert earlier.get_extra("_qq_enhance_verified_component_types") == [
+            "basketball"
+        ]
 
 
 @pytest.mark.asyncio
@@ -211,6 +215,7 @@ async def test_component_wake_receives_preceding_group_context(
         ("face", {"id": "14"}, "QQ表情：微笑"),
         ("poke", {"type": "2", "id": "2"}, "QQ互动表情：比心"),
         ("poke", {"type": "5", "id": "5"}, "QQ互动表情：666"),
+        ("face", {"id": "114", "resultId": "3"}, "QQ篮球：未进球（卡篮筐）"),
     ],
 )
 async def test_private_component_semantics_stay_in_current_prompt(
@@ -225,6 +230,8 @@ async def test_private_component_semantics_stay_in_current_prompt(
     assert not any(isinstance(part, Plain) for part in event.get_messages())
     if component_type == "poke":
         assert event.get_extra("_qq_enhance_verified_component_types") == ["poke"]
+    elif semantics.startswith("QQ篮球"):
+        assert event.get_extra("_qq_enhance_verified_component_types") == ["basketball"]
 
 
 @pytest.mark.asyncio

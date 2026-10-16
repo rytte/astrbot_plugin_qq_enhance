@@ -235,8 +235,8 @@
           "protected_types": {
             "type": "list",
             "description": "需要防伪的 QQ 组件类型",
-            "hint": "按此列表验证真实组件类型并生成系统提示词，不影响用户验证标签的移除范围。允许 red_packet、voice、dice、rps、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；防伪开启时不能为空。",
-            "default": ["red_packet", "voice", "dice", "rps", "poke"]
+            "hint": "按此列表验证真实组件类型并生成系统提示词，不影响用户验证标签的移除范围。允许 red_packet、voice、dice、rps、basketball、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；basketball 验证随机投篮篮球，静态篮球仍归 face；已有列表需补入 basketball 才会验证随机投篮篮球；防伪开启时不能为空。",
+            "default": ["red_packet", "voice", "dice", "rps", "basketball", "poke"]
           }
         }
       }
