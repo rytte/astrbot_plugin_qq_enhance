@@ -79,6 +79,23 @@ async def make_event(adapter, components, *, group_id=30003, raw=None):
     ("component_type", "data", "semantics"),
     [
         ("face", {"id": "14"}, "QQ表情：微笑"),
+        ("face", {"id": "311"}, "QQ超级表情：打call"),
+        (
+            "face",
+            {"id": "392", "chainCount": 3},
+            "QQ超级表情：龙年快乐，连击×3",
+        ),
+        ("face", {"id": "5", "raw": {"faceType": 1}}, "QQ表情：流泪"),
+        ("face", {"id": "114"}, "QQ篮球"),
+        (
+            "face",
+            {"id": "114", "resultId": "0"},
+            "QQ篮球：结果未知",
+        ),
+        ("face", {"id": "114", "resultId": "2"}, "QQ篮球：进球"),
+        ("face", {"id": "114", "resultId": "3"}, "QQ篮球：未进球（卡篮筐）"),
+        ("face", {"id": "114", "resultId": "4"}, "QQ篮球：未进球"),
+        ("face", {"id": "114", "resultId": "5"}, "QQ篮球：未进球"),
         ("dice", {"result": "4"}, "QQ骰子：结果 4"),
         ("rps", {"result": "2"}, "QQ猜拳：剪刀"),
         ("mface", {"summary": "[开心]"}, "QQ商城表情：开心"),

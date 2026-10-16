@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-from .face_names import QQ_FACE_NAMES
+from .face_names import QQ_FACE_NAMES, QQ_SUPER_FACE_IDS
 from .random_components import parse_random_component
 
 _FIELD_CHAR_LIMIT = 300
@@ -417,7 +417,10 @@ def get_inbound_component_type(component: Any) -> str:
         return ""
     random_component = parse_random_component(component)
     if random_component is not None:
-        return random_component.kind
+        # Basketball remains a face for component verification/configuration.
+        return (
+            "face" if random_component.kind == "basketball" else random_component.kind
+        )
     if component_type == "record":
         return "voice"
     if component_type == "face":
@@ -490,13 +493,16 @@ def _describe_component(component: Any) -> str:
 
     random_component = parse_random_component(component)
     if random_component is not None:
-        label = "QQ骰子" if random_component.kind == "dice" else "QQ猜拳"
+        label = {
+            "dice": "QQ骰子",
+            "rps": "QQ猜拳",
+            "basketball": "QQ篮球",
+        }[random_component.kind]
         if random_component.result is not None:
-            content = (
-                f"{label}：结果 {random_component.result}"
-                if random_component.kind == "dice"
-                else f"{label}：{random_component.result}"
-            )
+            if random_component.kind == "dice":
+                content = f"{label}：结果 {random_component.result}"
+            else:
+                content = f"{label}：{random_component.result}"
         elif random_component.result_provided:
             content = f"{label}：结果未知"
         else:
@@ -510,6 +516,17 @@ def _describe_component(component: Any) -> str:
         face_id = _clean_text(data.get("id"), 40)
         mapped_name = QQ_FACE_NAMES.get(face_id, "")
         label = name or mapped_name
+        # NapCat's raw faceType describes this occurrence, including ordinary
+        # variants of IDs that also have a super animation in the catalog.
+        face_type = (
+            _clean_text(raw.get("faceType"), 40) if isinstance(raw, Mapping) else ""
+        )
+        is_super = (
+            face_type == "3"
+            if face_type in {"1", "2", "3"}
+            else face_id in QQ_SUPER_FACE_IDS
+        )
+        kind = "QQ超级表情" if is_super else "QQ表情"
         if not label:
             label = (
                 f"名称未知，ID {face_id}，不要根据 ID 猜测含义"
@@ -524,7 +541,7 @@ def _describe_component(component: Any) -> str:
             and chain_count > 1
             else ""
         )
-        return format_component_semantics(f"QQ表情：{label}{suffix}")
+        return format_component_semantics(f"{kind}：{label}{suffix}")
 
     if component_type in {"mface", "image"}:
         summary = _clean_text(data.get("summary")).strip("[]").removeprefix("/")

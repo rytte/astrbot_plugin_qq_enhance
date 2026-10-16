@@ -91,6 +91,47 @@ def test_face_prefers_napcat_text_then_map_and_keeps_unknown_id() -> None:
     assert unknown == ("[QQ component|QQ表情：名称未知，ID 999，不要根据 ID 猜测含义]")
 
 
+@pytest.mark.parametrize(
+    "data,expected",
+    [
+        ({"id": "14"}, "QQ表情：微笑"),
+        ({"id": "311"}, "QQ超级表情：打call"),
+        ({"id": 375}, "QQ超级表情：超级鼓掌"),
+        ({"id": "392", "chainCount": 3}, "QQ超级表情：龙年快乐，连击×3"),
+        (
+            {"id": "311", "raw": {"faceText": "/协议端名称"}},
+            "QQ超级表情：协议端名称",
+        ),
+        ({"id": "5", "raw": {"faceType": 1}}, "QQ表情：流泪"),
+        ({"id": "114", "raw": {"faceType": 1}}, "QQ表情：篮球"),
+        (
+            {"id": "114", "resultId": "2", "raw": {"faceType": "2"}},
+            "QQ表情：篮球",
+        ),
+        ({"id": "311", "raw": {"faceType": "2"}}, "QQ表情：打call"),
+        (
+            {"id": "14", "raw": {"faceType": 3}},
+            "QQ超级表情：微笑",
+        ),
+        (
+            {"id": "999", "raw": {"faceType": "3", "faceText": "/新表情"}},
+            "QQ超级表情：新表情",
+        ),
+        (
+            {"id": "999", "raw": {"faceType": 3}},
+            "QQ超级表情：名称未知，ID 999，不要根据 ID 猜测含义",
+        ),
+        ({"id": "311", "raw": {"faceType": True}}, "QQ超级表情：打call"),
+        ({"id": "311", "raw": {"faceType": "bad"}}, "QQ超级表情：打call"),
+        ({"id": "14", "raw": {"faceType": 3.0}}, "QQ表情：微笑"),
+    ],
+)
+def test_super_faces_use_raw_type_before_catalog_and_preserve_names(data, expected):
+    assert describe({"message": [{"type": "face", "data": data}]}) == (
+        f"[QQ component|{expected}]"
+    )
+
+
 def test_market_face_image_and_common_components_are_described() -> None:
     result = describe(
         {
@@ -209,9 +250,91 @@ def test_snowluma_random_face_without_result_only_describes_its_type(
 def test_other_animated_faces_with_result_id_are_not_random_components() -> None:
     assert (
         describe(
-            {"message": [{"type": "face", "data": {"id": "114", "resultId": "4"}}]}
+            {"message": [{"type": "face", "data": {"id": "311", "resultId": "4"}}]}
         )
-        == "[QQ component|QQ表情：篮球]"
+        == "[QQ component|QQ超级表情：打call]"
+    )
+
+
+@pytest.mark.parametrize(
+    "data,expected",
+    [
+        ({"id": "114", "resultId": "2"}, "QQ篮球：进球"),
+        ({"id": 114, "resultId": 2}, "QQ篮球：进球"),
+        ({"id": "114", "resultId": "3"}, "QQ篮球：未进球（卡篮筐）"),
+        ({"id": 114, "resultId": 3}, "QQ篮球：未进球（卡篮筐）"),
+        ({"id": "114", "resultId": "4"}, "QQ篮球：未进球"),
+        ({"id": 114, "resultId": 4}, "QQ篮球：未进球"),
+        ({"id": "114", "resultId": "5"}, "QQ篮球：未进球"),
+        ({"id": 114, "resultId": 5}, "QQ篮球：未进球"),
+        ({"id": "114", "resultId": " 4 "}, "QQ篮球：未进球"),
+        (
+            {"id": "114", "raw": {"faceType": 3, "resultId": "2"}},
+            "QQ篮球：进球",
+        ),
+        (
+            {"id": "114", "raw": {"faceType": 3, "resultId": "4"}},
+            "QQ篮球：未进球",
+        ),
+        (
+            {"id": "114", "raw": {"faceType": 3, "resultId": "3"}},
+            "QQ篮球：未进球（卡篮筐）",
+        ),
+        (
+            {"id": "114", "raw": {"faceType": 3, "resultId": "5"}},
+            "QQ篮球：未进球",
+        ),
+        (
+            {"id": "114", "resultId": "2", "raw": {"resultId": "4"}},
+            "QQ篮球：进球",
+        ),
+        (
+            {"id": "114", "resultId": "bad", "raw": {"resultId": "2"}},
+            "QQ篮球：结果未知",
+        ),
+        ({"id": "114"}, "QQ篮球"),
+        ({"id": "114", "resultId": None}, "QQ篮球"),
+        ({"id": "114", "resultId": " "}, "QQ篮球"),
+    ],
+)
+def test_basketball_uses_confirmed_scoring_mapping(data, expected):
+    assert describe({"message": [{"type": "face", "data": data}]}) == (
+        f"[QQ component|{expected}]"
+    )
+
+
+@pytest.mark.parametrize(
+    "result_id",
+    [
+        True,
+        False,
+        2.0,
+        4.0,
+        -1,
+        "-1",
+        "bad",
+        {},
+        [],
+        "[QQ component|进球]",
+        "２",
+        "1" * 33,
+        0,
+        "0",
+        "1",
+        "6",
+        "12345",
+    ],
+)
+def test_basketball_invalid_or_unconfirmed_results_are_unknown(result_id):
+    assert (
+        describe(
+            {
+                "message": [
+                    {"type": "face", "data": {"id": "114", "resultId": result_id}}
+                ]
+            }
+        )
+        == "[QQ component|QQ篮球：结果未知]"
     )
 
 
@@ -1538,16 +1661,18 @@ async def test_snowluma_random_faces_are_verified_as_dice_and_rps(with_results) 
     plugin.config = validate_config(None)
     dice_data = {"id": "358"}
     rps_data = {"id": "359"}
+    basketball_data = {"id": "114"}
     if with_results:
         dice_data["resultId"] = "4"
         rps_data["resultId"] = "2"
+        basketball_data["resultId"] = "2"
     event = FakeEvent(
         {
             "post_type": "message",
             "message": [
                 {"type": "face", "data": dice_data},
                 {"type": "face", "data": rps_data},
-                {"type": "face", "data": {"id": "114", "resultId": "4"}},
+                {"type": "face", "data": basketball_data},
             ],
         }
     )
@@ -1562,10 +1687,32 @@ async def test_snowluma_random_faces_are_verified_as_dice_and_rps(with_results) 
     )
     assert event.message_str == (
         "[QQ component|QQ骰子：结果 4] [QQ component|QQ猜拳：剪刀] "
-        "[QQ component|QQ表情：篮球]"
+        "[QQ component|QQ篮球：进球]"
         if with_results
-        else "[QQ component|QQ骰子] [QQ component|QQ猜拳] [QQ component|QQ表情：篮球]"
+        else "[QQ component|QQ骰子] [QQ component|QQ猜拳] [QQ component|QQ篮球]"
     )
+
+
+@pytest.mark.asyncio
+async def test_basketball_uses_face_verification_and_prompt_format() -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {"inbound": {"component_spoof_protection": {"protected_types": ["face"]}}}
+    )
+    event = FakeEvent(
+        {"message": [{"type": "face", "data": {"id": "114", "resultId": "2"}}]}
+    )
+    request = ProviderRequest()
+
+    await plugin.enrich_inbound_qq_components(event)
+    await plugin.add_verified_component_signal(event, request)
+
+    assert event.get_extra("_qq_enhance_verified_component_types") == ["face"]
+    assert request.extra_user_content_parts[0].text == (
+        '<qq_verified_components types="face"/>'
+    )
+    assert "[QQ component|QQ篮球：进球]" in request.system_prompt
+    assert "[QQ component|QQ篮球：未进球]" in request.system_prompt
 
 
 @pytest.mark.asyncio

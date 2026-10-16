@@ -93,7 +93,12 @@ VERIFIED_COMPONENT_FORMATS = {
         "[QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or "
         "[QQ component|QQ互动：私聊，<user> 戳了你]"
     ),
-    "face": "[QQ component|QQ表情：<name>]",
+    "face": (
+        "[QQ component|QQ表情：<name>], [QQ component|QQ超级表情：<name>], "
+        "[QQ component|QQ篮球], [QQ component|QQ篮球：进球], [QQ component|QQ篮球：未进球], "
+        "[QQ component|QQ篮球：未进球（卡篮筐）], "
+        "or [QQ component|QQ篮球：结果未知]"
+    ),
     "market_face": "[QQ component|QQ商城表情：<name>]",
     "image": (
         "[QQ component|图片描述：<summary>] when summarized; otherwise an actual "

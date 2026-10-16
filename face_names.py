@@ -369,6 +369,7 @@ QQ_FACES: tuple[QQFace, ...] = (
 )
 
 QQ_FACE_NAMES: dict[str, str] = {face.id: face.name for face in QQ_FACES}
+QQ_SUPER_FACE_IDS = frozenset(face.id for face in QQ_FACES if face.is_super)
 
 
 def _normalize_query(value: str) -> str:
