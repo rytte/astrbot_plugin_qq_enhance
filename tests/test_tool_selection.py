@@ -21,6 +21,7 @@ from astrbot_plugin_qq_enhance.web_reader import (
     WEB_TOOL_SCHEMAS,
 )
 
+from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import File
 from astrbot.core.provider.entities import ProviderRequest
@@ -89,6 +90,53 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
 
     def is_admin(self) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["compact", "balanced"])
+@pytest.mark.parametrize("semanticize", [False, True])
+@pytest.mark.parametrize("location", ["prompt", "group_context", "history"])
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_forward_refs_keep_read_tool_available_for_short_followups(
+    mode, semanticize, location, disabled
+):
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {
+            "toolsets": {
+                "exposure_mode": mode,
+                "disabled_operations": ["qq_forward_get.get"] if disabled else [],
+            }
+        }
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
+    plugin.runtime.config = plugin.config
+    reference = (
+        "[QQ component|QQ合并转发消息；res_id=abc123；...]"
+        if semanticize
+        else "[QQ ForwardRef res_id=abc123；...]"
+    )
+    request = ProviderRequest(
+        prompt=reference if location == "prompt" else "总结一下",
+        contexts=[{"role": "user", "content": [{"type": "text", "text": reference}]}]
+        if location == "history"
+        else [],
+        extra_user_content_parts=[TextPart(text=reference)]
+        if location == "group_context"
+        else [],
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+    await plugin.select_tools(SelectionEvent(), request)
+
+    assert (request.func_tool.get_tool("qq_forward_get") is not None) is not disabled
+    assert len(request.func_tool.tools) <= (10 if mode == "compact" else 15)
 
 
 @pytest.mark.asyncio

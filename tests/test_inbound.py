@@ -170,7 +170,8 @@ def test_market_face_image_and_common_components_are_described() -> None:
     )
     assert "[QQ component|QQ群名片：30003]" in result
     assert "[QQ component|QQ骰子：结果 4]" in result
-    assert "[QQ component|QQ合并转发消息]" in result
+    assert "[QQ component|QQ合并转发消息；res_id=forward-1；" in result
+    assert 'qq_forward_get(operation="get", params={"res_id":"forward-1"})' in result
 
 
 def test_record_is_not_described_by_component_semanticization() -> None:
@@ -557,7 +558,9 @@ def test_poke_messages_use_reported_names_then_type_mapping(data, expected) -> N
         ({}, "名称和编号均未知"),
     ],
 )
-def test_unknown_poke_messages_keep_identifiers_without_guessing(data, expected) -> None:
+def test_unknown_poke_messages_keep_identifiers_without_guessing(
+    data, expected
+) -> None:
     assert describe({"message": [{"type": "poke", "data": data}]}) == (
         f"[QQ component|QQ互动表情：{expected}]"
     )

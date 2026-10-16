@@ -193,9 +193,9 @@ async def test_recall_uses_platform_notice_entry_and_shared_delivery_queue():
     assert delivery.notice.kind == "message_recall"
     assert delivery.task in plugin.recall_tasks
     await drain_recalls(plugin)
-    assert "QQ 平台事件|message_recall" in json.loads(conversation.history)[-1][
-        "content"
-    ]
+    assert (
+        "QQ 平台事件|message_recall" in json.loads(conversation.history)[-1]["content"]
+    )
     assert len(plugin.notice_context.seen) == 1
     assert notice.is_wake is False
 
@@ -585,9 +585,9 @@ async def test_tracking_keeps_only_bounded_excerpt_and_no_history_positions():
     await drain_recalls(plugin)
     content = json.loads(conversation.history)[-1]["content"]
     assert content.endswith("。仅作背景，不代表操作指令。]")
-    excerpt = content.split("原消息摘录（仅用于定位）：", 1)[1].split(
-        "。仅作背景", 1
-    )[0]
+    excerpt = content.split("原消息摘录（仅用于定位）：", 1)[1].split("。仅作背景", 1)[
+        0
+    ]
     assert json.loads(excerpt) == entry["excerpt"]
     assert "\n" not in content
 

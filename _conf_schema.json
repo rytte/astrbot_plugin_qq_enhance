@@ -204,7 +204,7 @@
       "semanticize_components": {
         "type": "bool",
         "description": "启用入站消息语义化",
-        "hint": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]",
+        "hint": "将 QQ 表情、语音转写和结构化组件转换为模型可读文本，如 [QQ component|QQ语音消息：转写文本]。合并转发开启时使用 QQ component 读取入口，关闭时仍保留独立 ForwardRef；不生成预览。",
         "default": true
       },
       "max_semantic_chars": {

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiocqhttp import Event
+from PIL import Image as PillowImage
 
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import PlatformMetadata
@@ -111,7 +112,12 @@ async def make_event(adapter, components, *, group_id=30003, raw=None):
             {"name": "report.pdf", "url": "https://example.com/report.pdf"},
             "文件：report.pdf",
         ),
-        ("forward", {"id": "forward-id"}, "QQ合并转发消息"),
+        (
+            "forward",
+            {"id": "forward-id"},
+            "QQ合并转发消息；res_id=forward-id；如需读取正文，调用 "
+            'qq_forward_get(operation="get", params={"res_id":"forward-id"})',
+        ),
         ("music", {"type": "qq", "id": "123"}, "音乐卡片：qq ID 123"),
         ("contact", {"type": "qq", "id": "10001"}, "QQ联系人名片：10001"),
         (
@@ -130,7 +136,7 @@ async def make_event(adapter, components, *, group_id=30003, raw=None):
         (
             "image",
             {"file": "https://example.com/image.png", "summary": "[开心]"},
-            "图片描述：开心",
+            "QQ图片：开心",
         ),
     ],
 )
@@ -169,6 +175,51 @@ async def test_component_semantics_reach_later_group_request(
         assert earlier.get_extra("_qq_enhance_verified_component_types") == [
             "basketball"
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("data", "semantics"),
+    [
+        ({"sub_type": 0}, "QQ动图"),
+        ({"sub_type": 1}, "QQ动态表情包"),
+        (
+            {"sub_type": 0, "emoji_id": "abc", "summary": "[开心]"},
+            "QQ商城表情：开心；动态",
+        ),
+    ],
+)
+async def test_animation_semantics_reach_later_group_request_after_file_cleanup(
+    adapter, plugin, core, tmp_path, data, semantics
+):
+    path = tmp_path / "moving.gif"
+    PillowImage.new("RGB", (8, 8), "red").save(
+        path,
+        format="GIF",
+        save_all=True,
+        append_images=[PillowImage.new("RGB", (8, 8), "blue")],
+        duration=100,
+    )
+    earlier = await make_event(
+        adapter, [{"type": "image", "data": {"file": "opaque.gif", **data}}]
+    )
+    earlier.get_messages()[0].path = str(path)
+    await plugin.enrich_inbound_qq_components(earlier)
+    async for _ in core.on_message(earlier):
+        pass
+    path.unlink()
+
+    current = await make_event(
+        adapter, [{"type": "text", "data": {"text": "what happened?"}}]
+    )
+    current.is_at_or_wake_command = True
+    await plugin.enrich_inbound_qq_components(current)
+    async for _ in core.on_message(current):
+        pass
+    request = ProviderRequest(prompt=current.message_str)
+    await core.decorate_llm_req(current, request)
+    history = "\n".join(part.text for part in request.extra_user_content_parts)
+    assert history.count(f"[QQ component|{semantics}]") == 1
 
 
 @pytest.mark.asyncio

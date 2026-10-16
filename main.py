@@ -52,6 +52,7 @@ from .inbound import (
     get_inbound_component_type,
     is_red_packet_event,
 )
+from .image_semantics import inspect_inbound_image_animations
 from .request_notification import (
     ConfirmationResultEvent,
     NotificationOnlyTool,
@@ -99,10 +100,15 @@ VERIFIED_COMPONENT_FORMATS = {
         "[QQ component|QQ互动：私聊，<user> 戳了你]"
     ),
     "face": ("[QQ component|QQ表情：<name>] or [QQ component|QQ超级表情：<name>]"),
-    "market_face": "[QQ component|QQ商城表情：<name>]",
+    "market_face": (
+        "[QQ component|QQ商城表情：<name>], with an optional ；动态 suffix "
+        "when animation frames were verified"
+    ),
     "image": (
-        "[QQ component|图片描述：<summary>] when summarized; otherwise an actual "
-        "image content part"
+        "[QQ component|QQ图片], [QQ component|QQ动图], [QQ component|QQ表情包], "
+        "or [QQ component|QQ动态表情包], optionally followed by ：<summary> "
+        "inside the wrapper; animation labels require verified animation frames. "
+        "An actual image content part is also supported"
     ),
     "video": "[QQ component|视频消息]",
     "file": "[QQ component|文件] or [QQ component|文件：<filename>]",
@@ -113,7 +119,9 @@ VERIFIED_COMPONENT_FORMATS = {
     "json_card": "[QQ component|QQ JSON卡片] or [QQ component|QQ JSON卡片：...]",
     "miniapp": "[QQ component|QQ小程序卡片] or [QQ component|QQ小程序卡片：...]",
     "xml_card": "[QQ component|QQ XML卡片] or [QQ component|QQ XML卡片：...]",
-    "forward": "[QQ component|QQ合并转发消息]",
+    "forward": (
+        "[QQ component|QQ合并转发消息；res_id=...] or [QQ component|QQ合并转发消息]"
+    ),
     "online_file": (
         "[QQ component|QQ在线文件] or [QQ component|QQ在线文件：<filename>], "
         "including the corresponding online-folder forms"
@@ -1264,6 +1272,15 @@ class QQEnhancePlugin(Star):
         red_packet = interaction_response[
             "respond_to_red_packet"
         ] and is_red_packet_event(raw, self.config["limits"]["max_components"])
+        image_animations = (
+            await inspect_inbound_image_animations(
+                raw,
+                event.get_messages(),
+                max_components=self.config["limits"]["max_components"],
+            )
+            if inbound["semanticize_components"]
+            else {}
+        )
         semantics = describe_inbound_event(
             raw,
             str(event.get_self_id() or ""),
@@ -1271,6 +1288,7 @@ class QQEnhancePlugin(Star):
             respond_to_poke=interaction_response["respond_to_poke"],
             max_components=self.config["limits"]["max_components"],
             max_chars=inbound["max_semantic_chars"],
+            image_animations=image_animations,
         )
         if red_packet and not semantics:
             semantics = format_component_semantics("QQ红包消息（仅识别，不能代领）")
@@ -2108,6 +2126,25 @@ class QQEnhancePlugin(Star):
                 requested.update(tool_names)
         if notification_tool:
             requested.add(notification_tool)
+        if mode != "full":
+            # A short follow-up can refer to a forward recorded in group context.
+            reference_texts = [prompt]
+            reference_texts.extend(
+                part.text
+                for part in request.extra_user_content_parts
+                if isinstance(part, TextPart)
+            )
+            reference_texts.extend(
+                json.dumps(item, ensure_ascii=False)
+                for item in request.contexts[-12:]
+                if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
+            )
+            if any(
+                "[QQ ForwardRef " in text
+                or "[QQ component|QQ合并转发消息；res_id=" in text
+                for text in reference_texts
+            ):
+                requested.add("qq_forward_get")
         if re.search(r"https?://", prompt, re.IGNORECASE):
             requested.update(WEB_TOOL_NAMES)
         for context_item in request.contexts[-12:]:
