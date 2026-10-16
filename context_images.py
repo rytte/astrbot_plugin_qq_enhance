@@ -19,6 +19,8 @@ from astrbot.api.message_components import Image, Reply
 from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.utils.media_utils import MediaResolver
 
+from .animation_preview import AnimationPreviewError, render_animation_preview
+from .image_semantics import bind_animation_references
 from .storage import Storage
 from .group_image_cache import (
     GROUP_IMAGES_EXTRA,
@@ -128,6 +130,11 @@ class ContextImageManager:
             if item["text"] and item["image_ref"] not in reference_text:
                 request.extra_user_content_parts.append(TextPart(text=item["text"]))
                 reference_text += item["text"]
+        bind_animation_references(
+            event,
+            {item["source"]: item["image_ref"] for item in cached_images},
+            request,
+        )
         sources: list[str] = []
         components = list(
             getattr(getattr(event, "message_obj", None), "message", []) or []
@@ -164,6 +171,7 @@ class ContextImageManager:
 
         now = int(time.time())
         records: list[dict[str, Any]] = []
+        source_refs: dict[str, str] = {}
         created_paths: list[Path] = []
         try:
             for source in sources:
@@ -244,6 +252,7 @@ class ContextImageManager:
                         "last_accessed_at": now,
                     }
                 )
+                source_refs[source] = image_ref
             evicted_paths = await self.storage.add_context_images(
                 records, self.max_storage_bytes
             )
@@ -279,6 +288,7 @@ class ContextImageManager:
             )
             for record in records
         )
+        bind_animation_references(event, source_refs, request)
 
     def mark_current_request_images(self, event: Any, run_context: Any) -> None:
         """Mark only the current request images as provider-only content.
@@ -320,6 +330,67 @@ class ContextImageManager:
             ContextImageError: If the reference is invalid, unavailable, or out of scope.
         """
 
+        payload, mime_type = await self._read_scoped_image(event, image_ref)
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=f"已加载 image_ref={image_ref}，图片仅供本轮视觉检查。",
+                ),
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(payload).decode(),
+                    mimeType=mime_type,
+                ),
+            ]
+        )
+
+    async def inspect_animation(self, event: Any, image_ref: str) -> CallToolResult:
+        """Return an on-demand animation contact sheet without altering its source."""
+
+        payload, _ = await self._read_scoped_image(event, image_ref)
+        try:
+            preview = await asyncio.to_thread(render_animation_preview, payload)
+        except AnimationPreviewError as exc:
+            raise ContextImageError("animation_preview_unavailable", str(exc)) from exc
+        except (
+            OSError,
+            ValueError,
+            EOFError,
+            PillowImage.DecompressionBombError,
+        ) as exc:
+            raise ContextImageError(
+                "image_decode_failed", "动图无法解码，无法生成动画预览"
+            ) from exc
+        if len(preview.png) > self.max_inspect_bytes:
+            raise ContextImageError(
+                "file_too_large", "动画预览超过单次视觉检查大小上限"
+            )
+        text = (
+            f"已加载 image_ref={image_ref} 的动画预览。\n"
+            f"单次播放时长 {preview.duration_ms / 1000:.3f} 秒，"
+            f"共 {preview.frame_count} 帧，采样 {len(preview.sampled_indices)} 帧；"
+            "按从左到右、从上到下排列，每格标注序号和时间。\n"
+            "所有画面来自同一张动图，这是抽帧预览，并非完整动画；原图保持不变。"
+        )
+        if len(preview.sampled_indices) < 9:
+            text += "不足九帧，其余格留空。"
+        if preview.estimated_duration:
+            text += "部分帧缺少有效时长，按每帧 0.1 秒估算。"
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text=text),
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(preview.png).decode(),
+                    mimeType="image/png",
+                ),
+            ]
+        )
+
+    async def _read_scoped_image(self, event: Any, image_ref: str) -> tuple[bytes, str]:
+        """Share original-image loading and conversation isolation for both views."""
+
         if IMAGE_REF_PATTERN.fullmatch(image_ref) is None:
             raise ContextImageError("invalid_parameters", "image_ref 格式无效")
         conversation_id = event.get_extra(CONVERSATION_ID_EXTRA)
@@ -343,20 +414,7 @@ class ContextImageManager:
                 raise ContextImageError(
                     "target_not_found", "群聊图片缓存已过期、被淘汰或不属于当前会话"
                 )
-            payload, mime_type = cached
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=f"已加载 image_ref={image_ref}，图片仅供本轮视觉检查。",
-                    ),
-                    ImageContent(
-                        type="image",
-                        data=base64.b64encode(payload).decode(),
-                        mimeType=mime_type,
-                    ),
-                ]
-            )
+            return cached
         record = await self.storage.resolve_context_image(
             image_ref,
             str(event.get_platform_id()),
@@ -376,20 +434,7 @@ class ContextImageManager:
             raise ContextImageError(
                 "file_too_large", "图片原图超过单次视觉检查大小上限"
             )
-        image_data = base64.b64encode(await asyncio.to_thread(path.read_bytes)).decode()
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=f"已加载 image_ref={image_ref}，图片仅供本轮视觉检查。",
-                ),
-                ImageContent(
-                    type="image",
-                    data=image_data,
-                    mimeType=str(record["mime_type"]),
-                ),
-            ]
-        )
+        return await asyncio.to_thread(path.read_bytes), str(record["mime_type"])
 
     def clean_runtime_images(self, run_context: Any) -> None:
         """Prevent inspect-tool image bytes and cache paths from persistence.
@@ -398,7 +443,7 @@ class ContextImageManager:
             run_context: Completed AstrBot agent context awaiting history save.
         """
 
-        inspect_calls: dict[str, str] = {}
+        inspect_calls: dict[str, tuple[str, str]] = {}
         messages = getattr(run_context, "messages", [])
         for message in messages:
             if getattr(message, "role", None) != "assistant":
@@ -428,7 +473,10 @@ class ContextImageManager:
                     )
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(parsed, dict) or parsed.get("operation") != "inspect":
+                if not isinstance(parsed, dict) or parsed.get("operation") not in {
+                    "inspect",
+                    "inspect_animation",
+                }:
                     continue
                 params = parsed.get("params")
                 image_ref = (
@@ -437,20 +485,26 @@ class ContextImageManager:
                 if isinstance(image_ref, str) and IMAGE_REF_PATTERN.fullmatch(
                     image_ref
                 ):
-                    inspect_calls[tool_call_id] = image_ref
+                    inspect_calls[tool_call_id] = (image_ref, parsed["operation"])
 
         for message in messages:
             if getattr(message, "role", None) == "tool":
-                image_ref = inspect_calls.get(getattr(message, "tool_call_id", None))
+                inspected = inspect_calls.get(getattr(message, "tool_call_id", None))
                 content = getattr(message, "content", None)
                 if (
-                    image_ref
+                    inspected
                     and isinstance(content, str)
                     and ("Image returned and cached at path=" in content)
                 ):
-                    message.content = (
-                        f"已加载 image_ref={image_ref}，图片已在当时的推理轮次中提供。"
-                    )
+                    image_ref, operation = inspected
+                    if operation == "inspect_animation":
+                        # Keep objective sampling details, strip only AstrBot's
+                        # temporary attachment/cache-path suffix.
+                        message.content = content.split(
+                            "Image returned and cached at path=", 1
+                        )[0].rstrip()
+                    else:
+                        message.content = f"已加载 image_ref={image_ref}，图片已在当时的推理轮次中提供。"
                 continue
             if getattr(message, "role", None) != "user" or not isinstance(
                 getattr(message, "content", None), list

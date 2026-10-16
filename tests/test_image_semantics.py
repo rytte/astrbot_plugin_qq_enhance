@@ -93,6 +93,24 @@ def test_dynamic_labels_require_verified_frames(data, animated, expected):
     assert describe_image(data, animated=animated) == f"[QQ component|{expected}]"
 
 
+def test_animation_guidance_is_not_truncated_when_semantic_budget_is_small():
+    kwargs = dict(
+        self_id="20002",
+        semanticize_components=True,
+        respond_to_poke=False,
+        max_components=30,
+        image_animations={0: True},
+        image_refs={0: "img_" + "a" * 24},
+    )
+    raw = {"message": [{"type": "image", "data": {"summary": "长名称" * 100}}]}
+    text = describe_inbound_event(raw, max_chars=256, **kwargs)
+    assert "QQ动图" in text
+    assert "inspect_animation" not in text
+    full = describe_inbound_event(raw, max_chars=2000, **kwargs)
+    assert 'operation="inspect_animation"' in full
+    assert full.endswith('"})]')
+
+
 def test_mface_keeps_market_type_and_image_verification_covers_stickers():
     assert describe_image({"summary": "[开心]"}, component_type="mface") == (
         "[QQ component|QQ商城表情：开心]"

@@ -268,6 +268,8 @@ SnowLuma 列的状态口径：
 
 ## 核对来源
 
+`qq_media.inspect` 和 `qq_media.inspect_animation` 是插件本地能力，分别按会话引用返回原文件或最多九帧的 3×3 动图预览及采样说明，不调用 SnowLuma 媒体接口；两者共用原图引用和会话隔离规则。
+
 - [统一动作注册表及分组绑定](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/index.ts)：普通动作、别名、流式动作及 raw action 的注册依据。
 - [动作参数解析与处理器生成](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/action-kit.ts#L491)：只解析已声明参数、校验并执行处理器。
 - [API 动作分派](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/api-handler.ts#L236)：未注册动作返回 UNKNOWN_ACTION；快速操作由 raw handler 执行。

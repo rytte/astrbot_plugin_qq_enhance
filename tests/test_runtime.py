@@ -290,9 +290,11 @@ def test_context_images_switch_defaults_enabled_and_controls_inspect() -> None:
     assert runtime.config["context_images"]["orphan_grace_days"] == 3
     assert runtime.config["context_images"]["retention_days"] == 30
     assert runtime.operation_enabled("qq_media.inspect") is True
+    assert runtime.operation_enabled("qq_media.inspect_animation") is True
 
     runtime.config = validate_config({"context_images": {"enabled": False}})
     assert runtime.operation_enabled("qq_media.inspect") is False
+    assert runtime.operation_enabled("qq_media.inspect_animation") is False
     assert runtime.operation_enabled("qq_media.get_image") is True
 
     with pytest.raises(ValueError, match="context_images.enabled"):

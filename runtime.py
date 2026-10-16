@@ -1773,11 +1773,14 @@ class QQRuntime:
                 for item in OPERATIONS
                 if operation_availability(self.config, item, provider).enabled
             ]
-        elif operation_id == "qq_media.inspect":
+        elif operation_id in {"qq_media.inspect", "qq_media.inspect_animation"}:
             try:
-                local_result = await self.context_images.inspect(
-                    event, str(action_params["image_ref"])
+                inspect = (
+                    self.context_images.inspect_animation
+                    if spec.operation == "inspect_animation"
+                    else self.context_images.inspect
                 )
+                local_result = await inspect(event, str(action_params["image_ref"]))
             except ContextImageError as exc:
                 raise QQToolError(exc.code, exc.message) from exc
         elif operation_id == "qq_friend_request.list":

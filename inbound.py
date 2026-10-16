@@ -514,13 +514,17 @@ def get_inbound_component_type(component: Any) -> str:
 
 
 def _describe_component(
-    component: Any, *, image_is_animated: bool | None = None
+    component: Any,
+    *,
+    image_is_animated: bool | None = None,
+    image_ref: str | None = None,
 ) -> str:
     """Convert one supported OneBot message component into semantic text.
 
     Args:
         component: Raw OneBot message component.
         image_is_animated: Animation state verified from the prepared image file.
+        image_ref: Real archived reference, available only after saving the image.
 
     Returns:
         A semantic annotation, or an empty string for components already handled by
@@ -597,13 +601,21 @@ def _describe_component(
             content = f"QQ商城表情：{summary or '名称未知'}"
             if image_is_animated is True:
                 content += "；动态"
-            return format_component_semantics(content)
-        is_sticker = _clean_text(data.get("sub_type", data.get("subType")), 40) == "1"
-        if is_sticker:
-            label = "QQ动态表情包" if image_is_animated is True else "QQ表情包"
         else:
-            label = "QQ动图" if image_is_animated is True else "QQ图片"
-        return format_component_semantics(f"{label}：{summary}" if summary else label)
+            is_sticker = (
+                _clean_text(data.get("sub_type", data.get("subType")), 40) == "1"
+            )
+            if is_sticker:
+                label = "QQ动态表情包" if image_is_animated is True else "QQ表情包"
+            else:
+                label = "QQ动图" if image_is_animated is True else "QQ图片"
+            content = f"{label}：{summary}" if summary else label
+        if image_is_animated is True and image_ref:
+            content += (
+                '；如需查看动画，调用 qq_media(operation="inspect_animation", '
+                f'params={{"image_ref":"{image_ref}"}})'
+            )
+        return format_component_semantics(content)
 
     if component_type == "video":
         return format_component_semantics("视频消息")
@@ -701,6 +713,7 @@ def describe_inbound_event(
     max_components: int,
     max_chars: int,
     image_animations: Mapping[int, bool] | None = None,
+    image_refs: Mapping[int, str] | None = None,
 ) -> str:
     """Describe one supported NapCat message or targeted poke notice.
 
@@ -713,6 +726,7 @@ def describe_inbound_event(
         max_components: Maximum number of raw message components to inspect.
         max_chars: Maximum semantic text appended to the model prompt.
         image_animations: Verified animation states keyed by raw message-segment index.
+        image_refs: Archived image references keyed by the same segment index.
 
     Returns:
         Bounded semantic text, or an empty string when the event should not be
@@ -746,6 +760,7 @@ def describe_inbound_event(
         return ""
     descriptions = []
     references = []
+    reference_fallbacks = {}
     components = raw_event.get("message")
     if isinstance(components, list):
         for index, component in enumerate(components[:max_components]):
@@ -765,12 +780,23 @@ def describe_inbound_event(
                 _describe_component(
                     component,
                     image_is_animated=(image_animations or {}).get(index),
+                    image_ref=(image_refs or {}).get(index),
                 )
                 if semanticize_components
                 else ""
             )
             if description:
-                descriptions.append(description)
+                if (image_animations or {}).get(index) and (image_refs or {}).get(
+                    index
+                ):
+                    # Keep tool entries whole, just like forward read entries.
+                    if description not in references:
+                        references.append(description)
+                        reference_fallbacks[description] = _describe_component(
+                            component, image_is_animated=True
+                        )
+                else:
+                    descriptions.append(description)
     if semanticize_components and _contains_wallet_element(raw_event.get("raw")):
         descriptions.append(
             format_component_semantics("QQ红包消息（仅识别，不能代领）")
@@ -784,6 +810,8 @@ def describe_inbound_event(
         if cost <= remaining:
             selected_references.append(reference)
             remaining -= cost
+        elif reference in reference_fallbacks:
+            descriptions.append(reference_fallbacks[reference])
     if selected_references:
         remaining = max(0, remaining - 1)
     text = " ".join(descriptions)

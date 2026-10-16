@@ -52,7 +52,13 @@ from .inbound import (
     get_inbound_component_type,
     is_red_packet_event,
 )
-from .image_semantics import inspect_inbound_image_animations
+from .image_semantics import (
+    ANIMATION_SEMANTICS_EXTRA,
+    AnimationSemantics,
+    bind_animation_references,
+    inspect_inbound_image_animations,
+    prepared_image_sources,
+)
 from .request_notification import (
     ConfirmationResultEvent,
     NotificationOnlyTool,
@@ -102,12 +108,15 @@ VERIFIED_COMPONENT_FORMATS = {
     "face": ("[QQ component|QQ表情：<name>] or [QQ component|QQ超级表情：<name>]"),
     "market_face": (
         "[QQ component|QQ商城表情：<name>], with an optional ；动态 suffix "
-        "when animation frames were verified"
+        "when animation frames were verified; animated components may also include "
+        "an inspect_animation entry using the original image_ref"
     ),
     "image": (
         "[QQ component|QQ图片], [QQ component|QQ动图], [QQ component|QQ表情包], "
         "or [QQ component|QQ动态表情包], optionally followed by ：<summary> "
         "inside the wrapper; animation labels require verified animation frames. "
+        "Animated components may include an inspect_animation entry using the "
+        "original image_ref inside the wrapper. "
         "An actual image content part is also supported"
     ),
     "video": "[QQ component|视频消息]",
@@ -1281,15 +1290,28 @@ class QQEnhancePlugin(Star):
             if inbound["semanticize_components"]
             else {}
         )
-        semantics = describe_inbound_event(
-            raw,
-            str(event.get_self_id() or ""),
-            semanticize_components=inbound["semanticize_components"],
-            respond_to_poke=interaction_response["respond_to_poke"],
-            max_components=self.config["limits"]["max_components"],
-            max_chars=inbound["max_semantic_chars"],
-            image_animations=image_animations,
-        )
+
+        self_id = str(event.get_self_id() or "")
+        max_components = self.config["limits"]["max_components"]
+
+        def render_semantics(image_refs: dict[int, str] | None = None) -> str:
+            text = describe_inbound_event(
+                raw,
+                self_id,
+                semanticize_components=inbound["semanticize_components"],
+                respond_to_poke=interaction_response["respond_to_poke"],
+                max_components=max_components,
+                max_chars=inbound["max_semantic_chars"],
+                image_animations=image_animations,
+                image_refs=image_refs,
+            )
+            if inbound["component_spoof_protection"]["enabled"]:
+                text = USER_VERIFICATION_TAG_PATTERN.sub(
+                    USER_VERIFICATION_TAG_REMOVED, text
+                )
+            return text
+
+        semantics = render_semantics()
         if red_packet and not semantics:
             semantics = format_component_semantics("QQ红包消息（仅识别，不能代领）")
         if inbound["component_spoof_protection"]["enabled"]:
@@ -1303,11 +1325,37 @@ class QQEnhancePlugin(Star):
         enriched = f"{current}\n{semantics}" if current else semantics
         event.message_str = enriched
         event.message_obj.message_str = enriched
+        semantic_part = None
         if event.get_group_id():
             # AstrBot's group-context recorder inspects structured components,
             # not message_str. Preserve semantics for later requests and create
             # the native context cursor when this message wakes the model.
-            event.message_obj.message.append(Plain(semantics))
+            semantic_part = Plain(semantics)
+            event.message_obj.message.append(semantic_part)
+        if (
+            any(image_animations.values())
+            and operation_availability(
+                self.config, OPERATION_MAP["qq_media.inspect_animation"]
+            ).enabled
+        ):
+            sources = prepared_image_sources(
+                raw,
+                event.get_messages(),
+                max_components=self.config["limits"]["max_components"],
+            )
+            event.set_extra(
+                ANIMATION_SEMANTICS_EXTRA,
+                AnimationSemantics(
+                    text=semantics,
+                    sources={
+                        index: source
+                        for index, source in sources.items()
+                        if image_animations.get(index)
+                    },
+                    render=render_semantics,
+                    part=semantic_part,
+                ),
+            )
         targeted_poke = (
             isinstance(raw, dict)
             and raw.get("post_type") == "notice"
@@ -1384,6 +1432,9 @@ class QQEnhancePlugin(Star):
             event.message_obj.message_str = event.message_str
         if cached:
             event.set_extra(GROUP_IMAGES_EXTRA, cached)
+            bind_animation_references(
+                event, {item["source"]: item["image_ref"] for item in cached}
+            )
 
     @filter.on_llm_request(priority=-1000)
     async def add_verified_component_signal(
@@ -2899,7 +2950,7 @@ class QQEnhancePlugin(Star):
         """读取、转换或识别 QQ 媒体。
 
         Args:
-            operation(string): inspect、get_image、get_record、convert_record 或 ocr。
+            operation(string): inspect（原图）、inspect_animation（动图九宫格预览）、get_image、get_record、convert_record 或 ocr。
             params(object): 当前 operation 的严格参数对象。
         """
 

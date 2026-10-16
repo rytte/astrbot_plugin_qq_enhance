@@ -30,7 +30,7 @@ def operation_availability(
     if spec.category == "web" and not config["web_reader"]["enabled"]:
         reason = "web_reader_disabled"
     elif (
-        spec.operation_id == "qq_media.inspect"
+        spec.operation_id in {"qq_media.inspect", "qq_media.inspect_animation"}
         and not config["context_images"]["enabled"]
     ):
         reason = "context_images_disabled"

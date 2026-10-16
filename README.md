@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、82 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、83 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 [功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development) · [更新日志](./CHANGELOG.md)
 
@@ -507,7 +507,17 @@ User-entered verification tags are replaced with
 
 `qq_media.inspect` 只接受当前平台实例、消息来源和 AstrBot 会话共同绑定的引用，不能跨群、跨私聊或跨会话读取。重载的图片只在当次 Agent 工具循环中可见；AstrBot 在该轮生成的工具缓存路径、图片 Base64 和当前消息的附件路径提示都会在保存历史前移除。
 
-关闭图片历史轻量化后，不再归档新图片、改写图片历史或开放 `qq_media.inspect`。关闭群聊缓存开关只停止新增短期缓存；已有短期缓存仍按容量和有效期清理。
+**按需查看动图**：`qq_media(operation="inspect_animation", params={"image_ref":"img_..."})` 使用同一份原图引用（也支持 `gimg_...`），返回最多九个实际动画帧的单张 3×3 PNG 九宫格及简短采样说明。支持 GIF、WebP、APNG；按播放时间采样并包含首尾帧，每格标注序号和时间，从左到右、从上到下排列。不足九帧时余格留空，不重复凑数；APNG 默认封面不参与采样。说明包含单次播放时长、总帧数和采样数，缺少有效帧时长时明确标注估算；不解释画面内容。静态图、解码失败或超过处理上限时返回明确错误。
+
+开启组件语义化并成功保存原图引用后，已识别动图会在原有类型标签中增加查看动画的入口，例如：
+
+```text
+[QQ component|QQ动态表情包；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_..."})]
+```
+
+普通动图和商城动态表情同样保留对应标签。动图不会自动抽帧或拼图；`inspect` 始终返回保存的原文件，历史中的原有 `inspect` 引导保持不变。动画预览复用原图的会话隔离和有效期，仅在当前工具轮次提供图片，保存历史时只保留采样说明，不保留九宫格 Base64 或临时路径。
+
+关闭图片历史轻量化后，不再归档新图片、改写图片历史或开放 `qq_media.inspect`、`qq_media.inspect_animation`。关闭群聊缓存开关只停止新增短期缓存；已有短期缓存仍按容量和有效期清理。
 
 <details>
 <summary>原图保留与清理规则</summary>

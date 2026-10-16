@@ -239,8 +239,9 @@ async def test_inspect_returns_original_only_inside_exact_conversation_scope(
 
 
 @pytest.mark.parametrize("prefix", ["img", "gimg"])
+@pytest.mark.parametrize("operation", ["inspect", "inspect_animation"])
 def test_inspect_tool_images_and_cache_paths_are_not_persisted(
-    tmp_path: Path, prefix: str
+    tmp_path: Path, prefix: str, operation: str
 ) -> None:
     manager = ContextImageManager(
         SimpleNamespace(),
@@ -264,7 +265,7 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(
                     "name": "qq_media",
                     "arguments": json.dumps(
                         {
-                            "operation": "inspect",
+                            "operation": operation,
                             "params": {"image_ref": image_ref},
                         }
                     ),
@@ -295,9 +296,12 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(
 
     manager.clean_runtime_images(SimpleNamespace(messages=messages))
 
-    assert tool.content == (
-        f"已加载 image_ref={image_ref}，图片已在当时的推理轮次中提供。"
-    )
+    if operation == "inspect":
+        assert tool.content == (
+            f"已加载 image_ref={image_ref}，图片已在当时的推理轮次中提供。"
+        )
+    else:
+        assert tool.content == f"已加载 image_ref={image_ref}，图片仅供本轮视觉检查。"
     assert tool_image._no_save is True
     persisted = [
         message
