@@ -213,6 +213,8 @@ SnowLuma 列的状态口径：
 
 ## 当前适配状态
 
+`qq_send_message.lookup_face` 使用插件内置目录，本地查询表情名称、ID 和分类，无需新增 SnowLuma 动作；目录来源及数量见 [README 的表情查询说明](../README.md)。查询结果不代表客户端动画效果已获验证。
+
 已新增独立的 [SnowLuma provider](../providers/snowluma.py) 和 [v1.14.22 动作契约](../contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，接受 `>=1.14.22` 的版本，版本标识可为 `x.y.z` / `x.y.z-node`，且要求协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](../README.md#snowluma-支持范围) 为准。
 
 1. **动作注册与实际能力分别判断。** 74 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。

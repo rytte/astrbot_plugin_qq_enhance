@@ -9,7 +9,7 @@
 | 项目 | 数量 |
 |---|---:|
 | NapCat 已注册动作 | 177 |
-| 插件公开能力 | 29 个工具、81 个操作 |
+| 插件公开能力 | 29 个工具、82 个操作 |
 | 插件覆盖的 NapCat 动作 | 72 |
 
 统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 67 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
@@ -229,7 +229,7 @@
 | `qq_group_request` | `list`、`ignored`、`approve`、`reject` | `get_group_ignored_notifies`<br>`get_group_system_msg`<br>`set_group_add_request` |
 | `qq_group_member_manage` | `poke`、`card`、`title`、`ban`、`kick`、`admin` | `group_poke`<br>`set_group_admin`<br>`set_group_ban`<br>`set_group_card`<br>`set_group_kick`<br>`set_group_special_title` |
 | `qq_group_manage` | `whole_ban`、`name`、`avatar`、`sign`、`leave` | `set_group_leave`<br>`set_group_name`<br>`set_group_portrait`<br>`set_group_sign`<br>`set_group_whole_ban` |
-| `qq_send_message` | `send` | `send_group_msg`<br>`send_private_msg`<br>本地编排：`send` |
+| `qq_send_message` | `send`、`lookup_face` | `send_group_msg`<br>`send_private_msg`<br>本地编排：`send`<br>本地表情目录查询：`lookup_face` |
 | `qq_send_forward` | `send` | `send_group_forward_msg`<br>`send_private_forward_msg`<br>本地编排：`send` |
 | `qq_message_get` | `get` | `get_msg` |
 | `qq_forward_get` | `get` | `get_forward_msg` |
@@ -256,7 +256,7 @@
 | `at` | 已实现 | 支持 | 主要用于群聊 |
 | `reply` | 已实现 | 支持 | 引用消息 ID 必须有效 |
 | `json` | 原样转为 Ark bytesData | 透传支持 | 必须是上游正式接口生成的完整有效 Ark；任意语法正确的 JSON 不等于有效卡片 |
-| `face` | 已实现 | 支持 | QQ 表情 |
+| `face` | 已实现 | 支持 | 按 ID 发送 QQ 内置表情，包含协议端支持的超级表情、动态大表情；客户端动画效果需以实际显示为准 |
 | `mface` | 已实现 | 不支持 | NapCat 支持商城表情，插件未开放 |
 | `markdown` | 已构造元素，但标注需要签名 | 不支持 | 不能视为任意账号均可直接发送 |
 | `node` | 通用发送转换器为空 | 不作为普通组件支持 | 插件仅在 qq_send_forward.send 的自定义转发节点中支持节点语义 |

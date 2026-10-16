@@ -91,6 +91,7 @@ OPERATION_DISPLAY_NAMES = {
     "qq_group_manage.sign": "群打卡",
     "qq_group_manage.leave": "退出群聊",
     "qq_send_message.send": "发送结构化 QQ 消息",
+    "qq_send_message.lookup_face": "查询 QQ 表情名称、编号与分类",
     "qq_send_forward.send": "发送合并转发消息",
     "qq_message_get.get": "获取单条消息",
     "qq_forward_get.get": "获取合并转发内容",
@@ -475,6 +476,7 @@ OPERATIONS = (
         target_kind="group",
     ),
     _op("qq_send_message", "send", None, "message", risk="write"),
+    _op("qq_send_message", "lookup_face", None, "message"),
     _op("qq_send_forward", "send", None, "message", risk="write"),
     _op("qq_message_get", "get", "get_msg", "message"),
     _op("qq_forward_get", "get", "get_forward_msg", "message"),
@@ -826,10 +828,14 @@ OPERATION_PARAMETERS = {
             '{"type":"temporary","id":成员QQ号,"group_id":共同群号}。'
             "组件字段必须直接放在对象中，"
             '不得使用 data 包装。常用组件：{"type":"text","text":"..."}、'
-            '{"type":"face","id":14}、{"type":"at","id":正整数}、'
+            '{"type":"face","id":"14"}、{"type":"at","id":正整数}、'
             '{"type":"reply","id":正整数}、{"type":"dice"}、{"type":"rps"}、'
             '{"type":"share","url":"跳转地址","title":"标题",'
-            '"content":"可选内容","image":"可选预览图"}。分享卡片会安全编码为 Ark JSON，'
+            '"content":"可选内容","image":"可选预览图"}。'
+            "face 按 QQ 内置表情 ID 发送，小黄脸和协议端支持的超级表情、动态大表情共用此组件，"
+            "无需专用参数。不确定表情 ID 或需要挑选表情时，可先用本工具的"
+            "lookup_face 操作查询完整目录，再用返回的 ID 发送。"
+            "分享卡片会安全编码为 Ark JSON，"
             "必须作为唯一组件发送；不要自行拼接分享卡片 JSON，也不得擅自替换用户提供的 URL。"
             "媒体组件 type 必须是 image、record、video 或 file，并提供 path、url、"
             "base64、media_ref 中恰好一项。用户按歌名点歌时必须使用 "
@@ -844,6 +850,21 @@ OPERATION_PARAMETERS = {
             '"content":"可选简介"}。不要先发送测试或占位消息。'
             "音乐卡片必须作为唯一组件单独发送；如需附带说明文字，请在最终回复中简短说明。"
             "调用成功仅表示 QQ 接口已接受发送请求，最终回复不得重复其中的正文或卡片。"
+        ),
+    ),
+    "qq_send_message.lookup_face": _params(
+        optional=("query", "category", *PAGE_PARAMS),
+        hint=(
+            "只读查询完整 QQ 内置表情目录，不发送消息，无需 target 或 components。"
+            '例如 {"operation":"lookup_face","params":{"query":"超级转圈"}}。'
+            "query 可用名称、名称关键词或 ID；先匹配精确名称或 ID，再匹配名称子串，"
+            "忽略大小写、空格和外层方括号，重名时保留全部编号。"
+            "category 可选 all（默认）、normal、super、random、chain；super 包含"
+            "常规、随机和连击三类超级表情。列出全部超级表情时用 category=super，"
+            "不要仅用 query=超级，因为多数超级表情的名称不含这两个字。"
+            "空 query 列出所选分类；结果含 id、name、category、is_super、hidden，"
+            "超过一页时保持 query、category 不变并传入 next_cursor。"
+            "隐藏条目和连击阶段也按 ID 收录，目录未匹配不等于协议端不支持发送。"
         ),
     ),
     "qq_send_forward.send": _params(
@@ -965,6 +986,8 @@ TOOL_DESCRIPTIONS = {
     "qq_group_manage": "执行全员禁言、改群名或头像、签到、退群。",
     "qq_send_message": (
         "向当前或获授权的 QQ 会话发送结构化消息；音乐卡片必须作为唯一组件单独发送。"
+        "face 可按 ID 发送小黄脸及协议端支持的超级表情、动态大表情，无需专用组件。"
+        "lookup_face 按名称、关键词、ID 或分类查询完整表情目录；不确定编号时先查再发。"
         "发送猜拳或骰子后会自动回查并返回最终随机结果。"
         "调用成功仅表示 QQ 接口已接受发送请求；不要在最终回复中重复消息正文或卡片。"
     ),

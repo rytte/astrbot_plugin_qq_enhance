@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、81 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、82 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 [功能亮点](#features) · [快速开始](#quick-start) · [技术原理与配置](#configuration) · [权限与确认](#permissions) · [常见问题](#faq) · [详细参考](#reference) · [开发验证](#development) · [更新日志](./CHANGELOG.md)
 
@@ -739,7 +739,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 | `qq_group_request` | 加群申请、邀请和已忽略通知 |
 | `qq_group_member_manage` | 群成员戳一戳、名片、头衔、禁言、踢人、管理员身份 |
 | `qq_group_manage` | 全员禁言、群名、群头像、签到、退群 |
-| `qq_send_message` | 发送结构化消息 |
+| `qq_send_message` | 发送结构化消息，查询 QQ 内置表情名称、编号与分类 |
 | `qq_send_forward` | 群聊和私聊合并转发 |
 | `qq_message_get` | 获取单条消息 |
 | `qq_forward_get` | 读取并按深度展开合并转发 |
@@ -756,7 +756,7 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 </details>
 
 <details>
-<summary>结构化消息与音乐卡片</summary>
+<summary>结构化消息、表情查询与音乐卡片</summary>
 
 以下是 `qq_send_message` 的工具参数示例，适合调试工具调用；日常对话可直接用自然语言提出请求。
 
@@ -775,10 +775,26 @@ QQ 群管理员与 AstrBot 管理员是两种身份。账号和好友关系等�
 
 支持的组件类型包括 `text`、`at`、`reply`、`image`、`record`、`video`、`file`、`face`、`dice`、`rps`、`share`、`music`、`contact`、`location` 和 `json`。
 
+- `face` 按 QQ 内置表情 ID 发送，支持小黄脸及协议端支持的超级表情、动态大表情，共用同一组件，无需专用参数。编号不确定时，可先通过同一工具的 `lookup_face` 操作按名称查询完整目录，再用返回的 ID 发送。最终动画效果由协议端与 QQ 客户端决定，发送回执本身无法确认显示效果。
 - 媒体来源必须且只能填写 `path`、`url`、`base64`、`media_ref` 中的一项；Base64 支持 `data:*/*;base64,...`。
 - `share` 必须单独发送，插件会校验 URL 并生成新闻 Ark JSON 卡片。NapCat 4.18.19 不接受原生 `share` 消息段。
 - `music` 必须单独发送，避免 NapCat 丢弃音乐段。
 - `dice`、`rps` 发送后会自动回查点数或手势，写入 `data.random_results`。回查失败会返回 `warnings`，已发送的消息仍记为发送成功。
+
+表情查询示例（`qq_send_message`）：
+
+```json
+{
+  "operation": "lookup_face",
+  "params": {"query": "转圈", "category": "super", "page_size": 20}
+}
+```
+
+查询为本地只读操作，不发送消息，无需 `target` 或 `components`，NapCat 和 SnowLuma 均可使用。`query` 支持名称、名称关键词或 ID，先精确匹配，再查名称子串，忽略大小写、空格和外层方括号；重名时保留所有编号。结果包含 `id`、`name`、`category`、`is_super` 和 `hidden`；下一页保持 `query`、`category` 不变并传入 `next_cursor`。输出长度受限时自动减少本页数量，并保留正确游标。
+
+`category` 支持 `all`（默认）、`normal`、`super`、`random`、`chain`。`super` 包含常规、随机和连击三类超级表情；省略 `query`、仅填 `category=super` 可分页查询全部超级表情，不能只按名称中的“超级”二字筛选。
+
+目录与入站感知共用 NapCat 4.18.19 的 329 个表情 ID，其中常规超级表情 87 个、随机超级表情 3 个（篮球、骰子、猜拳）、连击超级表情 12 个，合计 102 个。分类依据上游 `AniStickerType`，包含隐藏条目及连击的不同阶段，不等于 QQ 面板可选数量；查询无匹配仅表示当前目录未收录，不代表协议端不支持发送。分类查询不会新增篮球结果解析或连击参数。
 
 分享组件示例：
 

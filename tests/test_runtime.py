@@ -2628,6 +2628,158 @@ async def make_snowluma_runtime(tmp_path, config=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [make_runtime, make_snowluma_runtime])
+@pytest.mark.parametrize("group_id", ["", "30001"])
+async def test_face_lookup_is_read_only_for_members_then_sends_returned_id(
+    tmp_path, factory, group_id
+):
+    runtime, client, _ = await factory(tmp_path)
+    event = FakeEvent(sender_id="20001", group_id=group_id, admin=False)
+    result = json.loads(
+        await runtime.execute(
+            event, "qq_send_message", "lookup_face", {"query": "打 call"}
+        )
+    )
+    assert result["ok"] is True
+    assert result["data"] == [
+        {
+            "id": "311",
+            "name": "打call",
+            "category": "super",
+            "is_super": True,
+            "hidden": False,
+        }
+    ]
+    assert result["next_cursor"] is None
+    assert "NapCat 4.18.19" in result["summary"]
+    assert all(action == "get_version_info" for action, _ in client.calls)
+
+    sent = json.loads(
+        await runtime.execute(
+            event,
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "current"},
+                "components": [{"type": "face", "id": result["data"][0]["id"]}],
+            },
+        )
+    )
+    assert sent["ok"] is True
+    sends = [params for action, params in client.calls if action.startswith("send_")]
+    assert len(sends) == 1
+    assert sends[0]["message"] == [{"type": "face", "data": {"id": "311"}}]
+
+
+@pytest.mark.asyncio
+async def test_face_lookup_pagination_survives_small_output_budget(tmp_path):
+    runtime, client, _ = await make_runtime(
+        tmp_path, {"limits": {"max_output_chars": 1000}}
+    )
+    event = FakeEvent(sender_id="20001", admin=False)
+    cursor = None
+    ids = []
+    while True:
+        params = {"category": "super", "page_size": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        text = await runtime.execute(event, "qq_send_message", "lookup_face", params)
+        assert len(text) <= 1000
+        result = json.loads(text)
+        assert result["ok"] is True
+        assert result["data"]
+        assert result["warnings"] == []
+        assert all(face["is_super"] for face in result["data"])
+        ids.extend(face["id"] for face in result["data"])
+        assert len(ids) <= 102
+        cursor = result["next_cursor"]
+        if cursor is None:
+            break
+        assert int(cursor) == len(ids)
+    assert len(ids) == len(set(ids)) == 102
+    assert all(action == "get_version_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_unknown_face_lookup_returns_empty_page_without_claiming_unsupported(
+    tmp_path,
+):
+    runtime, client, _ = await make_runtime(tmp_path)
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(), "qq_send_message", "lookup_face", {"query": "999999"}
+        )
+    )
+    assert result["ok"] is True
+    assert result["data"] == []
+    assert result["next_cursor"] is None
+    assert "不等于协议端不支持发送" in result["summary"]
+    assert all(action == "get_version_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_disabled_face_lookup_cannot_be_executed(tmp_path):
+    runtime, client, _ = await make_runtime(
+        tmp_path,
+        {"toolsets": {"disabled_operations": ["qq_send_message.lookup_face"]}},
+    )
+    result = json.loads(
+        await runtime.execute(FakeEvent(), "qq_send_message", "lookup_face", {})
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "capability_unavailable"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"query": None},
+        {"query": True},
+        {"query": 311},
+        {"query": []},
+        {"query": "x" * 129},
+        {"category": "unknown"},
+        {"category": []},
+        {"category": None},
+        {"target": {"type": "current"}},
+        {"components": [{"type": "face", "id": "311"}]},
+        {"page_size": 0},
+        {"page_size": 101},
+        {"cursor": "-1"},
+        {"cursor": "bad"},
+        {"cursor": True},
+        {"cursor": 1.5},
+    ],
+)
+async def test_face_lookup_rejects_invalid_parameters_without_sending(tmp_path, params):
+    runtime, client, _ = await make_runtime(tmp_path)
+    result = json.loads(
+        await runtime.execute(FakeEvent(), "qq_send_message", "lookup_face", params)
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_parameters"
+    assert all(action == "get_version_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params", [{}, {"query": "打call"}, {"target": {"type": "current"}}]
+)
+async def test_send_still_requires_target_and_components_with_lookup_enabled(
+    tmp_path, params
+):
+    runtime, client, _ = await make_runtime(tmp_path)
+    result = json.loads(
+        await runtime.execute(FakeEvent(), "qq_send_message", "send", params)
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_parameters"
+    assert all(action == "get_version_info" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool,target",
     [

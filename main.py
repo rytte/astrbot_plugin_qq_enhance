@@ -40,6 +40,7 @@ from .catalog import (
 )
 from .context_images import ContextImageError
 from .errors import QQToolError
+from .face_names import QQ_FACE_CATEGORIES
 from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
 from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
@@ -326,6 +327,10 @@ class QQEnhancePlugin(Star):
                                     "properties": {
                                         "type": {
                                             "type": "string",
+                                            "description": (
+                                                "消息组件类型；face 按 QQ 内置表情 ID 发送，"
+                                                "包括小黄脸及协议端支持的超级表情、动态大表情。"
+                                            ),
                                             "enum": [
                                                 "text",
                                                 "image",
@@ -377,7 +382,10 @@ class QQEnhancePlugin(Star):
                                         },
                                         "id": {
                                             "type": "string",
-                                            "description": "At、引用、表情、联系人或平台音乐的 ID；对应类型必填。",
+                                            "description": (
+                                                "At、引用、表情、联系人或平台音乐的 ID；对应类型必填。"
+                                                "不确定表情编号时先用 lookup_face 按名称查询。"
+                                            ),
                                         },
                                         "title": {
                                             "type": "string",
@@ -443,6 +451,39 @@ class QQEnhancePlugin(Star):
                         "additionalProperties": False,
                     }
                 )
+                if "lookup_face" in enabled_operations:
+                    lookup_properties = {
+                        "query": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": "lookup_face 的表情名称、关键词或 ID；省略或空串时列出所选分类。",
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": list(QQ_FACE_CATEGORIES),
+                            "description": (
+                                "lookup_face 的分类筛选，默认 all；super 包含所有超级表情，"
+                                "random 为随机超级表情，chain 为连击超级表情。"
+                            ),
+                        },
+                        "cursor": {
+                            "type": "string",
+                            "description": "lookup_face 上一页返回的 next_cursor；保持查询条件不变。",
+                        },
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": self.config["limits"]["max_page_size"],
+                            "description": "lookup_face 每页返回数量，省略时使用配置默认值。",
+                        },
+                    }
+                    if "send" in enabled_operations:
+                        params_schema["properties"].update(lookup_properties)
+                    else:
+                        params_schema["properties"] = lookup_properties
+                    # Required fields depend on operation and are enforced by
+                    # OPERATION_PARAMETERS; lookup accepts an empty object.
+                    params_schema["required"] = []
             tool.parameters = {
                 "type": "object",
                 "properties": {
@@ -2733,11 +2774,11 @@ class QQEnhancePlugin(Star):
     async def qq_send_message(
         self, event: AstrMessageEvent, operation: str, params: dict
     ) -> str:
-        """发送显式结构化 QQ 消息。
+        """发送结构化 QQ 消息，或查询完整表情目录。
 
         Args:
-            operation(string): send。
-            params(object): 包含 target 和 components 的严格参数对象。
+            operation(string): send 或 lookup_face。
+            params(object): send 必填 target、components；lookup_face 可选 query、category、cursor、page_size。
         """
 
         return await self.runtime.execute(event, "qq_send_message", operation, params)

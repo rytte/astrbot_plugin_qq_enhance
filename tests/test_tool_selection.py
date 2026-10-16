@@ -327,8 +327,13 @@ async def test_qq_tool_dialogue_prompt_does_not_affect_unrelated_requests(
 
 
 @pytest.mark.parametrize("web_enabled", [True, False])
+@pytest.mark.parametrize(
+    "send_operations", [("send", "lookup_face"), ("send",), ("lookup_face",)]
+)
 @pytest.mark.asyncio
-async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
+async def test_initialize_uses_registered_tool_manager_api(
+    web_enabled, send_operations
+) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     manager = FunctionToolManager()
     for tool_name in TOOL_OPERATIONS:
@@ -345,6 +350,13 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     plugin.config = validate_config(
         {
             "web_reader": {"enabled": web_enabled},
+            "toolsets": {
+                "disabled_operations": [
+                    f"qq_send_message.{operation}"
+                    for operation in ("send", "lookup_face")
+                    if operation not in send_operations
+                ]
+            },
         }
     )
     plugin.storage = SimpleNamespace(initialize=AsyncMock())
@@ -378,8 +390,34 @@ async def test_initialize_uses_registered_tool_manager_api(web_enabled) -> None:
     send_tool = manager.get_func("qq_send_message")
     params_schema = send_tool.parameters["properties"]["params"]
     params_description = params_schema["description"]
-    assert send_tool.parameters["properties"]["operation"]["enum"] == ["send"]
-    assert params_schema["required"] == ["target", "components"]
+    assert send_tool.parameters["properties"]["operation"]["enum"] == list(
+        send_operations
+    )
+    assert params_schema["required"] == (
+        [] if "lookup_face" in send_operations else ["target", "components"]
+    )
+    if "lookup_face" in send_operations:
+        assert "列出全部超级表情时用 category=super" in params_description
+        assert params_schema["properties"]["category"]["enum"] == [
+            "all",
+            "normal",
+            "super",
+            "random",
+            "chain",
+        ]
+        assert params_schema["properties"]["page_size"]["maximum"] == 100
+    else:
+        assert "query" not in params_schema["properties"]
+    if "send" not in send_operations:
+        assert set(params_schema["properties"]) == {
+            "query",
+            "category",
+            "cursor",
+            "page_size",
+        }
+        assert params_schema["additionalProperties"] is False
+        await plugin.terminate()
+        return
     assert "oneOf" not in params_schema
     assert "expect_reply" not in params_schema["properties"]
     assert "handoff_ref" not in params_schema["properties"]

@@ -38,6 +38,7 @@ from .catalog import (
 )
 from .context_images import ContextImageError, ContextImageManager
 from .errors import QQToolError
+from .face_names import QQ_FACE_CATEGORIES, QQ_FACE_SOURCE, lookup_qq_faces
 from .group_image_cache import GroupImageCache
 from .notice_context import DEFAULT_NOTICE_POLICIES
 from .providers import resolve_provider
@@ -1501,6 +1502,23 @@ class QQRuntime:
                 raise QQToolError(
                     "invalid_parameters", "target 必须是对象且 components 必须是数组"
                 )
+        if operation_id == "qq_send_message.lookup_face":
+            query = normalized.get("query", "")
+            if not isinstance(query, str) or len(query) > 128:
+                raise QQToolError(
+                    "invalid_parameters", "query 必须是不超过 128 字符的字符串"
+                )
+            normalized["query"] = query.strip()
+            if normalized.get("category", "all") not in QQ_FACE_CATEGORIES:
+                raise QQToolError(
+                    "invalid_parameters",
+                    "category 必须是 all、normal、super、random 或 chain",
+                )
+            if "cursor" in normalized and (
+                not isinstance(normalized["cursor"], str)
+                or not re.fullmatch(r"[0-9]+", normalized["cursor"])
+            ):
+                raise QQToolError("invalid_parameters", "cursor 必须是返回的数字字符串")
         if operation_id == "qq_send_forward.send":
             if not isinstance(normalized["target"], dict) or not isinstance(
                 normalized["nodes"], list
@@ -1548,7 +1566,7 @@ class QQRuntime:
         is_private = event.is_private_chat()
         target_kind = spec.target_kind
         target_id = ""
-        if spec.tool in {"qq_send_message", "qq_send_forward"}:
+        if spec.operation_id in {"qq_send_message.send", "qq_send_forward.send"}:
             target = params.get("target", {})
             target_type = target.get("type")
             if target_type == "current":
@@ -1791,6 +1809,34 @@ class QQRuntime:
                     "url": attachment.url,
                 }
             ]
+        elif operation_id == "qq_send_message.lookup_face":
+            matches = lookup_qq_faces(
+                action_params.get("query", ""), action_params.get("category", "all")
+            )
+            result = self.paginate(matches, cursor, page_size)
+            while True:
+                result["summary"] += (
+                    f"；目录来源 {QQ_FACE_SOURCE}，包含隐藏条目和连击阶段，"
+                    "未匹配仅表示当前目录未收录，不等于协议端不支持发送"
+                )
+                serialized = json.dumps(
+                    self.success_result(
+                        operation_id,
+                        result,
+                        params,
+                        provider_name=provider.display_name,
+                    ),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                if len(serialized) <= self.config["limits"]["max_output_chars"]:
+                    break
+                # Fit the page before generic output clipping so the cursor
+                # always retains the original query offset on later pages.
+                result = self.paginate(
+                    matches, cursor, max(1, len(result["data"]) // 2)
+                )
+            return None, {}, result
         elif operation_id == "qq_send_message.send":
             action, action_params = await self.prepare_message(event, action_params)
         elif operation_id == "qq_send_forward.send":
