@@ -13,6 +13,15 @@ from .random_components import parse_random_component
 _FIELD_CHAR_LIMIT = 300
 _JSON_INPUT_LIMIT = 65536
 _RAW_SCAN_LIMIT = 256
+# OneBot's ordinary poke types; NapCat reports id=type instead of id=-1.
+_POKE_TYPE_NAMES = {
+    "1": "戳一戳",
+    "2": "比心",
+    "3": "点赞",
+    "4": "心碎",
+    "5": "666",
+    "6": "放大招",
+}
 _CARD_URL_KEYS = (
     "jumpUrl",
     "jump_url",
@@ -572,7 +581,21 @@ def _describe_component(component: Any) -> str:
         content = f"音乐卡片：{'；'.join(details)}" if details else "音乐卡片"
         return format_component_semantics(content)
     if component_type == "poke":
-        return format_component_semantics("QQ互动：戳一戳")
+        poke_type = _clean_text(data.get("type"), 40)
+        poke_id = _clean_text(data.get("id"), 40)
+        name = _clean_text(data.get("name")) or _POKE_TYPE_NAMES.get(poke_type, "")
+        if not name:
+            identifiers = []
+            if poke_type:
+                identifiers.append(f"类型 {poke_type}")
+            if poke_id:
+                identifiers.append(f"ID {poke_id}")
+            name = (
+                f"名称未知，{'，'.join(identifiers)}，不要根据编号猜测含义"
+                if identifiers
+                else "名称和编号均未知"
+            )
+        return format_component_semantics(f"QQ互动表情：{name}")
     if component_type == "contact":
         contact_type = _clean_text(data.get("type"), 30)
         contact_id = _clean_text(data.get("id"), 100)

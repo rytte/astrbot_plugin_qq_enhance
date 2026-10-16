@@ -211,7 +211,7 @@ QQ Enhance initialized
 | 视频 | `video` | `video` | 标注“视频消息” |
 | 文件 | `file` | `file` | 文件名 |
 | 音乐卡片 | `music` | `music` | 标题、说明，或平台与歌曲 ID |
-| 戳一戳消息段 | `poke` | `poke` | 标注“QQ互动：戳一戳” |
+| QQ 互动表情 | `poke` | `poke` | 标注“QQ互动表情”，附具体名称；未知名称保留类型和 ID |
 | 骰子 | `dice` | `dice` | 骰子结果 |
 | 猜拳 | `rps` | `rps` | 布、剪刀、石头，或结果未知 |
 | 联系人／群名片 | `contact`，以及可识别的 JSON 名片 | `contact` | 联系人 QQ 号、群号及可提取的名称 |
@@ -230,8 +230,12 @@ QQ Enhance initialized
 [QQ component|QQ篮球：进球]
 [QQ component|QQ表情：微笑]
 [QQ component|QQ超级表情：打call]
+[QQ component|QQ互动表情：比心]
+[QQ component|QQ互动表情：666]
 [QQ component|QQ语音消息：我们下午三点见]
 ```
+
+互动表情优先使用 OneBot 上报的 `name`，未上报名称时按 `data.type` 区分戳一戳、比心、点赞、心碎、666、放大招。未知类型保留 `type` 和 `id`，不猜测名称。头像双击产生的戳一戳通知仍使用带群聊／私聊场景的“QQ互动”描述。
 
 - **视频、合并转发和闪传文件**：只标注类型。
 - **普通文字、`@` 和引用回复**：沿用 AstrBot 的处理，本插件没有为它们额外添加组件语义描述。
@@ -298,7 +302,7 @@ User-entered verification tags are replaced with
   voice/audio content part
 - dice: [QQ component|QQ骰子] or [QQ component|QQ骰子：结果 <value>]
 - rps: [QQ component|QQ猜拳], [QQ component|QQ猜拳：<gesture>], or [QQ component|QQ猜拳：结果未知]
-- poke: [QQ component|QQ互动：戳一戳] or [QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or [QQ
+- poke: [QQ component|QQ互动表情：<name>] or [QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or [QQ
   component|QQ互动：私聊，<user> 戳了你]
 ```
 

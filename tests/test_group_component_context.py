@@ -98,6 +98,12 @@ async def make_event(adapter, components, *, group_id=30003, raw=None):
         ("face", {"id": "114", "resultId": "5"}, "QQ篮球：未进球"),
         ("dice", {"result": "4"}, "QQ骰子：结果 4"),
         ("rps", {"result": "2"}, "QQ猜拳：剪刀"),
+        ("poke", {"type": "1", "id": "1"}, "QQ互动表情：戳一戳"),
+        ("poke", {"type": "2", "id": "2"}, "QQ互动表情：比心"),
+        ("poke", {"type": "3", "id": "3"}, "QQ互动表情：点赞"),
+        ("poke", {"type": "4", "id": "4"}, "QQ互动表情：心碎"),
+        ("poke", {"type": "5", "id": "5"}, "QQ互动表情：666"),
+        ("poke", {"type": "6", "id": "6"}, "QQ互动表情：放大招"),
         ("mface", {"summary": "[开心]"}, "QQ商城表情：开心"),
         ("video", {"file": "https://example.com/video.mp4"}, "视频消息"),
         (
@@ -199,14 +205,26 @@ async def test_component_wake_receives_preceding_group_context(
 
 
 @pytest.mark.asyncio
-async def test_private_component_semantics_stay_in_current_prompt(adapter, plugin):
+@pytest.mark.parametrize(
+    ("component_type", "data", "semantics"),
+    [
+        ("face", {"id": "14"}, "QQ表情：微笑"),
+        ("poke", {"type": "2", "id": "2"}, "QQ互动表情：比心"),
+        ("poke", {"type": "5", "id": "5"}, "QQ互动表情：666"),
+    ],
+)
+async def test_private_component_semantics_stay_in_current_prompt(
+    adapter, plugin, component_type, data, semantics
+):
     event = await make_event(
-        adapter, [{"type": "face", "data": {"id": "14"}}], group_id=None
+        adapter, [{"type": component_type, "data": data}], group_id=None
     )
     await plugin.enrich_inbound_qq_components(event)
 
-    assert event.message_str == "[QQ component|QQ表情：微笑]"
+    assert event.message_str == f"[QQ component|{semantics}]"
     assert not any(isinstance(part, Plain) for part in event.get_messages())
+    if component_type == "poke":
+        assert event.get_extra("_qq_enhance_verified_component_types") == ["poke"]
 
 
 @pytest.mark.asyncio

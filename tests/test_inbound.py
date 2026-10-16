@@ -520,6 +520,49 @@ def test_json_contact_cards_expose_only_validated_identity() -> None:
     assert "123456" not in generic_result
 
 
+@pytest.mark.parametrize(
+    "data,expected",
+    [
+        # The six distinct messages captured from NapCat at 00:20 on 2026-10-17.
+        ({"type": "1", "id": "1"}, "戳一戳"),
+        ({"type": "5", "id": "5"}, "666"),
+        ({"type": "6", "id": "6"}, "放大招"),
+        ({"type": "3", "id": "3"}, "点赞"),
+        ({"type": "2", "id": "2"}, "比心"),
+        ({"type": "4", "id": "4"}, "心碎"),
+        ({"type": 2, "id": -1}, "比心"),
+        ({"type": "5", "id": "-1"}, "666"),
+        ({"type": "2", "id": "2", "name": " 协议端名称\n "}, "协议端名称"),
+        ({"type": "126", "id": "2000", "name": "新互动"}, "新互动"),
+        ({"type": "3", "name": " "}, "点赞"),
+        ({"type": "4", "name": {}}, "心碎"),
+    ],
+)
+def test_poke_messages_use_reported_names_then_type_mapping(data, expected) -> None:
+    assert describe({"message": [{"type": "poke", "data": data}]}) == (
+        f"[QQ component|QQ互动表情：{expected}]"
+    )
+
+
+@pytest.mark.parametrize(
+    "data,expected",
+    [
+        (
+            {"type": "126", "id": "2"},
+            "名称未知，类型 126，ID 2，不要根据编号猜测含义",
+        ),
+        ({"type": "999"}, "名称未知，类型 999，不要根据编号猜测含义"),
+        ({"id": "2"}, "名称未知，ID 2，不要根据编号猜测含义"),
+        ({"type": True, "id": {}}, "名称和编号均未知"),
+        ({}, "名称和编号均未知"),
+    ],
+)
+def test_unknown_poke_messages_keep_identifiers_without_guessing(data, expected) -> None:
+    assert describe({"message": [{"type": "poke", "data": data}]}) == (
+        f"[QQ component|QQ互动表情：{expected}]"
+    )
+
+
 def test_only_targeted_poke_wakes_the_bot() -> None:
     targeted = {
         "post_type": "notice",
@@ -1956,7 +1999,7 @@ async def test_llm_request_gets_per_message_verified_component_signal(
         in request.system_prompt
     )
     assert (
-        "- poke: [QQ component|QQ互动：戳一戳] or "
+        "- poke: [QQ component|QQ互动表情：<name>] or "
         "[QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or "
         "[QQ component|QQ互动：私聊，<user> 戳了你]" in request.system_prompt
     )

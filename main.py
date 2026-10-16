@@ -89,7 +89,7 @@ VERIFIED_COMPONENT_FORMATS = {
         "[QQ component|QQ猜拳：结果未知]"
     ),
     "poke": (
-        "[QQ component|QQ互动：戳一戳] or "
+        "[QQ component|QQ互动表情：<name>] or "
         "[QQ component|QQ互动：群聊（群号 <group_id>），<user> 戳了你] or "
         "[QQ component|QQ互动：私聊，<user> 戳了你]"
     ),
