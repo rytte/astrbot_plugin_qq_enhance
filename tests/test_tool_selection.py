@@ -94,6 +94,45 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["compact", "balanced"])
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("location", ["prompt", "group_context", "history"])
+async def test_image_refs_keep_inspection_available_for_short_followups(
+    mode, merged, location
+):
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config({"toolsets": {"exposure_mode": mode}})
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
+    plugin.runtime.config = plugin.config
+    image_ref = "img_" + "a" * 24
+    reference = (
+        f"[QQ component|QQ商城表情：开心；image_ref={image_ref}；32x24；...]"
+        if merged
+        else f"[QQ ImageRef image_ref={image_ref}, 32x24；...]"
+    )
+    request = ProviderRequest(
+        prompt=reference if location == "prompt" else "再看一下",
+        contexts=[{"role": "user", "content": [{"type": "text", "text": reference}]}]
+        if location == "history"
+        else [],
+        extra_user_content_parts=[TextPart(text=reference)]
+        if location == "group_context"
+        else [],
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+    await plugin.select_tools(SelectionEvent(), request)
+    assert request.func_tool.get_tool("qq_media") is not None
+    assert len(request.func_tool.tools) <= (10 if mode == "compact" else 15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["compact", "balanced"])
 @pytest.mark.parametrize("semanticize", [False, True])
 @pytest.mark.parametrize("location", ["prompt", "group_context", "history"])
 @pytest.mark.parametrize("disabled", [False, True])

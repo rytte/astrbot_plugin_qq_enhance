@@ -103,19 +103,25 @@ async def test_group_image_survives_event_cleanup_and_reaches_later_request(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("semanticize", [False, True])
 async def test_current_group_images_reuse_cache_without_second_archive(
-    tmp_path, adapter, environment
+    tmp_path, adapter, environment, semanticize
 ):
     plugin, manager, storage = environment
+    plugin.config["inbound"]["semanticize_components"] = semanticize
     original = tmp_path / "source.png"
     save_image(original, "PNG", (7, 9))
     event = await make_event(
         adapter, [{"type": "image", "data": {"file": str(original)}}] * 2
     )
     event.is_at_or_wake_command = True
+    await plugin.enrich_inbound_qq_components(event)
     await plugin.cache_group_context_images(event)
     await plugin.cache_group_context_images(event)
-    assert event.message_str.count("[QQ ImageRef") == 1
+    prefix = "[QQ component|QQ图片；image_ref=" if semanticize else "[QQ ImageRef"
+    assert event.message_str.count(prefix) == 1
+    if semanticize:
+        assert "[QQ ImageRef" not in event.message_str
     request = ProviderRequest(
         prompt="look at this",
         conversation=SimpleNamespace(cid="c1"),
@@ -125,7 +131,7 @@ async def test_current_group_images_reuse_cache_without_second_archive(
     assert await storage.list_context_images() == []
     assert len(list(manager.group_cache.root.glob("blob_*"))) == 1
     assert (
-        sum("[QQ ImageRef" in part.text for part in request.extra_user_content_parts)
+        sum(prefix in part.text for part in request.extra_user_content_parts)
         == 1
     )
     assembled = Message.model_validate(await request.assemble_context())

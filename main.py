@@ -5,9 +5,11 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 from weakref import WeakSet
 
 from mcp.types import CallToolResult, TextContent
@@ -38,7 +40,7 @@ from .catalog import (
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
-from .context_images import ContextImageError
+from .context_images import IMAGE_REF_PATTERN, ContextImageError
 from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES
 from .group_image_cache import GROUP_IMAGES_EXTRA
@@ -53,9 +55,9 @@ from .inbound import (
     is_red_packet_event,
 )
 from .image_semantics import (
-    ANIMATION_SEMANTICS_EXTRA,
-    AnimationSemantics,
-    bind_animation_references,
+    IMAGE_SEMANTICS_EXTRA,
+    ImageSemantics,
+    bind_image_references,
     inspect_inbound_image_animations,
     prepared_image_sources,
 )
@@ -108,15 +110,17 @@ VERIFIED_COMPONENT_FORMATS = {
     "face": ("[QQ component|QQ表情：<name>] or [QQ component|QQ超级表情：<name>]"),
     "market_face": (
         "[QQ component|QQ商城表情：<name>], with an optional ；动态 suffix "
-        "when animation frames were verified; animated components may also include "
-        "an inspect_animation entry using the original image_ref"
+        "when animation frames were verified; saved images include image_ref, "
+        "dimensions and an inspect entry inside the wrapper. Animated components "
+        "may also include an inspect_animation entry using the same image_ref"
     ),
     "image": (
         "[QQ component|QQ图片], [QQ component|QQ动图], [QQ component|QQ表情包], "
         "or [QQ component|QQ动态表情包], optionally followed by ：<summary> "
         "inside the wrapper; animation labels require verified animation frames. "
-        "Animated components may include an inspect_animation entry using the "
-        "original image_ref inside the wrapper. "
+        "Saved images include image_ref, dimensions and an inspect entry inside "
+        "the wrapper; animated components may also include an inspect_animation "
+        "entry using the same image_ref. "
         "An actual image content part is also supported"
     ),
     "video": "[QQ component|视频消息]",
@@ -1294,7 +1298,9 @@ class QQEnhancePlugin(Star):
         self_id = str(event.get_self_id() or "")
         max_components = self.config["limits"]["max_components"]
 
-        def render_semantics(image_refs: dict[int, str] | None = None) -> str:
+        def render_semantics(
+            image_records: dict[int, Mapping[str, Any]] | None = None,
+        ) -> str:
             text = describe_inbound_event(
                 raw,
                 self_id,
@@ -1303,7 +1309,10 @@ class QQEnhancePlugin(Star):
                 max_components=max_components,
                 max_chars=inbound["max_semantic_chars"],
                 image_animations=image_animations,
-                image_refs=image_refs,
+                image_records=image_records,
+                animation_inspection_enabled=operation_availability(
+                    self.config, OPERATION_MAP["qq_media.inspect_animation"]
+                ).enabled,
             )
             if inbound["component_spoof_protection"]["enabled"]:
                 text = USER_VERIFICATION_TAG_PATTERN.sub(
@@ -1332,30 +1341,22 @@ class QQEnhancePlugin(Star):
             # the native context cursor when this message wakes the model.
             semantic_part = Plain(semantics)
             event.message_obj.message.append(semantic_part)
-        if (
-            any(image_animations.values())
-            and operation_availability(
-                self.config, OPERATION_MAP["qq_media.inspect_animation"]
-            ).enabled
-        ):
+        if inbound["semanticize_components"]:
             sources = prepared_image_sources(
                 raw,
                 event.get_messages(),
                 max_components=self.config["limits"]["max_components"],
             )
-            event.set_extra(
-                ANIMATION_SEMANTICS_EXTRA,
-                AnimationSemantics(
-                    text=semantics,
-                    sources={
-                        index: source
-                        for index, source in sources.items()
-                        if image_animations.get(index)
-                    },
-                    render=render_semantics,
-                    part=semantic_part,
-                ),
-            )
+            if sources:
+                event.set_extra(
+                    IMAGE_SEMANTICS_EXTRA,
+                    ImageSemantics(
+                        text=semantics,
+                        sources=sources,
+                        render=render_semantics,
+                        part=semantic_part,
+                    ),
+                )
         targeted_poke = (
             isinstance(raw, dict)
             and raw.get("post_type") == "notice"
@@ -1427,14 +1428,18 @@ class QQEnhancePlugin(Star):
                 f'params={{"image_ref":"{record["image_ref"]}"}})]'
             )
             cached.append({**record, "source": source, "text": text})
-            event.message_obj.message.append(Plain(text))
-            event.message_str = f"{event.message_str}\n{text}".strip()
-            event.message_obj.message_str = event.message_str
         if cached:
-            event.set_extra(GROUP_IMAGES_EXTRA, cached)
-            bind_animation_references(
-                event, {item["source"]: item["image_ref"] for item in cached}
+            merged = bind_image_references(
+                event, {item["source"]: item for item in cached}
             )
+            for item in cached:
+                if item["image_ref"] in merged:
+                    item["text"] = ""
+                elif item["text"]:
+                    event.message_obj.message.append(Plain(item["text"]))
+                    event.message_str = f"{event.message_str}\n{item['text']}".strip()
+            event.message_obj.message_str = event.message_str
+            event.set_extra(GROUP_IMAGES_EXTRA, cached)
 
     @filter.on_llm_request(priority=-1000)
     async def add_verified_component_signal(
@@ -2178,7 +2183,7 @@ class QQEnhancePlugin(Star):
         if notification_tool:
             requested.add(notification_tool)
         if mode != "full":
-            # A short follow-up can refer to a forward recorded in group context.
+            # A short follow-up can refer to media recorded in group context.
             reference_texts = [prompt]
             reference_texts.extend(
                 part.text
@@ -2196,6 +2201,8 @@ class QQEnhancePlugin(Star):
                 for text in reference_texts
             ):
                 requested.add("qq_forward_get")
+            if any(IMAGE_REF_PATTERN.search(text) for text in reference_texts):
+                requested.add("qq_media")
         if re.search(r"https?://", prompt, re.IGNORECASE):
             requested.update(WEB_TOOL_NAMES)
         for context_item in request.contexts[-12:]:

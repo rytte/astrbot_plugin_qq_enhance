@@ -226,18 +226,18 @@ QQ Enhance initialized
 | 在线文件／文件夹 | `onlinefile` | `online_file` | 类型与名称 |
 | 闪传文件 | `flashtransfer` | `flash_transfer` | 标注“QQ闪传文件” |
 
-这些描述使用 `[QQ component|…]` 包装，收到真实的 QQ 组件时，插件生成的语义示例如下。
+这些描述使用 `[QQ component|…]` 包装，收到真实的 QQ 组件时，插件生成的语义示例如下。图片示例仅展示类型；成功保存图片后，还会在同一标签中合并引用、尺寸和查看入口，详见下文“原有图片归档”。
 
 ```text
 [QQ component|QQ表情：微笑]
 [QQ component|QQ超级表情：打call，连击×3]
 [QQ component|QQ篮球：进球]
 [QQ component|QQ商城表情：开心]
-[QQ component|QQ商城表情：开心；动态；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
+[QQ component|QQ商城表情：开心；动态]
 [QQ component|QQ图片]
-[QQ component|QQ动图；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
+[QQ component|QQ动图]
 [QQ component|QQ表情包]
-[QQ component|QQ动态表情包；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
+[QQ component|QQ动态表情包]
 [QQ component|QQ语音消息：我们下午三点见]
 [QQ component|视频消息]
 [QQ component|文件：report.pdf]
@@ -514,29 +514,37 @@ User-entered verification tags are replaced with
 
 #### 详细说明
 
-**群聊短期缓存**：在 AstrBot 完成媒体预处理之后、清理事件临时文件之前，复制已准备好的图片，不额外下载或调用识图模型。保留的是 AstrBot 预处理后的文件，可能已被 AstrBot 转换格式。群聊消息链会追加 `[QQ ImageRef image_ref=gimg_..., ...]`，因此先发图、后唤醒时也能通过引用查看。当前轮直接触发模型的群图同样可复用这份缓存，不再重复长期归档；本轮视觉输入照常保留。
+**群聊短期缓存**：在 AstrBot 完成媒体预处理之后、清理事件临时文件之前，复制已准备好的图片，不额外下载或调用识图模型。保留的是 AstrBot 预处理后的文件，可能已被 AstrBot 转换格式。开启组件语义化时，群聊消息链中的图片标签会合并 `image_ref=gimg_...`、尺寸、短期缓存说明和查看入口；关闭时追加独立的 `[QQ ImageRef image_ref=gimg_..., ...]`。因此先发图、后唤醒时也能通过引用查看。当前轮直接触发模型的群图同样可复用这份缓存，不再重复长期归档；本轮视觉输入照常保留。
 
 相同图片按内容哈希共用一份文件，引用仍按平台实例、群会话和 AstrBot 对话隔离；尚未建立对话的图片，只在引用进入首次模型请求时绑定该对话。元数据随缓存落盘，重载插件后有效引用仍可使用。超出容量时按最后收图时间从最旧图片开始淘汰；24 小时到期后立即禁止查看，文件由收图、读取和周期清理移除。单张图片不能超过缓存容量及 `files.max_base64_size_mb`；本地文件不可用或缓存失败时记录警告，不额外下载、不伪造可用引用，也不阻断正常群消息。缓存被淘汰或到期后，工具明确返回图片不可用。
 
 **原有图片归档**：
 
-原图未经重新编码，复制到插件数据目录。当前 Agent 运行仍保留 AstrBot 已准备的图片路径提示和推理图片；保存历史时会同时过滤路径提示与图片 Base64，只留下如下引用：
+原图未经重新编码，复制到插件数据目录。当前 Agent 运行仍保留 AstrBot 已准备的图片路径提示和推理图片；保存历史时会同时过滤路径提示与图片 Base64。开启组件语义化时，类型、摘要、引用、尺寸和查看原图入口合并为一个标签：
+
+```text
+[QQ component|QQ图片；image_ref=img_a1b2c3...；1920x1080；如需查看原图，调用 qq_media(operation="inspect", params={"image_ref":"img_a1b2c3..."})]
+```
+
+关闭组件语义化时，继续使用独立引用格式：
 
 ```bash
 [QQ ImageRef image_ref=img_a1b2c3..., 1920x1080；如需重新查看原图，调用 qq_media(operation="inspect", params={"image_ref":"img_a1b2c3..."})]
 ```
 
+未保存引用时只显示原有类型标签。引用无法与顶层图片可靠配对，或完整合并标签超过语义长度预算时，会保留独立引用，确保查看入口完整可用。已有历史中的 `QQ ImageRef` 继续有效，原图存活检查和清理同时识别两种格式。
+
 `qq_media.inspect` 只接受当前平台实例、消息来源和 AstrBot 会话共同绑定的引用，不能跨群、跨私聊或跨会话读取。重载的图片只在当次 Agent 工具循环中可见；AstrBot 在该轮生成的工具缓存路径、图片 Base64 和当前消息的附件路径提示都会在保存历史前移除。
 
 **按需查看动图**：`qq_media(operation="inspect_animation", params={"image_ref":"img_..."})` 使用同一份原图引用（也支持 `gimg_...`），返回最多九个实际动画帧的单张 3×3 PNG 九宫格及简短采样说明。支持 GIF、WebP、APNG；按播放时间采样并包含首尾帧，每格标注序号和时间，从左到右、从上到下排列。不足九帧时余格留空，不重复凑数；APNG 默认封面不参与采样。说明包含单次播放时长、总帧数和采样数，缺少有效帧时长时明确标注估算；不解释画面内容。静态图、解码失败或超过处理上限时返回明确错误。
 
-开启组件语义化并成功保存原图引用后，已识别动图会在原有类型标签中增加查看动画的入口，例如：
+开启组件语义化并成功保存原图引用后，已识别动图会在合并标签中同时提供查看原图和查看动画的入口，例如：
 
 ```text
-[QQ component|QQ动态表情包；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_..."})]
+[QQ component|QQ动态表情包；image_ref=img_...；320x240；如需查看原图，调用 qq_media(operation="inspect", params={"image_ref":"img_..."})；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_..."})]
 ```
 
-普通动图和商城动态表情同样保留对应标签。动图不会自动抽帧或拼图；`inspect` 始终返回保存的原文件，历史中的原有 `inspect` 引导保持不变。动画预览复用原图的会话隔离和有效期，仅在当前工具轮次提供图片，保存历史时只保留采样说明，不保留九宫格 Base64 或临时路径。
+普通动图和商城动态表情同样保留对应标签。禁用动画预览操作时不附查看动画入口。动图不会自动抽帧或拼图；`inspect` 始终返回保存的原文件。动画预览复用原图的会话隔离和有效期，仅在当前工具轮次提供图片，保存历史时只保留采样说明，不保留九宫格 Base64 或临时路径。
 
 关闭图片历史轻量化后，不再归档新图片、改写图片历史或开放 `qq_media.inspect`、`qq_media.inspect_animation`。关闭群聊缓存开关只停止新增短期缓存；已有短期缓存仍按容量和有效期清理。
 

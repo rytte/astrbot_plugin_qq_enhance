@@ -896,12 +896,12 @@ OPERATION_PARAMETERS = {
     "qq_recent_contacts.list": _params(optional=("count", *PAGE_PARAMS)),
     "qq_media.inspect": _params(
         "image_ref",
-        hint="只能使用当前 AstrBot 会话历史中 [QQ ImageRef ...] 提供的引用。",
+        hint="只能使用当前 AstrBot 会话历史中 QQ component 或 QQ ImageRef 提供的真实 image_ref。",
     ),
     "qq_media.inspect_animation": _params(
         "image_ref",
         hint=(
-            "使用当前会话 ImageRef 或动图语义中提供的真实 image_ref，"
+            "使用当前会话 QQ component 或 QQ ImageRef 中提供的真实 image_ref，"
             "按需返回最多九帧的 3×3 动画预览及采样说明；原图请使用 inspect。"
         ),
     ),

@@ -100,7 +100,9 @@ def test_animation_guidance_is_not_truncated_when_semantic_budget_is_small():
         respond_to_poke=False,
         max_components=30,
         image_animations={0: True},
-        image_refs={0: "img_" + "a" * 24},
+        image_records={
+            0: {"image_ref": "img_" + "a" * 24, "width": 8, "height": 8}
+        },
     )
     raw = {"message": [{"type": "image", "data": {"summary": "长名称" * 100}}]}
     text = describe_inbound_event(raw, max_chars=256, **kwargs)

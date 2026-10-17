@@ -316,8 +316,11 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label", [None, "QQ图片", "QQ动图", "QQ表情包", "QQ动态表情包", "QQ商城表情：开[心]；动态"]
+)
 async def test_reconcile_keeps_live_refs_then_deletes_expired_orphans(
-    tmp_path: Path,
+    tmp_path: Path, label: str | None,
 ) -> None:
     manager, storage, conversations = await build_manager(tmp_path)
     original = tmp_path / "original.png"
@@ -330,6 +333,8 @@ async def test_reconcile_keeps_live_refs_then_deletes_expired_orphans(
     await manager.prepare_request(event, request)
     placeholder = request.extra_user_content_parts[0].text
     record = (await storage.list_context_images())[0]
+    if label:
+        placeholder = f"[QQ component|{label}；image_ref={record['image_ref']}；10x10；...]"
     stored_path = Path(record["path"])
     scope = (event.unified_msg_origin, "conversation-a")
     conversations.histories[scope] = [

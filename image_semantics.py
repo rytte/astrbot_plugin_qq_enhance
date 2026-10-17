@@ -13,18 +13,18 @@ from astrbot.api.message_components import Image, Plain
 from astrbot.core.agent.message import TextPart
 from astrbot.core.utils.media_utils import file_uri_to_path, is_file_uri
 
-ANIMATION_SEMANTICS_EXTRA = "_qq_enhance_animation_semantics"
+IMAGE_SEMANTICS_EXTRA = "_qq_enhance_image_semantics"
 
 
 @dataclass
-class AnimationSemantics:
+class ImageSemantics:
     """Bind verified component semantics after real image references exist."""
 
     text: str
     sources: dict[int, str]
-    render: Callable[[dict[int, str]], str]
+    render: Callable[[dict[int, Mapping[str, Any]]], str]
     part: Plain | None = None
-    refs: dict[int, str] = field(default_factory=dict)
+    records: dict[int, Mapping[str, Any]] = field(default_factory=dict)
 
 
 def prepared_image_sources(
@@ -54,23 +54,30 @@ def prepared_image_sources(
     }
 
 
-def bind_animation_references(
-    event: Any, source_refs: Mapping[str, str], request: Any = None
-) -> None:
-    """Update only the plugin annotation, preserving original ImageRef text."""
+def bind_image_references(
+    event: Any, source_records: Mapping[str, Mapping[str, Any]], request: Any = None
+) -> set[str]:
+    """Merge saved references into this event's annotation and return merged IDs."""
 
-    state = event.get_extra(ANIMATION_SEMANTICS_EXTRA)
-    if not isinstance(state, AnimationSemantics):
-        return
-    state.refs.update(
-        (index, source_refs[source])
+    state = event.get_extra(IMAGE_SEMANTICS_EXTRA)
+    if not isinstance(state, ImageSemantics):
+        return set()
+    state.records.update(
+        (index, source_records[source])
         for index, source in state.sources.items()
-        if source in source_refs
+        if source in source_records
     )
-    if not state.refs:
-        return
+    if not state.records:
+        return set()
     previous = state.text
-    current = state.render(state.refs)
+    current = state.render(state.records)
+    # The semantic budget may have fallen back to a plain type label. Keep a
+    # standalone reference for any image whose complete entry did not fit.
+    merged = {
+        record["image_ref"]
+        for record in state.records.values()
+        if f'；image_ref={record["image_ref"]}；' in current
+    }
     if current != previous:
         # The generated block is appended after user input; replace its last
         # occurrence so user-written copies of component text remain untouched.
@@ -91,8 +98,9 @@ def bind_animation_references(
             isinstance(part, TextPart) and current in part.text
             for part in request.extra_user_content_parts
         )
-        if not found_annotation and 'operation="inspect_animation"' in current:
+        if not found_annotation and merged:
             request.extra_user_content_parts.append(TextPart(text=current))
+    return merged
 
 
 def has_image_animation(path: str | Path) -> bool:

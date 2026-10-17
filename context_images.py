@@ -20,7 +20,7 @@ from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.utils.media_utils import MediaResolver
 
 from .animation_preview import AnimationPreviewError, render_animation_preview
-from .image_semantics import bind_animation_references
+from .image_semantics import bind_image_references
 from .storage import Storage
 from .group_image_cache import (
     GROUP_IMAGES_EXTRA,
@@ -31,7 +31,9 @@ from .group_image_cache import (
 CONVERSATION_ID_EXTRA = "_qq_enhance_conversation_id"
 REQUEST_IMAGE_COUNT_EXTRA = "_qq_enhance_request_image_count"
 IMAGE_REF_PATTERN = re.compile(r"(?:img|gimg)_[0-9a-f]{24}")
-HISTORY_IMAGE_REF_PATTERN = re.compile(r"\[QQ ImageRef image_ref=(img_[0-9a-f]{24}),")
+HISTORY_IMAGE_REF_PATTERN = re.compile(
+    r"(?:\[QQ ImageRef image_ref=|；image_ref=)(img_[0-9a-f]{24})(?=[,；])"
+)
 CORE_IMAGE_ATTACHMENT_PREFIXES = (
     "[Image Attachment: path ",
     "[Image Attachment in quoted message: path ",
@@ -126,15 +128,17 @@ class ContextImageManager:
             str(event.unified_msg_origin),
             conversation_id,
         )
+        merged = bind_image_references(
+            event, {item["source"]: item for item in cached_images}, request
+        )
         for item in cached_images:
-            if item["text"] and item["image_ref"] not in reference_text:
+            if (
+                item["text"]
+                and item["image_ref"] not in merged
+                and item["image_ref"] not in reference_text
+            ):
                 request.extra_user_content_parts.append(TextPart(text=item["text"]))
                 reference_text += item["text"]
-        bind_animation_references(
-            event,
-            {item["source"]: item["image_ref"] for item in cached_images},
-            request,
-        )
         sources: list[str] = []
         components = list(
             getattr(getattr(event, "message_obj", None), "message", []) or []
@@ -161,7 +165,9 @@ class ContextImageManager:
                     CORE_IMAGE_ATTACHMENT_PREFIXES
                 ):
                     part.mark_as_temp()
-        sources = [source for source in sources if source not in cached_sources]
+        sources = list(
+            dict.fromkeys(source for source in sources if source not in cached_sources)
+        )
         if not sources:
             return
         if not conversation_id:
@@ -171,7 +177,7 @@ class ContextImageManager:
 
         now = int(time.time())
         records: list[dict[str, Any]] = []
-        source_refs: dict[str, str] = {}
+        source_records: dict[str, dict[str, Any]] = {}
         created_paths: list[Path] = []
         try:
             for source in sources:
@@ -252,7 +258,7 @@ class ContextImageManager:
                         "last_accessed_at": now,
                     }
                 )
-                source_refs[source] = image_ref
+                source_records[source] = records[-1]
             evicted_paths = await self.storage.add_context_images(
                 records, self.max_storage_bytes
             )
@@ -276,6 +282,7 @@ class ContextImageManager:
                 CORE_IMAGE_ATTACHMENT_PREFIXES
             ):
                 part.mark_as_temp()
+        merged = bind_image_references(event, source_records, request)
         request.extra_user_content_parts.extend(
             TextPart(
                 text=(
@@ -287,8 +294,8 @@ class ContextImageManager:
                 )
             )
             for record in records
+            if record["image_ref"] not in merged
         )
-        bind_animation_references(event, source_refs, request)
 
     def mark_current_request_images(self, event: Any, run_context: Any) -> None:
         """Mark only the current request images as provider-only content.

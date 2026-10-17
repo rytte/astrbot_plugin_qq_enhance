@@ -10,6 +10,7 @@ import pytest
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image as PillowImage
 
+from astrbot.api.message_components import Image, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import (
     ImageURLPart,
@@ -113,19 +114,23 @@ async def test_static_corrupt_and_expired_references_return_safe_errors(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("data", "label"),
+    ("data", "count", "label"),
     [
-        ({}, "QQ动图"),
-        ({"sub_type": 1}, "QQ动态表情包"),
-        ({"emoji_id": "e1", "summary": "[开心]"}, "QQ商城表情：开心；动态"),
+        ({}, 1, "QQ图片"),
+        ({"summary": "[开心]"}, 1, "QQ图片：开心"),
+        ({"sub_type": 1, "summary": "[开心]"}, 1, "QQ表情包：开心"),
+        ({"emoji_id": "e1", "summary": "[开心]"}, 1, "QQ商城表情：开心"),
+        ({}, 3, "QQ动图"),
+        ({"sub_type": 1}, 3, "QQ动态表情包"),
+        ({"emoji_id": "e1", "summary": "[开心]"}, 3, "QQ商城表情：开心；动态"),
     ],
 )
 async def test_private_semantics_binds_real_archive_reference_without_preprocessing(
-    tmp_path, adapter, environment, data, label
+    tmp_path, adapter, environment, data, count, label
 ):
     plugin, manager, storage = environment
     path = tmp_path / "source.gif"
-    payload = animation_bytes()
+    payload = animation_bytes(count=count)
     path.write_bytes(payload)
     event = await make_event(
         adapter, [{"type": "image", "data": {"file": str(path), **data}}], group_id=None
@@ -143,16 +148,19 @@ async def test_private_semantics_binds_real_archive_reference_without_preprocess
     render.assert_not_called()
     record = (await storage.list_context_images())[0]
     image_ref = record["image_ref"]
-    assert (
-        request.prompt
-        == f'[QQ component|{label}；如需查看动画，调用 qq_media(operation="inspect_animation", params={{"image_ref":"{image_ref}"}})]'
+    expected = (
+        f'[QQ component|{label}；image_ref={image_ref}；32x24；'
+        '如需查看原图，调用 qq_media(operation="inspect", '
+        f'params={{"image_ref":"{image_ref}"}})'
     )
+    if count > 1:
+        expected += (
+            '；如需查看动画，调用 qq_media(operation="inspect_animation", '
+            f'params={{"image_ref":"{image_ref}"}})'
+        )
+    assert request.prompt == expected + "]"
     assert request.image_urls == [str(path)]
-    assert len(request.extra_user_content_parts) == 1
-    assert (
-        request.extra_user_content_parts[0].text
-        == f'[QQ ImageRef image_ref={image_ref}, 32x24；如需重新查看原图，调用 qq_media(operation="inspect", params={{"image_ref":"{image_ref}"}})]'
-    )
+    assert request.extra_user_content_parts == []
     result = await manager.inspect(event, image_ref)
     assert base64.b64decode(result.content[1].data) == payload
 
@@ -165,7 +173,12 @@ async def test_current_reference_does_not_rewrite_identical_labels_in_earlier_co
     path = tmp_path / "current.gif"
     path.write_bytes(animation_bytes())
     event = await make_event(
-        adapter, [{"type": "image", "data": {"file": str(path)}}], group_id=None
+        adapter,
+        [
+            {"type": "text", "data": {"text": "[QQ component|QQ动图]"}},
+            {"type": "image", "data": {"file": str(path)}},
+        ],
+        group_id=None,
     )
     await plugin.enrich_inbound_qq_components(event)
     earlier = TextPart(text="[之前的群消息]: [QQ component|QQ动图]")
@@ -178,11 +191,80 @@ async def test_current_reference_does_not_rewrite_identical_labels_in_earlier_co
     await plugin.virtualize_context_images(event, request)
     assert earlier.text == "[之前的群消息]: [QQ component|QQ动图]"
     assert "inspect_animation" in request.prompt
+    assert request.prompt.startswith("[QQ component|QQ动图]\n")
 
 
 @pytest.mark.asyncio
-async def test_mixed_images_bind_each_animation_to_its_own_reference(
+@pytest.mark.parametrize("group", [False, True])
+async def test_merged_reference_reaches_requests_without_current_annotation(
+    tmp_path, adapter, environment, group
+):
+    plugin, _, storage = environment
+    path = tmp_path / "still.gif"
+    path.write_bytes(animation_bytes(count=1))
+    event = await make_event(
+        adapter,
+        [{"type": "image", "data": {"file": str(path)}}] * 2,
+        group_id=30003 if group else None,
+    )
+    await plugin.enrich_inbound_qq_components(event)
+    if group:
+        await plugin.cache_group_context_images(event)
+    earlier = TextPart(text="[之前的群消息]: [QQ component|QQ图片]")
+    request = ProviderRequest(
+        prompt="看看这张图",
+        conversation=SimpleNamespace(cid="c1"),
+        image_urls=[str(path)],
+        extra_user_content_parts=[earlier],
+    )
+    await plugin.virtualize_context_images(event, request)
+    assert earlier.text == "[之前的群消息]: [QQ component|QQ图片]"
+    assert request.prompt == "看看这张图"
+    assert len(request.extra_user_content_parts) == 2
+    merged = request.extra_user_content_parts[-1].text
+    assert merged.startswith("[QQ component|QQ图片；image_ref=")
+    assert merged.count('operation="inspect"') == 1
+    assert "ImageRef" not in merged
+    assert "inspect_animation" not in merged
+    assert len(await storage.list_context_images()) == (0 if group else 1)
+
+
+@pytest.mark.asyncio
+async def test_semantic_budget_fallback_keeps_complete_archive_reference(
     tmp_path, adapter, environment
+):
+    plugin, manager, storage = environment
+    plugin.config["inbound"]["max_semantic_chars"] = 256
+    path = tmp_path / "moving.gif"
+    payload = animation_bytes()
+    path.write_bytes(payload)
+    event = await make_event(
+        adapter,
+        [{"type": "image", "data": {"file": str(path), "summary": "长名称" * 100}}],
+        group_id=None,
+    )
+    await plugin.enrich_inbound_qq_components(event)
+    request = ProviderRequest(
+        prompt=event.message_str,
+        conversation=SimpleNamespace(cid="c1"),
+        image_urls=[str(path)],
+    )
+    await plugin.virtualize_context_images(event, request)
+    image_ref = (await storage.list_context_images())[0]["image_ref"]
+    assert "image_ref=" not in request.prompt
+    assert len(request.extra_user_content_parts) == 1
+    assert request.extra_user_content_parts[0].text.startswith(
+        f"[QQ ImageRef image_ref={image_ref}, "
+    )
+    assert request.extra_user_content_parts[0].text.endswith(f'"{image_ref}"}})]')
+    result = await manager.inspect(event, image_ref)
+    assert base64.b64decode(result.content[1].data) == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True])
+async def test_mixed_images_bind_each_image_to_its_own_reference(
+    tmp_path, adapter, environment, group
 ):
     plugin, _, storage = environment
     paths = [tmp_path / name for name in ("first.gif", "still.gif", "second.gif")]
@@ -191,22 +273,59 @@ async def test_mixed_images_bind_each_animation_to_its_own_reference(
     event = await make_event(
         adapter,
         [{"type": "image", "data": {"file": str(path)}} for path in paths],
-        group_id=None,
+        group_id=30003 if group else None,
     )
     await plugin.enrich_inbound_qq_components(event)
+    if group:
+        await plugin.cache_group_context_images(event)
     request = ProviderRequest(
         prompt=event.message_str,
         conversation=SimpleNamespace(cid="c1"),
         image_urls=[str(path) for path in paths],
     )
     await plugin.virtualize_context_images(event, request)
-    records = await storage.list_context_images()
+    records = (
+        event.get_extra(GROUP_IMAGES_EXTRA)
+        if group
+        else await storage.list_context_images()
+    )
     assert len(records) == 3
     assert request.prompt.count("inspect_animation") == 2
-    assert "[QQ component|QQ图片]" in request.prompt
+    assert "[QQ component|QQ图片；image_ref=" in request.prompt
     assert records[0]["image_ref"] in request.prompt
-    assert records[1]["image_ref"] not in request.prompt
+    assert records[1]["image_ref"] in request.prompt
     assert records[2]["image_ref"] in request.prompt
+    assert request.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+async def test_quoted_image_keeps_its_reference_separate_from_current_image(
+    tmp_path, adapter, environment
+):
+    plugin, _, storage = environment
+    current, quoted = tmp_path / "current.gif", tmp_path / "quoted.gif"
+    current.write_bytes(animation_bytes())
+    quoted.write_bytes(animation_bytes(count=1))
+    event = await make_event(
+        adapter, [{"type": "image", "data": {"file": str(current)}}], group_id=None
+    )
+    event.message_obj.message.insert(
+        0, Reply(id="previous", chain=[Image.fromFileSystem(quoted)])
+    )
+    await plugin.enrich_inbound_qq_components(event)
+    request = ProviderRequest(
+        prompt=event.message_str,
+        conversation=SimpleNamespace(cid="c1"),
+        image_urls=[str(quoted), str(current)],
+    )
+    await plugin.virtualize_context_images(event, request)
+    quoted_record, current_record = await storage.list_context_images()
+    assert current_record["image_ref"] in request.prompt
+    assert quoted_record["image_ref"] not in request.prompt
+    assert len(request.extra_user_content_parts) == 1
+    assert request.extra_user_content_parts[0].text.startswith(
+        f"[QQ ImageRef image_ref={quoted_record['image_ref']}, "
+    )
 
 
 @pytest.mark.asyncio
@@ -245,6 +364,16 @@ async def test_disabled_features_do_not_advertise_animation_operation(
         "inspect_animation" not in part.text
         for part in request.extra_user_content_parts
     )
+    if not plugin.config["inbound"]["semanticize_components"]:
+        assert "[QQ component|" not in request.prompt
+        assert request.extra_user_content_parts[0].text.startswith("[QQ ImageRef ")
+    elif not plugin.config["context_images"]["enabled"]:
+        assert request.prompt == "[QQ component|QQ动图]"
+        assert request.extra_user_content_parts == []
+    else:
+        assert request.prompt.startswith("[QQ component|QQ动图；image_ref=")
+        assert 'operation="inspect"' in request.prompt
+        assert request.extra_user_content_parts == []
 
 
 @pytest.mark.asyncio
@@ -263,8 +392,9 @@ async def test_group_animation_guide_survives_cleanup_and_later_context_injectio
     image_ref = event.get_extra(GROUP_IMAGES_EXTRA)[0]["image_ref"]
     assert event.message_str.count("inspect_animation") == 1
     assert event.message_str.count("[QQ component|QQ动态表情包") == 1
-    assert event.message_str.count("[QQ ImageRef") == 1
-    assert '如需查看图片，调用 qq_media(operation="inspect"' in event.message_str
+    assert "[QQ ImageRef" not in event.message_str
+    assert '如需查看原图，调用 qq_media(operation="inspect"' in event.message_str
+    assert f"；image_ref={image_ref}；32x24；群聊短期缓存" in event.message_str
     async for _ in core.on_message(event):
         pass
     path.unlink()
