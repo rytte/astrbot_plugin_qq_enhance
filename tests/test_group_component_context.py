@@ -93,6 +93,7 @@ async def make_event(adapter, components, *, group_id=30003, raw=None):
             {"id": "114", "resultId": "0"},
             "QQ篮球：结果未知",
         ),
+        ("face", {"id": "114", "resultId": "1"}, "QQ篮球：进球"),
         ("face", {"id": "114", "resultId": "2"}, "QQ篮球：进球"),
         ("face", {"id": "114", "resultId": "3"}, "QQ篮球：未进球（卡篮筐）"),
         ("face", {"id": "114", "resultId": "4"}, "QQ篮球：未进球"),

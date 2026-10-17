@@ -15,7 +15,10 @@ _RPS_RESULTS = {"1": "布", "2": "剪刀", "3": "石头"}
 # NapCat 4.18.19 captures paired with the user's observations on Oct 16/17:
 # 2 scored; 3 (ball stuck on the rim), 4 and 5 missed. The Oct 17 sequence
 # 3, 5, 2, 4 confirms both the new variants and the earlier 2/4 mapping.
+# SnowLuma 1.14.22-node captures at 12:07:28, 12:08:08 and 12:08:45 on Oct 17
+# additionally confirm native resultId=1 scored, per the user's observations.
 _BASKETBALL_RESULTS = {
+    "1": "进球",
     "2": "进球",
     "3": "未进球（卡篮筐）",
     "4": "未进球",
@@ -45,7 +48,7 @@ def parse_random_component(component: Any) -> RandomComponent | None:
 
     SnowLuma v1.14.22 reports face 358/359 with resultId. Its result values
     are one-based: dice 1–6 and rps 1=布, 2=剪刀, 3=石头. Basketball (114)
-    uses only observed scoring results: 2=进球, 3=未进球（卡篮筐）, 4/5=未进球.
+    uses only observed scoring results: 1/2=进球, 3=未进球（卡篮筐）, 4/5=未进球.
     Other identifiers, including zero, remain unknown rather than being assigned
     an outcome.
     Other animated faces may also carry resultId and must remain face components.

@@ -202,11 +202,11 @@ QQ Enhance initialized
 
 组件语义化与组件防伪覆盖组件：
 
-| 组件／内容 | OneBot 上报类型或来源 | 防伪组件枚举值 | 语义化内容 |
+| 组件／内容 | OneBot 上报类型或来源 | 防伪组件枚举值 | 附加语义化内容 |
 | --- | --- | --- | --- |
-| QQ 普通表情 | `face` | `face` | 标注“QQ表情”，附名称、连击次数；未知名称标注 ID |
-| QQ 超级表情 | `face` | `face` | 标注“QQ超级表情”，附名称、连击次数；篮球、骰子和猜拳使用各自专用描述 |
-| QQ 随机投篮篮球 | `face.id=114`，且原始 `faceType` 未明确为普通表情 | `basketball` | 标注“QQ篮球”；已确认的结果显示“进球／未进球” |
+| QQ 普通表情 | `face` | `face` | 名称、连击次数 |
+| QQ 超级表情 | `face` | `face` | 名称、连击次数 |
+| QQ 随机投篮篮球 | `face.id=114`，且原始 `faceType` 未明确为普通表情 | `basketball` | 已确认的结果显示“进球／未进球／未进球（卡篮筐）” |
 | QQ 商城表情 | `mface`，或带商城表情字段的 `image` | `market_face` | 表情名称或摘要；检查到动画帧时追加“动态” |
 | 普通图片／动图 | 没有商城标识、且 `sub_type` 不为 `1` 的 `image` | `image` | 标注“QQ图片”；检查到动画帧时标注“QQ动图”，附有效摘要 |
 | 收藏／自定义表情包 | `image.data.sub_type=1`，且没有商城标识 | `image` | 标注“QQ表情包”；检查到动画帧时标注“QQ动态表情包”，附有效摘要 |
@@ -214,7 +214,7 @@ QQ Enhance initialized
 | 视频 | `video` | `video` | 标注“视频消息” |
 | 文件 | `file` | `file` | 文件名 |
 | 音乐卡片 | `music` | `music` | 标题、说明，或平台与歌曲 ID |
-| QQ 互动表情 | `poke` | `poke` | 标注“QQ互动表情”，附具体名称；未知名称保留类型和 ID |
+| 戳一戳／QQ 互动表情 | `poke` | `poke` | 戳一戳标注“QQ互动”；互动表情标注“QQ互动表情”，附具体名称 |
 | 骰子 | `dice` | `dice` | 骰子结果 |
 | 猜拳 | `rps` | `rps` | 布、剪刀、石头，或结果未知 |
 | 联系人／群名片 | `contact`，以及可识别的 JSON 名片 | `contact` | 联系人 QQ 号、群号及可提取的名称 |
@@ -226,33 +226,54 @@ QQ Enhance initialized
 | 在线文件／文件夹 | `onlinefile` | `online_file` | 类型与名称 |
 | 闪传文件 | `flashtransfer` | `flash_transfer` | 标注“QQ闪传文件” |
 
-图片类型优先识别商城表情标识，再读取图片段的 `sub_type`（兼容 `subType`）。图片类型描述的是发送方式，普通图片也可能包含表情包内容。开启语义化时，插件复用 AstrBot 已下载的本地文件，通过 Pillow 检查 GIF、WebP、APNG 的实际动画帧；不根据后缀或 `[动画表情]` 摘要猜测，不额外下载或调用识图模型。缺少可对应的本地图片或检测失败时只显示类型，不标注动态或静态；关闭语义化时不检测。图片和图片引用仍沿用原有处理。
+这些描述使用 `[QQ component|…]` 包装，收到真实的 QQ 组件时，插件生成的语义示例如下。
 
-这些描述使用 `[QQ component|…]` 包装，收到真实的 QQ 骰子、表情、图片或语音时，插件生成的语义示例如下。
-
-```bash
-[QQ component|QQ图片]
-[QQ component|QQ动图]
-[QQ component|QQ表情包]
-[QQ component|QQ动态表情包]
-[QQ component|QQ商城表情：开心；动态]
-[QQ component|QQ骰子：结果 4]
-[QQ component|QQ篮球：进球]
+```text
 [QQ component|QQ表情：微笑]
-[QQ component|QQ超级表情：打call]
-[QQ component|QQ互动表情：比心]
-[QQ component|QQ互动表情：666]
+[QQ component|QQ超级表情：打call，连击×3]
+[QQ component|QQ篮球：进球]
+[QQ component|QQ商城表情：开心]
+[QQ component|QQ商城表情：开心；动态；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
+[QQ component|QQ图片]
+[QQ component|QQ动图；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
+[QQ component|QQ表情包]
+[QQ component|QQ动态表情包；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_0123456789abcdef01234567"})]
 [QQ component|QQ语音消息：我们下午三点见]
+[QQ component|视频消息]
+[QQ component|文件：report.pdf]
+[QQ component|音乐卡片：示例歌曲；歌手介绍]
+[QQ component|QQ互动：私聊，用户 10001 戳了你]
+[QQ component|QQ互动表情：比心]
+[QQ component|QQ骰子：结果 4]
+[QQ component|QQ猜拳：剪刀]
+[QQ component|QQ联系人名片：10001]
+[QQ component|QQ群名片：30003]
+[QQ component|QQ位置：公园；纬度 30.1，经度 120.2]
+[QQ component|QQ链接分享：示例网页；https://example.com/article]
+[QQ component|QQ JSON卡片：标题：示例卡片]
+[QQ component|QQ小程序卡片：标题：示例小程序]
+[QQ component|QQ XML卡片：示例卡片]
+[QQ component|QQ红包消息（仅识别，不能代领）]
+[QQ component|QQ红包卡片（仅识别，不能代领）：标题：恭喜发财]
+[QQ component|QQ合并转发消息；res_id=abc123；如需读取正文，调用 qq_forward_get(operation="get", params={"res_id":"abc123"})]
+[QQ component|QQ在线文件：report.pdf]
+[QQ component|QQ在线文件夹：资料]
+[QQ component|QQ闪传文件]
 ```
 
-互动表情优先使用 OneBot 上报的 `name`，未上报名称时按 `data.type` 区分戳一戳、比心、点赞、心碎、666、放大招。未知类型保留 `type` 和 `id`，不猜测名称。头像双击产生的戳一戳通知仍使用带群聊／私聊场景的“QQ互动”描述。
+**说明**
 
 - **视频和闪传文件**：只标注类型。
 - **合并转发**：从真实 `forward` 消息段提取资源 ID，追加读取入口；不请求正文、不生成预览、不额外展示消息 ID。关闭组件语义化后仍保留独立的 `ForwardRef`。缺少有效资源 ID 时不生成读取入口，开启语义化时只标注类型。单条消息内相同转发只保留一个入口，字符预算不足时省略整个入口，避免截断资源 ID 或调用参数。
 - **普通文字、`@` 和引用回复**：沿用 AstrBot 的处理，本插件没有为它们额外添加组件语义描述。
-- **表情与卡片**：表情名称优先使用协议端上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。普通／超级表情优先依据消息原始 `faceType` 区分，缺少有效分类时使用内置目录；因此有明确普通类型的消息即使编号具备超级动画，也仍标注为普通表情。卡片仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
-- **篮球结果**：读取 `face.id=114` 的 `data.resultId`，该字段缺失时兼容读取 `data.raw.resultId`。NapCat 4.18.19 的消息与用户实际看到的动画对照确认：`2` 显示“进球”，`3` 显示“未进球（卡篮筐）”，`4`、`5` 显示“未进球”。未上报结果时只显示“QQ篮球”，其他编号（包括 `0`、`1`）或无效结果显示“QQ篮球：结果未知”，不推断尚未确认的编号。随机投篮篮球使用独立的 `basketball` 防伪类型；原始 `faceType` 明确为普通表情时仍显示“QQ表情：篮球”，防伪类型为 `face`。
+- **普通／超级表情**：表情名称优先使用协议端上报的名称，缺失时使用内置的 NapCat 4.18.19 表情名称表，未知 ID 会明确标记。普通／超级表情优先依据消息原始 `faceType` 区分，缺少有效分类时使用内置目录；因此有明确普通类型的消息即使编号具备超级动画，也仍标注为普通表情。
+- **互动表情**：优先使用 OneBot 上报的 `name`，未上报名称时按 `data.type` 区分戳一戳、比心、点赞、心碎、666、放大招。未知类型保留 `type` 和 `id`。头像双击产生的戳一戳通知仍使用带群聊／私聊场景的“QQ互动”描述。
+- **图片与表情包**：图片类型优先识别商城表情标识，再读取图片段的 `sub_type`（兼容 `subType`）。图片类型描述的是发送方式，普通图片也可能包含表情包内容。开启语义化时，插件复用 AstrBot 已下载的本地文件，通过 Pillow 检查 GIF、WebP、APNG 的实际动画帧。关闭语义化时不检测。图片和图片引用仍沿用原有处理。
+- **卡片**：仅提取标题、提示、摘要等受限内容及去除查询参数的链接；联系人卡片通过校验后才提供群号或 QQ 号。
+- **篮球结果**：读取 `face.id=114` 的 `data.resultId`，该字段缺失时兼容读取 `data.raw.resultId`。NapCat 4.18.19 的消息与用户实际看到的动画对照确认：`2` 显示“进球”，`3` 显示“未进球（卡篮筐）”，`4`、`5` 显示“未进球”；SnowLuma 1.14.22-node 的实测补充确认 `1` 也显示“进球”。未上报结果时只显示“QQ篮球”，其他编号（包括 `0`）或无效结果显示“QQ篮球：结果未知”，不推断尚未确认的编号。随机投篮篮球使用独立的 `basketball` 防伪类型；原始 `faceType` 明确为普通表情时仍显示“QQ表情：篮球”，防伪类型为 `face`。
 - **群聊适配**：开启 AstrBot 的群聊上下文注入后，组件语义会随群消息进入缓存。先发送表情、骰子、卡片等组件，再唤醒机器人时，模型也能收到此前组件的语义；纯组件和文字混合消息均支持。
+
+**合并转发优化**
 
 合并转发开启组件语义化时：
 
@@ -266,7 +287,7 @@ QQ Enhance initialized
 [QQ ForwardRef res_id=abc123；如需读取正文，调用 qq_forward_get(operation="get", params={"res_id":"abc123"})]
 ```
 
-`abc123` 替换为协议端上报的真实资源 ID。群聊上下文注入开启时，先发转发、后唤醒模型也能保留读取入口；精简和平衡工具模式会根据当前请求及近期历史中的入口选入 `qq_forward_get`，禁用操作和能力包配置仍然生效。引用合并转发继续沿用 AstrBot 自带的展开逻辑，插件不在引用处额外追加入口或再次注入正文。
+群聊上下文注入开启时，先发转发、后唤醒模型也能保留读取入口；精简和平衡工具模式会根据当前请求及近期历史中的入口选入 `qq_forward_get`，禁用操作和能力包配置仍然生效。引用合并转发继续沿用 AstrBot 自带的展开逻辑，插件不在引用处额外追加入口或再次注入正文。
 
 #### 组件防伪
 

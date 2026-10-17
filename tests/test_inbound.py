@@ -105,6 +105,10 @@ def test_face_prefers_napcat_text_then_map_and_keeps_unknown_id() -> None:
         ({"id": "5", "raw": {"faceType": 1}}, "QQ表情：流泪"),
         ({"id": "114", "raw": {"faceType": 1}}, "QQ表情：篮球"),
         (
+            {"id": "114", "resultId": "1", "raw": {"faceType": 1}},
+            "QQ表情：篮球",
+        ),
+        (
             {"id": "114", "resultId": "2", "raw": {"faceType": "2"}},
             "QQ表情：篮球",
         ),
@@ -260,6 +264,13 @@ def test_other_animated_faces_with_result_id_are_not_random_components() -> None
 @pytest.mark.parametrize(
     "data,expected",
     [
+        # SnowLuma samples -961813101 and 1374696606: resultId=1 scored.
+        ({"id": "114", "resultId": "1"}, "QQ篮球：进球"),
+        ({"id": 114, "resultId": 1}, "QQ篮球：进球"),
+        (
+            {"id": "114", "raw": {"faceType": 3, "resultId": "1"}},
+            "QQ篮球：进球",
+        ),
         ({"id": "114", "resultId": "2"}, "QQ篮球：进球"),
         ({"id": 114, "resultId": 2}, "QQ篮球：进球"),
         ({"id": "114", "resultId": "3"}, "QQ篮球：未进球（卡篮筐）"),
@@ -321,7 +332,6 @@ def test_basketball_uses_confirmed_scoring_mapping(data, expected):
         "1" * 33,
         0,
         "0",
-        "1",
         "6",
         "12345",
     ],
@@ -1747,6 +1757,7 @@ async def test_random_faces_have_independent_verified_types(with_results) -> Non
 @pytest.mark.parametrize(
     "data,semantics",
     [
+        ({"id": "114", "resultId": "1"}, "QQ篮球：进球"),
         ({"id": "114", "resultId": "2"}, "QQ篮球：进球"),
         (
             {"id": "114", "raw": {"faceType": 3, "resultId": "3"}},

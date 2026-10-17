@@ -5,6 +5,7 @@
 - 新增合并转发追加按需读取入口，随组件语义化开关使用 `QQ component` 或 `ForwardRef` 格式。
 - 组件语义化区分普通图片、收藏／自定义表情包和商城表情；复用本地图片检查实际动画帧，识别 GIF、WebP、APNG 动图。
 - 新增动图理解能力，由新增的 `qq_media.inspect_animation` 动作按需返回最多九帧的 3×3 动图预览和客观采样说明。
+- 修复篮球 `resultId=1` 被识别为“结果未知”的问题，根据实测补充为“进球”。
 
 ## 1.8.0 - 2026-10-17
 
@@ -25,7 +26,7 @@
 
 ## 历史版本
 
-以下列出版本号变更提交中的主要内容；更早的完整改动可查看 [Git 提交历史](https://github.com/rytte/astrbot_plugin_qq_enhance/commits)。
+以下列出版本号变更提交中的主要内容；完整改动可查看 [Git 提交历史](https://github.com/rytte/astrbot_plugin_qq_enhance/commits)。
 
 | 版本 | 日期 | 主要内容 |
 | --- | --- | --- |
