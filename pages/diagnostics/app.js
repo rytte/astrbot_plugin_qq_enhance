@@ -103,7 +103,7 @@ function renderSummary(data) {
     container.append(card);
   }
   document.getElementById("updated-at").textContent = `更新时间 ${formatTime(data.generated_at)}`;
-  document.getElementById("contract-range").textContent = data.contracts.map((item) => `${item.implementation} ${item.supported_versions}（契约 ${item.version}）`).join(" · ");
+  document.getElementById("contract-range").textContent = data.contracts.map((item) => `${item.implementation} ${item.supported_versions}`).join(" · ");
 }
 
 function renderPlatforms(platforms) {
@@ -183,7 +183,6 @@ function renderCapabilities() {
     const matchesQuery = !query || [
       item.operation_id,
       item.display_name,
-      item.action,
       item.category,
     ].some((value) => String(value).toLowerCase().includes(query));
     const matchesCategory = !category || item.category === category;
@@ -197,7 +196,6 @@ function renderCapabilities() {
     appendCell(row, categoryLabels[item.category] || item.category);
     appendCell(row, item.operation_id, true);
     appendCell(row, item.display_name);
-    appendCell(row, item.action || "插件安全封装", true);
     const riskCell = document.createElement("td");
     const riskTone = item.risk === "read" ? "success" : item.risk === "destructive" ? "danger" : "warning";
     riskCell.append(makeBadge(riskLabels[item.risk] || item.risk, riskTone));
@@ -224,7 +222,7 @@ function renderCapabilities() {
   if (!filtered.length) {
     const row = document.createElement("tr");
     const cell = appendCell(row, "没有符合筛选条件的操作");
-    cell.colSpan = 7;
+    cell.colSpan = 6;
     body.append(row);
   }
   document.getElementById("capability-count").textContent = `显示 ${filtered.length} / ${capabilities.length} 项操作`;

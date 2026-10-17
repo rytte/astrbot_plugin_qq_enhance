@@ -76,6 +76,23 @@ select {
   margin-bottom: 28px;
 }
 
+.page-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.plugin-logo {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
 h1,
 h2,
 p {
@@ -84,7 +101,7 @@ p {
 
 h1 {
   margin-bottom: 8px;
-  font-size: clamp(28px, 4vw, 42px);
+  font-size: clamp(24px, 3vw, 32px);
   letter-spacing: -0.035em;
 }
 
@@ -93,7 +110,6 @@ h2 {
   font-size: 20px;
 }
 
-.eyebrow,
 .section-kicker {
   margin-bottom: 6px;
   color: var(--primary);
@@ -111,6 +127,7 @@ footer {
 
 .subtitle {
   margin-bottom: 0;
+  line-height: 1.6;
 }
 
 button {
@@ -385,6 +402,19 @@ footer {
 @media (max-width: 600px) {
   .page-shell {
     padding: 18px;
+  }
+
+  .page-header {
+    flex-wrap: wrap;
+  }
+
+  .page-brand {
+    gap: 12px;
+  }
+
+  .plugin-logo {
+    width: 48px;
+    height: 48px;
   }
 
   .page-header,

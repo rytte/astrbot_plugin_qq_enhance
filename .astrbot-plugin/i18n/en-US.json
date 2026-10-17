@@ -1,8 +1,8 @@
 {
   "pages": {
     "diagnostics": {
-      "title": "QQ Enhance Status",
-      "description": "View read-only NapCat status, capabilities, effective configuration, and security audits."
+      "title": "QQ Enhance",
+      "description": "View QQ platform connections, capability settings, and operation history."
     }
   }
 }
