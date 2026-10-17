@@ -158,6 +158,7 @@ DEFAULT_CONFIG = {
                 "rps",
                 "basketball",
                 "poke",
+                "notice",
             ],
         },
     },
@@ -165,7 +166,6 @@ DEFAULT_CONFIG = {
         "enhance_voice_messages": True,
     },
     "interaction_response": {
-        "respond_to_poke": True,
         "respond_to_red_packet": True,
     },
     "audit": {"retention_days": 30},
@@ -180,6 +180,7 @@ PROTECTED_COMPONENT_TYPES = frozenset(
         "rps",
         "basketball",
         "poke",
+        "notice",
         "face",
         "market_face",
         "image",
@@ -360,6 +361,20 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         config = {}
     if not isinstance(config, dict):
         raise ValueError("插件配置必须是对象")
+    config = deepcopy(config)
+    interactions = config.get("interaction_response", {})
+    if isinstance(interactions, dict):
+        legacy_poke = interactions.pop("respond_to_poke", None)
+        if legacy_poke is not None and type(legacy_poke) is not bool:
+            raise ValueError("interaction_response.respond_to_poke 必须是布尔值")
+        notices = config.setdefault("notice_events", {})
+        if isinstance(notices, dict):
+            poke = notices.get("notify/poke", {})
+            if isinstance(poke, dict) and poke.get("mode") is None:
+                notices["notify/poke"] = {
+                    **poke,
+                    "mode": "off" if legacy_poke is False else "respond",
+                }
     unknown_top = set(config) - set(DEFAULT_CONFIG)
     if unknown_top:
         raise ValueError(f"未知配置分组: {', '.join(sorted(unknown_top))}")
@@ -380,11 +395,21 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
                     raise ValueError(
                         f"notice_events.{kind} 必须是仅含 {', '.join(sorted(allowed_fields))} 的对象"
                     )
-                mode = policy.get("mode", default_policy["mode"])
-                if mode not in ("off", "context"):
-                    raise ValueError(
-                        f"notice_events.{kind}.mode 只支持 off、context；尚不支持主动响应"
-                    )
+                modes = (
+                    ("off", "context")
+                    if kind == "bot_offline"
+                    else ("off", "context", "respond")
+                )
+                mode_fields = (
+                    ("mode", "other_target_mode")
+                    if "other_target_mode" in default_policy
+                    else ("mode",)
+                )
+                for field in mode_fields:
+                    if policy.get(field, default_policy[field]) not in modes:
+                        raise ValueError(
+                            f"notice_events.{kind}.{field} 只支持 {'、'.join(modes)}"
+                        )
                 result[group][kind].update(policy)
             continue
         if group == "inbound" and "component_spoof_protection" in copied_group:
@@ -487,7 +512,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
         ("voice_recognition", "enhance_voice_messages"),
-        ("interaction_response", "respond_to_poke"),
         ("interaction_response", "respond_to_red_packet"),
     )
     for group, key in bool_fields:

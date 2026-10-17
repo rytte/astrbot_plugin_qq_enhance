@@ -17,15 +17,31 @@ ARRIVAL_KEY = "_qq_enhance_debounce_arrival"
 _ARRIVAL_ORDER = count()
 
 
+def debounce_sender(event):
+    """Route platform facts by their subject without changing sender authority."""
+    return getattr(event, "debounce_sender_id", None) or event.get_sender_id()
+
+
+def batch_size(arrival):
+    # A standalone notification carries its sole input in context_inputs.
+    return sum(
+        not getattr(a.event, "notice_response", False) for a in arrival.batch
+    ) + len(arrival.context_inputs)
+
+
 @dataclass(eq=False)
 class ContextInput:
-    """An input without wake authority, saved by its owning source."""
+    """A platform input carried and saved with its native reply batch."""
 
     key: tuple
     saved: asyncio.Future[bool]
     content: str = ""
     wait_applied: bool = False
     conversation_id: str | None = None
+    owners: list[Arrival] = field(default_factory=list)
+    included: bool = False
+    expected_count: int = 0
+    verified_type: str | None = None
 
 
 @dataclass(eq=False)
@@ -72,7 +88,7 @@ class ArrivalRegistry:
         key = (
             asyncio.get_running_loop(),
             event.unified_msg_origin,
-            event.get_sender_id(),
+            debounce_sender(event),
         )
         arrival = Arrival(event, task, cls.tails.get(key))
         cls.tails[key] = arrival
@@ -83,7 +99,6 @@ class ArrivalRegistry:
 
     @classmethod
     def bind_completion(cls, arrival, key=None):
-
         def completed(_task):
             arrival.finished.set()
             arrival.ready.set()
@@ -144,7 +159,7 @@ class MessageDebouncer:
         shared_group = config["shared_group"] and bool(event.get_group_id())
         scope = (
             event.unified_msg_origin,
-            "group" if shared_group else event.get_sender_id(),
+            "group" if shared_group else debounce_sender(event),
         )
         arrival.scope = scope
         if (
@@ -176,8 +191,7 @@ class MessageDebouncer:
         await self._wait(arrival, window, previous.waited_seconds)
         can_replace = (
             self._replaceable(previous)
-            and len(previous.batch) + len(previous.context_inputs)
-            < config["max_messages"]
+            and batch_size(previous) < config["max_messages"]
             and sum(item.buffer_bytes for item in previous.batch)
             + sum(len(i.content.encode("utf-8")) for i in previous.context_inputs)
             <= config["max_buffer_mb"] * 1024 * 1024
@@ -190,7 +204,12 @@ class MessageDebouncer:
             )
         if can_replace:
             arrival.batch = [*previous.batch, arrival]
-            arrival.context_inputs = [*previous.context_inputs, *arrival.context_inputs]
+            arrival.context_inputs = list(
+                dict.fromkeys([*previous.context_inputs, *arrival.context_inputs])
+            )
+            for item in arrival.context_inputs:
+                if arrival not in item.owners:
+                    item.owners.append(arrival)
             job = self._replace(previous, arrival)
             await asyncio.shield(job)
         else:
@@ -276,7 +295,7 @@ class MessageDebouncer:
             related.event.unified_msg_origin,
             "group"
             if self.config["shared_group"] and related.event.get_group_id()
-            else related.event.get_sender_id(),
+            else debounce_sender(related.event),
         )
         owner = self.active.get(scope) or related
         if related.order > owner.order:
@@ -298,7 +317,7 @@ class MessageDebouncer:
             return False
         if any(existing.key == item.key for existing in owner.context_inputs):
             return False
-        if len(owner.batch) + len(owner.context_inputs) >= self.config["max_messages"]:
+        if batch_size(owner) >= self.config["max_messages"]:
             return False
         if (
             sum(a.buffer_bytes for a in owner.batch)
@@ -308,6 +327,7 @@ class MessageDebouncer:
         ):
             return False
         owner.context_inputs.append(item)
+        item.owners.append(owner)
         if owner.waiting:
             item.wait_applied = True
             owner.wait_changed.set()
@@ -366,10 +386,10 @@ class MessageDebouncer:
             if (
                 sender_id is not None
                 and not shared
-                and event.get_sender_id() != sender_id
+                and debounce_sender(event) != sender_id
             ):
                 continue
-            scope = (umo, "group" if shared else event.get_sender_id())
+            scope = (umo, "group" if shared else debounce_sender(event))
             if scope not in selected or arrival.order > selected[scope].order:
                 selected[scope] = arrival
         return tuple(selected.values())
@@ -407,7 +427,7 @@ class MessageDebouncer:
                 self.config["shared_group"]
                 or not any(
                     item.event.unified_msg_origin == arrival.event.unified_msg_origin
-                    and item.event.get_sender_id() != arrival.event.get_sender_id()
+                    and debounce_sender(item.event) != debounce_sender(arrival.event)
                     and not item.finished.is_set()
                     for item in ArrivalRegistry.predecessors()
                 )
@@ -416,8 +436,7 @@ class MessageDebouncer:
 
     def _within_budget(self, arrival):
         return (
-            len(arrival.batch) + len(arrival.context_inputs)
-            <= self.config["max_messages"]
+            batch_size(arrival) <= self.config["max_messages"]
             and sum(a.buffer_bytes for a in arrival.batch)
             + sum(len(i.content.encode("utf-8")) for i in arrival.context_inputs)
             <= self.config["max_buffer_mb"] * 1024 * 1024
@@ -470,18 +489,16 @@ class MessageDebouncer:
             )
             successor.batch = list(owner.batch)
             successor.context_inputs = list(owner.context_inputs)
+            for item in successor.context_inputs:
+                item.owners.append(successor)
             successor.conversation_id = owner.conversation_id
             successor.waited_seconds = owner.waited_seconds
             event.set_extra(ARRIVAL_KEY, successor)
             self.active[scope] = successor
             await asyncio.shield(self._replace(owner, successor))
-            for item in successor.context_inputs:
-                if not await asyncio.shield(item.saved):
-                    raise RuntimeError(
-                        "Background input was not saved; reply restart aborted"
-                    )
             if self.closed or not await self.runtime.can_resume(successor):
                 self.runtime.discard_resume(event)
+                self.release_unclaimed_resume(event)
                 self.active.pop(scope, None)
                 return
             await self.runtime.enqueue_resume(successor)
@@ -494,6 +511,7 @@ class MessageDebouncer:
             active = self.active.get(scope)
             if active is not None and active.replayed and active.task is None:
                 self.runtime.discard_resume(active.event)
+                self.release_unclaimed_resume(active.event)
                 self.active.pop(scope, None)
 
     def claim_resume(self, event):
@@ -567,7 +585,7 @@ class MessageDebouncer:
             request: Fully decorated AstrBot provider request.
         """
         arrival = event.get_extra(ARRIVAL_KEY)
-        if arrival is not None and arrival.batch:
+        if arrival is not None:
             arrival.request = request
             if request.conversation is not None:
                 arrival.conversation_id = request.conversation.cid
@@ -580,10 +598,14 @@ class MessageDebouncer:
             run_context: AstrBot's initialized agent context.
         """
         arrival = event.get_extra(ARRIVAL_KEY)
-        if arrival is None or not arrival.batch or arrival.request is None:
+        if (
+            arrival is None
+            or not (arrival.batch or arrival.context_inputs)
+            or arrival.request is None
+        ):
             return
         request = arrival.request
-        if request.conversation is None or not run_context.messages:
+        if request.conversation is None:
             arrival.protected = True
             arrival.ready.set()
             return
@@ -592,11 +614,11 @@ class MessageDebouncer:
             for item in arrival.context_inputs
             if item.saved.done() and not item.saved.cancelled() and item.saved.result()
         }
-        if arrival.replayed:
+        if arrival.replayed or getattr(event, "notice_response", False):
             arrival.ready.set()
             return
-        current = run_context.messages[-1]
-        if current.role != "user":
+        current = run_context.messages[-1] if run_context.messages else None
+        if current is None or current.role != "user":
             arrival.protected = True
             arrival.ready.set()
             return

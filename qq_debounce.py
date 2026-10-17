@@ -15,11 +15,9 @@ class ArrivalFilter(filter.CustomFilter):
         raw = getattr(event.message_obj, "raw_message", {})
         if not isinstance(raw, dict):
             return False
-        if raw.get("post_type") != "message" and not (
-            raw.get("post_type") == "notice"
-            and raw.get("notice_type") == "notify"
-            and raw.get("sub_type") == "poke"
-            and str(raw.get("target_id")) == str(event.get_self_id())
+        if (
+            not getattr(event, "notice_response", False)
+            and raw.get("post_type") != "message"
         ):
             return False
         return ArrivalRegistry.record(event)

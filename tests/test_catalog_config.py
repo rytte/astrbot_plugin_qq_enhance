@@ -81,6 +81,9 @@ def test_all_runtime_defaults_match_webui_schema(config) -> None:
     pending = [("", schema, validate_config(config))]
     while pending:
         prefix, items, defaults = pending.pop()
+        if prefix == "interaction_response":
+            assert items["respond_to_poke"]["invisible"] is True
+            items = {k: v for k, v in items.items() if k != "respond_to_poke"}
         assert set(items) == set(defaults), prefix
         for name, item in items.items():
             path = f"{prefix}.{name}" if prefix else name
@@ -89,6 +92,12 @@ def test_all_runtime_defaults_match_webui_schema(config) -> None:
                 assert isinstance(defaults[name], dict), path
                 pending.append((path, item["items"], defaults[name]))
             else:
+                if path == "notice_events.notify/poke.mode":
+                    assert (
+                        item["default"] is None
+                    )  # Migration sentinel before initialization.
+                    assert defaults[name] == "respond"
+                    continue
                 assert type(item["default"]) is type(defaults[name]), path
                 assert item["default"] == defaults[name], path
 
@@ -251,7 +260,7 @@ def test_request_notification_schema_defaults_match_runtime_config() -> None:
         {"interaction_response": {"respond_to_poke": 1}},
         {"interaction_response": {"respond_to_red_packet": "true"}},
         {"inbound": {"mark_recalled_messages": True}},
-        {"notice_events": {"message_recall": {"mode": "respond"}}},
+        {"notice_events": {"bot_offline": {"mode": "respond"}}},
         {"inbound": {"max_semantic_chars": 255}},
         {"limits": {"page_size": 0}},
     ],
@@ -305,13 +314,15 @@ def test_valid_config_preserves_explicit_values() -> None:
                 "rps",
                 "basketball",
                 "poke",
+                "notice",
             ],
         },
     }
     assert result["voice_recognition"] == {"enhance_voice_messages": False}
-    assert result["interaction_response"] == {
-        "respond_to_poke": False,
-        "respond_to_red_packet": False,
+    assert result["interaction_response"] == {"respond_to_red_packet": False}
+    assert result["notice_events"]["notify/poke"] == {
+        "mode": "off",
+        "other_target_mode": "context",
     }
     assert result["notice_events"]["message_recall"] == {"mode": "context"}
 
@@ -327,7 +338,15 @@ def test_partial_component_spoof_config_keeps_nested_defaults() -> None:
     assert result["inbound"]["component_spoof_protection"] == {
         "enabled": True,
         "persist_verification_in_history": True,
-        "protected_types": ["red_packet", "voice", "dice", "rps", "basketball", "poke"],
+        "protected_types": [
+            "red_packet",
+            "voice",
+            "dice",
+            "rps",
+            "basketball",
+            "poke",
+            "notice",
+        ],
     }
 
 
@@ -377,7 +396,7 @@ def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
         plugin = QQEnhancePlugin(context, config)
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
-    assert plugin.config == saved_config
+    assert plugin.config == validate_config(saved_config)
     assert "removed_group" not in plugin.config
     assert "removed_field" not in plugin.config["inbound"]
     assert plugin.config["inbound"]["component_spoof_protection"] == {
@@ -387,7 +406,15 @@ def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
             if persist_verification_in_history is None
             else persist_verification_in_history
         ),
-        "protected_types": ["red_packet", "voice", "dice", "rps", "basketball", "poke"],
+        "protected_types": [
+            "red_packet",
+            "voice",
+            "dice",
+            "rps",
+            "basketball",
+            "poke",
+            "notice",
+        ],
     }
     assert plugin.config["network"]["allow_private_network"] is True
     context.register_web_api.assert_called_once()
@@ -476,6 +503,7 @@ def test_component_spoof_protection_requires_protected_types() -> None:
     "protected_types",
     [
         ["basketball"],
+        ["notice"],
         ["face"],
         ["red_packet", "voice", "dice", "rps", "poke"],
     ],
@@ -512,3 +540,79 @@ def test_all_documented_component_spoof_types_are_accepted() -> None:
     assert result["inbound"]["component_spoof_protection"]["protected_types"] == (
         protected_types
     )
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.parametrize("mode", [None, "off", "context", "respond"])
+@pytest.mark.parametrize("other_target_mode", [None, "off", "respond"])
+def test_legacy_poke_migrates_and_explicit_policy_wins_after_schema_fill(
+    tmp_path, legacy, mode, other_target_mode
+):
+    config_path = tmp_path / "config.json"
+    raw = {
+        "interaction_response": {
+            "respond_to_poke": legacy,
+            "respond_to_red_packet": False,
+        }
+    }
+    if mode is not None or other_target_mode is not None:
+        policy = {}
+        if mode is not None:
+            policy["mode"] = mode
+        if other_target_mode is not None:
+            policy["other_target_mode"] = other_target_mode
+        raw["notice_events"] = {"notify/poke": policy}
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    with patch(
+        "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+        return_value=str(tmp_path),
+    ), patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory:
+        runtime_factory.return_value.config = validate_config(dict(config))
+        plugin = QQEnhancePlugin(SimpleNamespace(register_web_api=Mock()), config)
+    expected = mode or ("respond" if legacy else "off")
+    expected_other = other_target_mode or "context"
+    assert plugin.config["notice_events"]["notify/poke"]["mode"] == expected
+    assert (
+        plugin.config["notice_events"]["notify/poke"]["other_target_mode"]
+        == expected_other
+    )
+    assert plugin.config["interaction_response"] == {"respond_to_red_packet": False}
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    assert reloaded["interaction_response"]["respond_to_poke"] is None
+    assert (
+        validate_config(dict(reloaded))["notice_events"]["notify/poke"]["mode"]
+        == expected
+    )
+    assert (
+        reloaded["notice_events"]["notify/poke"]["other_target_mode"] == expected_other
+    )
+
+
+@pytest.mark.parametrize("mode", ["off", "context", "respond"])
+def test_other_poke_target_mode_is_independent_and_preserves_bot_default(mode):
+    policy = validate_config(
+        {"notice_events": {"notify/poke": {"other_target_mode": mode}}}
+    )["notice_events"]["notify/poke"]
+    assert policy == {"mode": "respond", "other_target_mode": mode}
+
+
+@pytest.mark.parametrize("mode", [None, True, 0, [], {}, "response"])
+def test_invalid_other_poke_target_modes_are_rejected(mode):
+    with pytest.raises(ValueError, match=r"notify/poke\.other_target_mode"):
+        validate_config({"notice_events": {"notify/poke": {"other_target_mode": mode}}})
+
+
+def test_red_packet_hint_documents_snowluma_and_poke_legacy_setting_is_hidden():
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    interaction = schema["interaction_response"]["items"]
+    assert (
+        "SnowLuma 会把红包作为普通文本消息来回复"
+        in interaction["respond_to_red_packet"]["hint"]
+    )
+    assert interaction["respond_to_poke"]["invisible"] is True

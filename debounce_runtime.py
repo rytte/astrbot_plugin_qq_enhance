@@ -32,6 +32,8 @@ class ResumedMessageEvent(AstrMessageEvent):
         self.role = source.role
         self.is_wake = True
         self.debouncer = debouncer
+        self.debounce_sender_id = getattr(source, "debounce_sender_id", None)
+        self.notification_only = getattr(source, "notification_only", False)
 
     @property
     def is_at_or_wake_command(self):
@@ -149,6 +151,8 @@ class AstrBotDebounceRuntime:
         return await SessionServiceManager.should_process_llm_request(event)
 
     async def persist(self, arrival):
+        if not arrival.messages:
+            return
         manager = self.context.conversation_manager
         umo = arrival.event.unified_msg_origin
         async with session_lock_manager.acquire_lock(umo):
@@ -166,6 +170,9 @@ class AstrBotDebounceRuntime:
                 history=[*history, *deepcopy(arrival.messages)],
                 token_usage=None,
             )
+            for item in arrival.context_inputs:
+                if item.key in arrival.seen_context and not item.saved.done():
+                    item.saved.set_result(True)
 
     def make_resume(self, arrival, debouncer):
         return ResumedMessageEvent(arrival.event, debouncer)

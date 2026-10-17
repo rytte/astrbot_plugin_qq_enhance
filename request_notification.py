@@ -10,7 +10,7 @@ from mcp.types import CallToolResult, TextContent
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import At, Plain, Reply
 from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.astrbot_message import AstrBotMessage, Group, MessageMember
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -126,6 +126,40 @@ class RequestNotificationEvent(PlatformNotificationEvent):
             text,
         )
         self.request_id = request_id
+
+
+class NoticeResponseEvent(PlatformNotificationEvent):
+    """Deliver a platform input through the normal native reply pipeline."""
+
+    notice_response = True
+    notification_only = True
+
+    def __init__(self, owner, platform, delivery, self_id):
+        session = MessageSession.from_str(delivery.umo)
+        notice = delivery.notice
+        super().__init__(
+            owner.plugin.context,
+            platform,
+            session,
+            f"qq_notice_response:{notice.fingerprint()}",
+            self_id,
+            notice.render(),
+            group=Group(group_id=notice.group_id) if notice.group_id else None,
+        )
+        self.owner = owner
+        self.delivery = delivery
+        self.debounce_sender_id = (
+            session.session_id.partition("_")[0]
+            if notice.group_wide and "_" in session.session_id
+            else notice.user_id
+        )
+
+    def is_stopped(self):
+        return super().is_stopped() or self.owner.closed
+
+    def cleanup_temporary_local_files(self):
+        super().cleanup_temporary_local_files()
+        self.owner.release_response(self.delivery)
 
 
 class ConfirmationResultEvent(PlatformNotificationEvent):

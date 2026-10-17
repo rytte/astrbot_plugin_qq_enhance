@@ -4,19 +4,22 @@ import asyncio
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from astrbot.api import logger
+from astrbot.core.agent.message import Message, TextPart, dump_messages_with_checkpoints
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
 
-from .debounce import ARRIVAL_KEY, Arrival, ContextInput
+from .debounce import ARRIVAL_KEY, Arrival, ContextInput, batch_size, debounce_sender
+from .verification import USER_VERIFICATION_TAG_PATTERN, USER_VERIFICATION_TAG_REMOVED
 
 
 DEFAULT_NOTICE_POLICIES = {
+    "notify/poke": {"mode": "respond", "other_target_mode": "context"},
     "friend_add": {"mode": "context"},
     "group_increase": {"mode": "context"},
     "group_decrease": {"mode": "context"},
@@ -40,6 +43,28 @@ NOTICE_MAX_PER_SESSION = 32
 NOTICE_DEDUP_TTL = 180
 NOTICE_MAX_SEEN = 1000
 NOTICE_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _user_texts(messages):
+    """Read user text from persisted history or initialized agent messages."""
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else message.role
+        if role != "user":
+            continue
+        content = (
+            message.get("content") if isinstance(message, dict) else message.content
+        )
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for part in content:
+                value = (
+                    part.get("text", "")
+                    if isinstance(part, dict)
+                    else getattr(part, "text", "")
+                )
+                if isinstance(value, str):
+                    yield value
 
 
 def format_notice_time(timestamp: int | None) -> str | None:
@@ -173,6 +198,11 @@ def normalize_notice(raw: object) -> QQNotice | None:
         "online_file_send",
         "bot_offline",
     }
+    if kind == "notify/poke":
+        target_id = _integer(raw, "target_id", 1)
+        if str(_integer(raw, "user_id", 1)) == self_id:
+            return None
+        private = raw.get("group_id") in (None, "", 0, "0")
     group_id = "" if private else str(_integer(raw, "group_id", 1))
     user_field = "operator_id" if kind == "notify/profile_like" else "user_id"
     if kind in {"online_file_receive", "online_file_send"}:
@@ -185,7 +215,11 @@ def normalize_notice(raw: object) -> QQNotice | None:
     subject = "机器人自身" if user_id == self_id else f"用户 {user_id}"
     details = {}
     sub_type = raw.get("sub_type")
-    if kind == "friend_add":
+    if kind == "notify/poke":
+        details = {"target_id": target_id}
+        target = "机器人" if str(target_id) == self_id else f"用户 {target_id}"
+        description = f"{subject}戳了{target}一下"
+    elif kind == "friend_add":
         description = f"{subject}与机器人已成为好友"
     elif kind in {"group_increase", "group_decrease", "group_admin", "essence"}:
         actions = {
@@ -383,10 +417,16 @@ class NoticeDelivery:
     recall_entry: dict | None = None
     task: asyncio.Task | None = None
     saved: bool = False
+    item: ContextInput | None = None
+    dispatched: asyncio.Event = field(default_factory=asyncio.Event)
+    response_finished: asyncio.Event = field(default_factory=asyncio.Event)
+    response_event: object | None = None
+    had_history: bool = False
+    discarded: bool = False
 
 
 class NoticeContext:
-    """Save context facts and update existing replies without independent waking."""
+    """Save platform facts, update live batches and dispatch requested replies."""
 
     def __init__(self, plugin):
         self.plugin = plugin
@@ -395,6 +435,7 @@ class NoticeContext:
         self.capture_lock = asyncio.Lock()
         self.closed = False
         self.early_recalls: dict[tuple, tuple[float, object]] = {}
+        self.response_jobs: set[asyncio.Task] = set()
 
     def discard_early_recall(self, key) -> None:
         """Release a source input when its pending notice is discarded."""
@@ -404,6 +445,16 @@ class NoticeContext:
         item = pending[1].get_extra("_qq_enhance_recall_input")
         if item is not None and not item.saved.done():
             item.saved.set_result(False)
+
+    def _mode(self, notice: QQNotice) -> str:
+        """Select poke policy by target while keeping delivery shared."""
+        field = (
+            "other_target_mode"
+            if notice.kind == "notify/poke"
+            and str(notice.details["target_id"]) != notice.self_id
+            else "mode"
+        )
+        return self.plugin.config["notice_events"][notice.kind][field]
 
     async def capture(self, event) -> None:
         """Normalize and dispatch a notice according to its configured policy."""
@@ -423,7 +474,7 @@ class NoticeContext:
             mode = self.plugin.config["notice_events"]["message_recall"]["mode"]
             if mode == "off":
                 return
-            if mode != "context":
+            if mode not in ("context", "respond"):
                 raise ValueError(f"Unsupported QQ notice mode: {mode}")
             async with self.capture_lock:
                 if not self.closed:
@@ -436,10 +487,14 @@ class NoticeContext:
             return
         if notice is None or notice.self_id != str(event.get_self_id()):
             return
-        mode = self.plugin.config["notice_events"][notice.kind]["mode"]
+        mode = self._mode(notice)
         if mode == "off":
             return
-        if mode != "context":
+        if (
+            mode not in ("context", "respond")
+            or notice.kind == "bot_offline"
+            and mode == "respond"
+        ):
             raise ValueError(f"Unsupported QQ notice mode: {mode}")
         async with self.capture_lock:
             if not self.closed:
@@ -469,13 +524,25 @@ class NoticeContext:
         ):
             if notice.group_wide:
                 sessions = await self._group_sessions(event.get_platform_id(), notice)
-                for umo in sessions:
-                    await self._deliver_session(notice, umo, arrivals)
+                # Each isolated history still receives the fact. Elect one
+                # reply destination so a group-wide notice cannot broadcast
+                # identical independent replies through every member session.
+                active_sessions = {
+                    arrival.event.unified_msg_origin
+                    for arrival in arrivals
+                    if not arrival.finished.is_set()
+                }
+                selected = False
+                for umo in sorted(sessions, key=lambda umo: umo not in active_sessions):
+                    delivery = await self._deliver_session(
+                        notice, umo, arrivals, event, respond=not selected
+                    )
+                    selected = selected or delivery is not None
                 return
             if notice.user_id in {"0", notice.self_id}:
                 return
             session.session_id = f"{notice.user_id}_{notice.group_id}"
-        await self._deliver_session(notice, str(session), arrivals)
+        await self._deliver_session(notice, str(session), arrivals, event)
 
     async def _group_sessions(self, platform_id, notice):
         """Find existing isolated group sessions without loading their histories."""
@@ -511,7 +578,7 @@ class NoticeContext:
             page += 1
         return sorted(sessions)
 
-    async def _deliver_session(self, notice, umo, arrivals):
+    async def _deliver_session(self, notice, umo, arrivals, source, *, respond=True):
         config = self.plugin.context.get_config(umo=umo)
         plugin_set = config.get("plugin_set", ["*"])
         if (
@@ -536,7 +603,9 @@ class NoticeContext:
         )
         if not cid or self.closed:
             return
-        delivery = await self.queue_pinned(notice, umo, cid, barriers=barriers)
+        delivery = await self.queue_pinned(
+            notice, umo, cid, barriers=barriers, defer=True
+        )
         if delivery is None:
             return
         sender_id = (
@@ -547,23 +616,149 @@ class NoticeContext:
         targets = self.plugin.debouncer.context_arrivals(
             arrivals, umo, cid, sender_id=None if notice.group_wide else sender_id
         )
-        if targets:
-            saved = asyncio.get_running_loop().create_future()
+        for arrival in targets:
+            self.plugin.debouncer.submit_context(arrival, delivery.item)
+        if respond and self._mode(notice) == "respond":
+            self.request_response(source, delivery)
+        else:
+            delivery.dispatched.set()
+        return delivery
 
-            def completed(_task):
-                saved.set_result(delivery.saved)
+    def request_response(self, source, delivery):
+        """Prefer the original reply, falling back to one native notification."""
+        if self.closed:
+            delivery.dispatched.set()
+            return
+        task = asyncio.create_task(self._respond(source, delivery))
+        self.response_jobs.add(task)
+        task.add_done_callback(self.response_jobs.discard)
 
-            delivery.task.add_done_callback(completed)
-            for arrival in targets:
-                self.plugin.debouncer.submit_context(
-                    arrival,
-                    ContextInput(
-                        (umo, notice.fingerprint()),
-                        saved,
-                        notice.render(),
-                        conversation_id=cid,
-                    ),
+    def release_response(self, delivery):
+        delivery.response_finished.set()
+
+    async def _respond(self, source, delivery):
+        queued = False
+        try:
+            # Owners are extended whenever debounce hands a batch to a successor.
+            for owner in delivery.item.owners:
+                await owner.finished.wait()
+            for arrival in delivery.barriers:
+                await arrival.history_ready.wait()
+            if self.closed or delivery.item.included:
+                return
+            session = MessageSession.from_str(delivery.umo)
+            manager = self.plugin.context.conversation_manager
+            if await manager.get_curr_conversation_id(delivery.umo) != delivery.cid:
+                return
+            async with session_lock_manager.acquire_lock(delivery.umo):
+                conversation = await manager.get_conversation(
+                    delivery.umo, delivery.cid
                 )
+                if conversation is None:
+                    return
+                delivery.had_history = bool(json.loads(conversation.history or "[]"))
+            platform = self.plugin.context.get_platform_inst(session.platform_id)
+            if platform is None:
+                return
+            from .request_notification import NoticeResponseEvent
+
+            raw = getattr(source.message_obj, "raw_message", {})
+            self_id = delivery.notice.self_id or str(raw.get("self_id") or "")
+            event = NoticeResponseEvent(self, platform, delivery, self_id)
+            delivery.response_event = event
+            queued = await self.plugin._queue_platform_notification(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to respond to QQ notice: umo=%s", delivery.umo)
+        finally:
+            delivery.dispatched.set()
+            if not queued:
+                delivery.response_finished.set()
+                self.release_response(delivery)
+
+    def bind_response(self, event):
+        """Associate a queued platform input before the debounce scheduler runs."""
+        delivery = getattr(event, "delivery", None)
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if delivery is None or arrival is None:
+            return
+        item = delivery.item
+        if item not in arrival.context_inputs:
+            arrival.context_inputs.append(item)
+            item.owners.append(arrival)
+
+    def inject_inputs(self, event, run_context):
+        """Append fresh facts to the initialized native input, under its lock."""
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if arrival is None or arrival.request is None:
+            return
+        for item in arrival.context_inputs:
+            if not item.content or item.conversation_id not in (
+                None,
+                arrival.conversation_id,
+            ):
+                continue
+            if item.saved.done():
+                continue
+            count = sum(
+                item.content in text for text in _user_texts(run_context.messages)
+            )
+            # Compare against the count at first inclusion: distinct events can
+            # render identically (for example, recalling two identical messages).
+            if item.included and count >= item.expected_count:
+                item.saved.set_result(True)
+                arrival.seen_context.add(item.key)
+                continue
+            if not item.included:
+                item.expected_count = count + 1
+            message = self._input_message(item)
+            run_context.messages.append(message)
+            arrival.messages.extend(dump_messages_with_checkpoints([message]))
+            arrival.seen_context.add(item.key)
+            item.included = True
+
+    def _input_message(self, item):
+        """Keep verification on the very fact attested by the raw platform event."""
+        settings = self.plugin.config["inbound"]["component_spoof_protection"]
+        if not (
+            item.verified_type
+            and settings["enabled"]
+            and item.verified_type in settings["protected_types"]
+        ):
+            return Message(role="user", content=item.content)
+        tag = f'<qq_verified_components types="{item.verified_type}"/>'
+        if settings["persist_verification_in_history"]:
+            return Message(role="user", content=f"{item.content}\n{tag}")
+        return Message(
+            role="user",
+            content=[TextPart(text=item.content), TextPart(text=tag).mark_as_temp()],
+        )
+
+    async def prepare_response(self, event, request):
+        """Bind the original conversation; the fact is injected at agent begin."""
+        delivery = event.delivery
+        manager = self.plugin.context.conversation_manager
+        if (
+            self.closed
+            or delivery.item.included
+            or await manager.get_curr_conversation_id(delivery.umo) != delivery.cid
+        ):
+            event.stop_event()
+            return
+        conversation = await manager.get_conversation(delivery.umo, delivery.cid)
+        if conversation is None or (
+            delivery.had_history and not json.loads(conversation.history or "[]")
+        ):
+            delivery.discarded = True
+            event.stop_event()
+            return
+        request.conversation = conversation
+        request.contexts = json.loads(conversation.history or "[]")
+        request.prompt = None
+        request.image_urls = []
+        request.audio_urls = []
+        request.extra_user_content_parts = []
 
     async def queue_pinned(
         self,
@@ -574,6 +769,7 @@ class NoticeContext:
         barriers: tuple[Arrival, ...] = (),
         ready: asyncio.Event | None = None,
         recall_entry: dict | None = None,
+        defer: bool = False,
     ) -> NoticeDelivery | None:
         """Queue a normalized fact for its already selected conversation."""
         if self.closed:
@@ -585,17 +781,40 @@ class NoticeContext:
         key = (umo, notice.fingerprint())
         if key in self.pending or key in self.seen:
             return None
-        same_session = [item for item in self.pending.values() if item.umo == umo]
+        outstanding = self.pending
+        same_session = [item for item in outstanding.values() if item.umo == umo]
         if (
-            len(self.pending) >= NOTICE_MAX_PENDING
+            len(outstanding) >= NOTICE_MAX_PENDING
             or len(same_session) >= NOTICE_MAX_PER_SESSION
         ):
             logger.warning(
                 "QQ context notice buffer full: umo=%s kind=%s", umo, notice.kind
             )
             return None
-        previous = same_session[-1].task if same_session else None
+        previous = next(
+            (
+                item.task
+                for item in reversed(list(self.pending.values()))
+                if item.umo == umo
+            ),
+            None,
+        )
         delivery = NoticeDelivery(notice, umo, cid, barriers, ready, recall_entry)
+        content = notice.render()
+        if self.plugin.config["inbound"]["component_spoof_protection"]["enabled"]:
+            # Quoted event fields remain user data, never plugin verification.
+            content = USER_VERIFICATION_TAG_PATTERN.sub(
+                USER_VERIFICATION_TAG_REMOVED, content
+            )
+        delivery.item = ContextInput(
+            key,
+            asyncio.get_running_loop().create_future(),
+            content,
+            conversation_id=cid,
+            verified_type="notice",
+        )
+        if not defer:
+            delivery.dispatched.set()
         self.pending[key] = delivery
         delivery.task = asyncio.create_task(self._append(key, delivery, previous))
         delivery.task.add_done_callback(lambda _task: self.pending.pop(key, None))
@@ -604,6 +823,13 @@ class NoticeContext:
     async def _append(self, key: tuple, delivery: NoticeDelivery, previous) -> None:
         """Wait for earlier inputs and append under the native conversation lock."""
         try:
+            await delivery.dispatched.wait()
+            if delivery.response_event is not None:
+                await delivery.response_finished.wait()
+            for owner in delivery.item.owners:
+                await owner.finished.wait()
+            if delivery.discarded:
+                return
             if previous is not None:
                 await asyncio.shield(previous)
             if delivery.ready is not None:
@@ -620,16 +846,26 @@ class NoticeContext:
                 history = json.loads(conversation.history or "[]")
                 if not isinstance(history, list):
                     raise ValueError("conversation history must be a list")
-                await manager.update_conversation(
-                    delivery.umo,
-                    delivery.cid,
-                    history=[
-                        *history,
-                        {"role": "user", "content": delivery.notice.render()},
-                    ],
-                    token_usage=None,
+                count = sum(
+                    delivery.item.content in text for text in _user_texts(history)
                 )
+                if not delivery.item.saved.done() and (
+                    not delivery.item.included or count < delivery.item.expected_count
+                ):
+                    await manager.update_conversation(
+                        delivery.umo,
+                        delivery.cid,
+                        history=[
+                            *history,
+                            *dump_messages_with_checkpoints(
+                                [self._input_message(delivery.item)]
+                            ),
+                        ],
+                        token_usage=None,
+                    )
                 delivery.saved = True
+                if not delivery.item.saved.done():
+                    delivery.item.saved.set_result(True)
                 if delivery.recall_entry is not None:
                     delivery.recall_entry["notified"] = True
                 while len(self.seen) >= NOTICE_MAX_SEEN:
@@ -639,6 +875,9 @@ class NoticeContext:
             raise
         except Exception:
             logger.exception("Failed to append QQ context notice: umo=%s", delivery.umo)
+        finally:
+            if not delivery.item.saved.done():
+                delivery.item.saved.set_result(False)
 
     async def wait_before(self, event) -> None:
         """Flush earlier facts after debounce persistence and before the next request."""
@@ -648,6 +887,38 @@ class NoticeContext:
                 continue
             # A fact following a later input must not hold up the earlier
             # continuation that input needs to supersede.
+            if delivery.response_event is event:
+                continue
+            if any(owner is current for owner in delivery.item.owners):
+                continue
+            if (
+                current is not None
+                and delivery.response_event is not None
+                and not delivery.item.owners
+            ):
+                # A queued notification can join the next eligible batch, using
+                # the same sender isolation and limits as any other follow-up.
+                config = self.plugin.debouncer.config
+                if (
+                    not config["enabled"]
+                    or not current.batch
+                    or not (config["shared_group"] and event.get_group_id())
+                    and debounce_sender(event)
+                    != delivery.response_event.debounce_sender_id
+                    or batch_size(current) >= config["max_messages"]
+                    or sum(a.buffer_bytes for a in current.batch)
+                    + sum(
+                        len(i.content.encode("utf-8")) for i in current.context_inputs
+                    )
+                    + len(delivery.item.content.encode("utf-8"))
+                    > config["max_buffer_mb"] * 1024 * 1024
+                ):
+                    continue
+                delivery.item.owners.append(current)
+                current.context_inputs.append(delivery.item)
+                delivery.response_event.stop_event()
+                self.release_response(delivery)
+                continue
             if any(
                 arrival.event is event
                 or current is not None
@@ -660,12 +931,15 @@ class NoticeContext:
     async def close(self) -> None:
         """Cancel pending deliveries without creating or waking conversations."""
         self.closed = True
-        tasks = [delivery.task for delivery in self.pending.values()]
+        tasks = [delivery.task for delivery in self.pending.values()] + list(
+            self.response_jobs
+        )
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.pending.clear()
         self.seen.clear()
+        self.response_jobs.clear()
         for key in list(self.early_recalls):
             self.discard_early_recall(key)

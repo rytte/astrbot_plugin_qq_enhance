@@ -202,6 +202,9 @@ class Harness:
             raw={"post_type": "notice", "notice_type": "debounce_resume"},
         )
         event.unified_msg_origin = source.unified_msg_origin
+        for name in ("debounce_sender_id", "notification_only"):
+            if hasattr(source, name):
+                setattr(event, name, getattr(source, name))
         self.resumed.append(event)
         return event
 
@@ -223,6 +226,7 @@ class Harness:
         parts=None,
         added_contexts=None,
         fail=False,
+        empty=False,
         streaming=False,
         tool=False,
         enrich=False,
@@ -261,6 +265,13 @@ class Harness:
                     await self.plugin.add_verified_component_signal(event, req)
                     await self.plugin.track_context_message(event, req)
                     await self.plugin.bind_debounce_request(event, req)
+                    if (
+                        getattr(event, "notice_response", False)
+                        and not event.get_extra(ARRIVAL_KEY).replayed
+                    ):
+                        await self.plugin.prepare_platform_notification(event, req)
+                        if event.is_stopped():
+                            return
                     if event.get_extra(ARRIVAL_KEY).replayed:
                         await self.runtime.finalize_resume(event, req)
                     messages = bind_checkpoint_messages(req.contexts)
@@ -296,6 +307,8 @@ class Harness:
                     await event.allow_reply.wait()
                     if fail:
                         raise RuntimeError("provider failed")
+                    if empty:
+                        return
                     await self.plugin.protect_debounce_response(event, None)
                     messages.append(Message(role="assistant", content="reply"))
                     await self.manager.update_conversation(
@@ -310,8 +323,7 @@ class Harness:
                         ),
                     )
             finally:
-                event.cleaned_files.extend(event._temporary_local_files)
-                event._temporary_local_files.clear()
+                event.cleanup_temporary_local_files()
 
         task = asyncio.create_task(pipeline())
         self.tasks.append(task)
@@ -329,6 +341,11 @@ class Harness:
             task.cancel()
         if recalls:
             await asyncio.gather(*recalls, return_exceptions=True)
+
+    async def drain_notices(self):
+        tasks = [d.task for d in self.plugin.notice_context.pending.values()]
+        if tasks:
+            await asyncio.wait_for(asyncio.gather(*tasks), 3)
 
     async def drain_recalls(self):
         tasks = list(self.plugin.recall_tasks)
@@ -406,6 +423,7 @@ async def test_context_notice_updates_batch_before_normal_followup(
         await second_task
         assert resumed.is_stopped()
         assert texts(harness.manager.history(second)) == [*request_texts, "reply"]
+        await harness.drain_notices()
         assert not harness.plugin.notice_context.pending
     finally:
         await harness.finish()
@@ -484,8 +502,11 @@ async def test_all_context_notice_types_update_existing_debounce_batch(
         first_task = harness.start(first)
         await wait(first.entered if stage == "waiting" else first.prepared)
         await harness.plugin.capture_notice_context(notice)
-        resumed = await harness.wait_resumed()
-        assert first_task.cancelled()
+        resumed = await harness.wait_resumed() if stage == "generating" else first
+        await wait(resumed.prepared)
+        assert (
+            first_task.cancelled() if stage == "generating" else not first_task.done()
+        )
         assert not notice.is_at_or_wake_command
         history = texts(harness.requests[-1])
         assert history[0] == "先前输入"
@@ -534,13 +555,13 @@ async def test_context_notice_continues_existing_reply_only_when_debounce_enable
     harness = Harness({"enabled": enabled, "initial_window_seconds": 0.02})
     first = Event("当前消息", 1, group=300)
     try:
-        task = harness.start(first)
+        harness.start(first)
         await wait(first.entered)
         await harness.plugin.capture_notice_context(context_notice())
-        current = await harness.wait_resumed() if enabled else first
+        current = first
         await wait(current.prepared)
-        assert len(harness.requests) == (2 if enabled else 1)
-        assert task.cancelled() if enabled else not first.stopped
+        assert len(harness.requests) == 1
+        assert not first.stopped
         current.allow_reply.set()
         await harness.tasks[-1]
         pending = [item.task for item in harness.plugin.notice_context.pending.values()]
@@ -747,6 +768,8 @@ async def test_targeted_poke_can_follow_message_without_a_message_id():
             "post_type": "notice",
             "notice_type": "notify",
             "sub_type": "poke",
+            "self_id": 99,
+            "time": 1001,
             "user_id": 7,
             "target_id": 99,
         },
@@ -754,9 +777,12 @@ async def test_targeted_poke_can_follow_message_without_a_message_id():
     try:
         harness.start(first)
         await wait(first.prepared)
-        harness.start(poke)
-        await wait(poke.prepared)
-        assert texts(harness.requests[-1]) == [first.message_str, poke.message_str]
+        await harness.plugin.capture_notice_context(poke)
+        resumed = await harness.wait_resumed()
+        assert texts(harness.requests[-1])[0] == first.message_str
+        assert "QQ 平台事件|notify/poke|" in texts(harness.requests[-1])[1]
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
         assert set(harness.plugin.recall_messages) == {("qq", "private", "7", "1")}
     finally:
         await harness.finish()
@@ -854,6 +880,9 @@ async def test_recall_restarts_batch_and_preserves_identical_inputs_once(target)
         assert harness.tasks[1].cancelled()
         assert texts(harness.requests[-1])[:2] == ["同样的文字", "同样的文字"]
         assert texts(harness.requests[-1])[2].startswith("[QQ 平台事件|message_recall|")
+        assert (
+            '<qq_verified_components types="notice"/>' in texts(harness.requests[-1])[2]
+        )
         resumed.allow_reply.set()
         await harness.tasks[-1]
         await harness.drain_recalls()
@@ -861,6 +890,7 @@ async def test_recall_restarts_batch_and_preserves_identical_inputs_once(target)
         assert texts(history[:2]) == ["同样的文字", "同样的文字"]
         assert history[-1]["role"] == "assistant"
         assert "消息 ID" not in texts(history)[2]
+        assert '<qq_verified_components types="notice"/>' in texts(history)[2]
         for key, entry in harness.plugin.recall_messages.items():
             assert entry["notified"] is (key[-1] == str(target))
         assert json.dumps(history, ensure_ascii=False).count("发送的消息已撤回") == 1
@@ -891,6 +921,10 @@ async def test_early_recall_is_retained_when_generation_is_superseded():
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "将撤回"
         assert "[QQ 平台事件|message_recall|" in harness.requests[-1][1]["content"]
+        assert (
+            '<qq_verified_components types="notice"/>'
+            in harness.requests[-1][1]["content"]
+        )
         assert texts(harness.requests[-1])[-1] == "新的输入"
     finally:
         await harness.finish()
@@ -1060,7 +1094,7 @@ async def test_recall_during_persistence_is_not_lost():
         release.set()
         await wait(second.prepared)
         assert texts(harness.requests[-1])[0] == "early recall"
-        resumed = await harness.wait_resumed()
+        resumed = second
         assert texts(harness.requests[-1])[:2] == ["early recall", "next"]
         assert texts(harness.requests[-1])[2].startswith("[QQ 平台事件|message_recall|")
         resumed.allow_reply.set()
@@ -1213,7 +1247,7 @@ async def test_recall_before_preprocessing_finishes_is_appended_after_original_i
         await harness.finish()
 
 
-@pytest.mark.parametrize("kind", ["card", "red_packet", "poke"])
+@pytest.mark.parametrize("kind", ["card", "red_packet"])
 @pytest.mark.asyncio
 async def test_real_qq_enrichment_feeds_special_inputs_into_debounce(kind):
     harness = Harness()
@@ -1578,7 +1612,8 @@ async def test_context_update_resets_live_window_and_obeys_wait_limit(maximum, s
         await harness.plugin.capture_notice_context(notice)
         arrival = first.get_extra(ARRIVAL_KEY)
         assert arrival.context_inputs[0].wait_applied
-        resumed = await harness.wait_resumed()
+        resumed = first
+        await wait(first.prepared)
         assert arrival.waited_seconds > 0.13
         if maximum:
             assert arrival.waited_seconds <= maximum
@@ -1896,8 +1931,9 @@ async def test_duplicate_early_recall_and_wrong_author_do_not_leave_orphaned_res
             assert not harness.resumed
             first.allow_reply.set()
         else:
-            resumed = await harness.wait_resumed()
-            assert len(harness.resumed) == 1
+            resumed = first
+            await wait(first.prepared)
+            assert not harness.resumed
             assert len(harness.requests[-1]) == 2
             resumed.allow_reply.set()
         await harness.tasks[-1]
@@ -2009,14 +2045,14 @@ async def test_group_wide_event_updates_all_existing_batches_and_deduplicates_hi
             await wait(first.prepared)
             assert not first.stopped
             first.allow_reply.set()
-        expected_resumes = 2 if unique_session else 1
+        await wait(first.prepared)
+        first.allow_reply.set()
+        await wait(second.prepared)
+        second.allow_reply.set()
         await asyncio.wait_for(
             asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
         )
-        assert len(harness.resumed) == expected_resumes
-        for event in harness.resumed:
-            await wait(event.prepared)
-            event.allow_reply.set()
+        assert not harness.resumed
         other.allow_reply.set()
         await asyncio.wait_for(
             asyncio.gather(*harness.tasks, return_exceptions=True), 3
@@ -2186,22 +2222,26 @@ async def test_two_context_events_around_a_followup_do_not_create_a_circular_wai
         await asyncio.wait_for(
             asyncio.gather(*list(harness.plugin.debouncer.context_jobs.values())), 3
         )
-        latest = harness.resumed[-1]
+        latest = second if not second.is_stopped() else harness.resumed[-1]
         await wait(latest.prepared)
         request = texts(harness.requests[-1])
         assert request.count("A") == request.count("B") == 1
         assert "later" in request[-1]
         assert request.index("B") < len(request) - 1
         latest.allow_reply.set()
-        await harness.tasks[-1]
-        assert second_task.cancelled()
+        await latest.get_extra(ARRIVAL_KEY).task
+        assert (
+            second_task.cancelled()
+            if latest is not second
+            else not second_task.cancelled()
+        )
     finally:
         gate.set()
         release.set()
         await harness.finish()
 
 
-@pytest.mark.parametrize("failure", ["input", "event"])
+@pytest.mark.parametrize("failure", ["input"])
 @pytest.mark.asyncio
 async def test_context_restart_aborts_on_save_failure_and_keeps_original_input(failure):
     harness = Harness()

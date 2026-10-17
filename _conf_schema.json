@@ -22,8 +22,16 @@
         "description": "工具暴露模式",
         "hint": "默认完整模式：群聊提供配置启用的全量工具，权限在执行时校验；私聊仍按会话与权限筛选。精简和平衡模式按请求动态裁剪工具，可能降低提示词缓存命中率，产生更多费用，请谨慎开启。",
         "default": "full",
-        "options": ["compact", "balanced", "full"],
-        "labels": ["精简", "平衡", "完整"]
+        "options": [
+          "compact",
+          "balanced",
+          "full"
+        ],
+        "labels": [
+          "精简",
+          "平衡",
+          "完整"
+        ]
       },
       "inject_dialogue_prompt": {
         "type": "bool",
@@ -175,7 +183,7 @@
       "max_messages": {
         "type": "int",
         "description": "一批连续输入的最大条数",
-        "hint": "包括加入批次的 context 事件。达到限制后等待前批完成，再处理后续普通输入；context 事件仅追加历史。",
+        "hint": "包括加入批次的 context/respond 事件。达到限制后等待前批完成，再处理后续输入；context 事件仅追加历史，respond 仍可排队独立回复。",
         "default": 8,
         "minimum": 2,
         "maximum": 100
@@ -192,7 +200,10 @@
         "type": "list",
         "description": "不参与防抖的消息前缀",
         "hint": "空列表表示不按前缀排除；已经由命令或其他插件处理的消息仍沿用原流程。",
-        "default": ["/", "!"]
+        "default": [
+          "/",
+          "!"
+        ]
       }
     }
   },
@@ -217,7 +228,7 @@
       "component_spoof_protection": {
         "type": "object",
         "description": "QQ 组件防伪",
-        "hint": "根据真实消息结构生成组件类型验证标签；用户输入的验证标签会被移除",
+        "hint": "根据真实消息结构和规范化的平台事件生成类型验证标签；用户输入的验证标签会被移除",
         "default": {},
         "items": {
           "enabled": {
@@ -234,9 +245,17 @@
           },
           "protected_types": {
             "type": "list",
-            "description": "需要防伪的 QQ 组件类型",
-            "hint": "按此列表验证真实组件类型并生成系统提示词，不影响用户验证标签的移除范围。允许 red_packet、voice、dice、rps、basketball、poke、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；basketball 验证随机投篮篮球，静态篮球仍归 face；已有列表需补入 basketball 才会验证随机投篮篮球；防伪开启时不能为空。",
-            "default": ["red_packet", "voice", "dice", "rps", "basketball", "poke"]
+            "description": "需要防伪的 QQ 组件与平台事件类型",
+            "hint": "按此列表验证真实组件与平台事件并生成系统提示词，不影响用户验证标签的移除范围。允许 red_packet、voice、dice、rps、basketball、poke、notice、face、market_face、image、video、file、music、contact、location、share、json_card、miniapp、xml_card、forward、online_file、flash_transfer；basketball 验证随机投篮篮球，静态篮球仍归 face；poke 验证消息中的互动表情组件，notice 验证平台事件（含戳一戳通知与撤回）；已有列表需补入 basketball、notice 才会验证对应类型；防伪开启时不能为空。",
+            "default": [
+              "red_packet",
+              "voice",
+              "dice",
+              "rps",
+              "basketball",
+              "poke",
+              "notice"
+            ]
           }
         }
       }
@@ -262,24 +281,52 @@
     "items": {
       "respond_to_poke": {
         "type": "bool",
-        "description": "被戳一戳时允许唤醒模型回复",
+        "description": "旧版戳一戳开关（自动迁移）",
         "hint": "仅处理 target_id 为机器人自身的 poke 通知。",
-        "default": true
+        "default": null,
+        "invisible": true
       },
       "respond_to_red_packet": {
         "type": "bool",
         "description": "识别到红包时允许唤醒模型回复",
-        "hint": "NapCat 4.18.19 的 walletElement 识别要求网络适配器开启 debug。",
+        "hint": "NapCat 4.18.19 的 walletElement 识别要求网络适配器开启 debug。SnowLuma 会把红包作为普通文本消息来回复。",
         "default": true
       }
     }
   },
   "notice_events": {
     "type": "object",
-    "description": "平台事件感知",
-    "hint": "消息撤回与原有 11 类平台事件默认 context，另有 6 类默认 off。context 不独立唤醒模型；所有事件均可更新关联的未完成防抖批次，重置等待或安全取消后继续生成。无关联批次时仅追加已有会话历史。",
+    "description": "平台事件处理",
+    "hint": "off：关闭；context：仅记录事件作为上下文；respond：记录事件并允许模型回复。机器人账号掉线不支持 respond。",
     "default": {},
     "items": {
+      "notify/poke": {
+        "type": "object",
+        "description": "戳一戳",
+        "default": {},
+        "items": {
+          "mode": {
+            "type": "string",
+            "description": "处理模式（机器人被戳）",
+            "options": [
+              "off",
+              "context",
+              "respond"
+            ],
+            "default": null
+          },
+          "other_target_mode": {
+            "type": "string",
+            "description": "处理模式（其他用户被戳）",
+            "options": [
+              "off",
+              "context",
+              "respond"
+            ],
+            "default": "context"
+          }
+        }
+      },
       "message_recall": {
         "type": "object",
         "description": "消息撤回",
@@ -290,7 +337,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -306,7 +354,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -322,7 +371,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -338,7 +388,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -354,7 +405,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -370,7 +422,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -386,7 +439,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -402,7 +456,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -418,7 +473,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -434,7 +490,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -450,7 +507,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -466,7 +524,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "context"
           }
@@ -483,7 +542,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "off"
           }
@@ -499,7 +559,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "off"
           }
@@ -515,7 +576,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "off"
           }
@@ -532,7 +594,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "off"
           }
@@ -549,7 +612,8 @@
             "description": "处理模式",
             "options": [
               "off",
-              "context"
+              "context",
+              "respond"
             ],
             "default": "off"
           }
@@ -558,6 +622,7 @@
       "bot_offline": {
         "type": "object",
         "description": "机器人账号掉线",
+        "hint": "掉线期间无法通过本账号可靠发送通知，因此不支持 respond。context 将掉线事实写入指定管理员的已有私聊历史，供后续对话读取。",
         "default": {},
         "items": {
           "mode": {
@@ -584,8 +649,18 @@
     "description": "事件记录",
     "default": {},
     "items": {
-      "enabled_types": {"type": "list", "description": "需要记录的 OneBot 事件类型；留空表示全部支持的类型", "default": []},
-      "retention_days": {"type": "int", "description": "事件保留天数", "default": 15, "minimum": 1, "maximum": 365}
+      "enabled_types": {
+        "type": "list",
+        "description": "需要记录的 OneBot 事件类型；留空表示全部支持的类型",
+        "default": []
+      },
+      "retention_days": {
+        "type": "int",
+        "description": "事件保留天数",
+        "default": 15,
+        "minimum": 1,
+        "maximum": 365
+      }
     }
   },
   "audit": {
@@ -593,7 +668,13 @@
     "description": "审计",
     "default": {},
     "items": {
-      "retention_days": {"type": "int", "description": "审计保留天数", "default": 30, "minimum": 7, "maximum": 365}
+      "retention_days": {
+        "type": "int",
+        "description": "审计保留天数",
+        "default": 30,
+        "minimum": 7,
+        "maximum": 365
+      }
     }
   },
   "context_images": {
@@ -601,13 +682,56 @@
     "description": "图片历史轻量化",
     "default": {},
     "items": {
-      "enabled": {"type": "bool", "description": "启用图片历史轻量化", "hint": "图片保存为历史上下文时替换为轻量引用；需要时模型可通过 qq_media.inspect 重新加载原图。", "default": true},
-      "group_cache_enabled": {"type": "bool", "description": "缓存群聊上下文图片", "hint": "需要开启 AstrBot 群聊上下文注入。保留已下载的图片并注入可回看的引用，不额外下载或自动识图。", "default": true},
-      "group_cache_max_mb": {"type": "int", "description": "全插件群聊图片缓存上限（MiB）", "hint": "相同图片共用文件，空间不足时淘汰最早收到的图片。独立于长期图片归档容量。", "default": 256, "minimum": 1, "maximum": 10240},
-      "group_cache_ttl_hours": {"type": "int", "description": "群聊图片缓存保留小时数", "hint": "按最后一次收到该图片计算；查看不会续期。过期后引用明确提示不可用。", "default": 24, "minimum": 1, "maximum": 168},
-      "orphan_grace_days": {"type": "int", "description": "图片引用从历史消失后的自然日宽限天数", "default": 3, "minimum": 1, "maximum": 30},
-      "retention_days": {"type": "int", "description": "原图最长保留自然日数", "hint": "按 AstrBot 所在主机的本地日期计算；0 表示关闭绝对保留期，孤儿与容量清理仍然生效。", "default": 30, "minimum": 0},
-      "max_storage_mb": {"type": "int", "description": "会话原图总存储上限（MiB）", "hint": "空间不足时按本地自然日从最早日期开始整日淘汰，无论图片是否仍被会话历史引用。", "default": 2048, "minimum": 64, "maximum": 10240}
+      "enabled": {
+        "type": "bool",
+        "description": "启用图片历史轻量化",
+        "hint": "图片保存为历史上下文时替换为轻量引用；需要时模型可通过 qq_media.inspect 重新加载原图。",
+        "default": true
+      },
+      "group_cache_enabled": {
+        "type": "bool",
+        "description": "缓存群聊上下文图片",
+        "hint": "需要开启 AstrBot 群聊上下文注入。保留已下载的图片并注入可回看的引用，不额外下载或自动识图。",
+        "default": true
+      },
+      "group_cache_max_mb": {
+        "type": "int",
+        "description": "全插件群聊图片缓存上限（MiB）",
+        "hint": "相同图片共用文件，空间不足时淘汰最早收到的图片。独立于长期图片归档容量。",
+        "default": 256,
+        "minimum": 1,
+        "maximum": 10240
+      },
+      "group_cache_ttl_hours": {
+        "type": "int",
+        "description": "群聊图片缓存保留小时数",
+        "hint": "按最后一次收到该图片计算；查看不会续期。过期后引用明确提示不可用。",
+        "default": 24,
+        "minimum": 1,
+        "maximum": 168
+      },
+      "orphan_grace_days": {
+        "type": "int",
+        "description": "图片引用从历史消失后的自然日宽限天数",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 30
+      },
+      "retention_days": {
+        "type": "int",
+        "description": "原图最长保留自然日数",
+        "hint": "按 AstrBot 所在主机的本地日期计算；0 表示关闭绝对保留期，孤儿与容量清理仍然生效。",
+        "default": 30,
+        "minimum": 0
+      },
+      "max_storage_mb": {
+        "type": "int",
+        "description": "会话原图总存储上限（MiB）",
+        "hint": "空间不足时按本地自然日从最早日期开始整日淘汰，无论图片是否仍被会话历史引用。",
+        "default": 2048,
+        "minimum": 64,
+        "maximum": 10240
+      }
     }
   },
   "cross_session_handoff": {
@@ -628,13 +752,55 @@
     "description": "网页阅读",
     "default": {},
     "items": {
-      "enabled": {"type": "bool", "description": "启用网页阅读", "hint": "关闭后隐藏并禁用本插件的三个网页工具，不影响内置搜索或 QQ 功能。", "default": true},
-      "cache_ttl_seconds": {"type": "int", "description": "网页快照有效期（秒）", "default": 900, "minimum": 30, "maximum": 86400},
-      "max_cached_pages": {"type": "int", "description": "最多缓存网页数", "default": 32, "minimum": 1, "maximum": 256},
-      "max_cache_mb": {"type": "int", "description": "网页缓存上限（MiB）", "default": 16, "minimum": 1, "maximum": 128},
-      "max_download_size_mb": {"type": "int", "description": "单页下载上限（MiB）", "hint": "与 network.max_download_size_mb 取较小值，按解压后的响应计量。", "default": 2, "minimum": 1, "maximum": 16},
-      "max_text_chars": {"type": "int", "description": "单页正文字符上限", "default": 200000, "minimum": 1000, "maximum": 1000000},
-      "max_concurrent_requests": {"type": "int", "description": "网页抓取与解析并发上限", "default": 2, "minimum": 1, "maximum": 8}
+      "enabled": {
+        "type": "bool",
+        "description": "启用网页阅读",
+        "hint": "关闭后隐藏并禁用本插件的三个网页工具，不影响内置搜索或 QQ 功能。",
+        "default": true
+      },
+      "cache_ttl_seconds": {
+        "type": "int",
+        "description": "网页快照有效期（秒）",
+        "default": 900,
+        "minimum": 30,
+        "maximum": 86400
+      },
+      "max_cached_pages": {
+        "type": "int",
+        "description": "最多缓存网页数",
+        "default": 32,
+        "minimum": 1,
+        "maximum": 256
+      },
+      "max_cache_mb": {
+        "type": "int",
+        "description": "网页缓存上限（MiB）",
+        "default": 16,
+        "minimum": 1,
+        "maximum": 128
+      },
+      "max_download_size_mb": {
+        "type": "int",
+        "description": "单页下载上限（MiB）",
+        "hint": "与 network.max_download_size_mb 取较小值，按解压后的响应计量。",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 16
+      },
+      "max_text_chars": {
+        "type": "int",
+        "description": "单页正文字符上限",
+        "default": 200000,
+        "minimum": 1000,
+        "maximum": 1000000
+      },
+      "max_concurrent_requests": {
+        "type": "int",
+        "description": "网页抓取与解析并发上限",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 8
+      }
     }
   },
   "limits": {
@@ -642,12 +808,48 @@
     "description": "输出与消息限制",
     "default": {},
     "items": {
-      "page_size": {"type": "int", "description": "默认页大小", "default": 20, "minimum": 1, "maximum": 100},
-      "max_page_size": {"type": "int", "description": "最大页大小", "default": 100, "minimum": 1, "maximum": 200},
-      "max_output_chars": {"type": "int", "description": "最大工具输出字符数", "default": 12000, "minimum": 1000, "maximum": 50000},
-      "max_forward_nodes": {"type": "int", "description": "最大合并转发节点数", "default": 30, "minimum": 1, "maximum": 100},
-      "max_forward_depth": {"type": "int", "description": "最大合并转发展开深度", "default": 3, "minimum": 1, "maximum": 5},
-      "max_components": {"type": "int", "description": "单条消息最大组件数", "default": 30, "minimum": 1, "maximum": 100}
+      "page_size": {
+        "type": "int",
+        "description": "默认页大小",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "max_page_size": {
+        "type": "int",
+        "description": "最大页大小",
+        "default": 100,
+        "minimum": 1,
+        "maximum": 200
+      },
+      "max_output_chars": {
+        "type": "int",
+        "description": "最大工具输出字符数",
+        "default": 12000,
+        "minimum": 1000,
+        "maximum": 50000
+      },
+      "max_forward_nodes": {
+        "type": "int",
+        "description": "最大合并转发节点数",
+        "default": 30,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "max_forward_depth": {
+        "type": "int",
+        "description": "最大合并转发展开深度",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 5
+      },
+      "max_components": {
+        "type": "int",
+        "description": "单条消息最大组件数",
+        "default": 30,
+        "minimum": 1,
+        "maximum": 100
+      }
     }
   },
   "files": {
@@ -655,11 +857,39 @@
     "description": "文件安全",
     "default": {},
     "items": {
-      "allowed_roots": {"type": "list", "description": "额外允许的绝对目录", "default": []},
-      "max_file_size_mb": {"type": "int", "description": "本地文件上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048},
-      "max_base64_size_mb": {"type": "int", "description": "Base64 解码与单次图片重载上限（MiB）", "default": 10, "minimum": 1, "maximum": 100},
-      "temp_ttl_seconds": {"type": "int", "description": "插件临时文件生命周期（秒）", "default": 21600, "minimum": 600, "maximum": 604800},
-      "cleanup_interval_seconds": {"type": "int", "description": "临时文件清理间隔（秒）", "default": 600, "minimum": 60, "maximum": 86400}
+      "allowed_roots": {
+        "type": "list",
+        "description": "额外允许的绝对目录",
+        "default": []
+      },
+      "max_file_size_mb": {
+        "type": "int",
+        "description": "本地文件上限（MiB）",
+        "default": 100,
+        "minimum": 1,
+        "maximum": 2048
+      },
+      "max_base64_size_mb": {
+        "type": "int",
+        "description": "Base64 解码与单次图片重载上限（MiB）",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "temp_ttl_seconds": {
+        "type": "int",
+        "description": "插件临时文件生命周期（秒）",
+        "default": 21600,
+        "minimum": 600,
+        "maximum": 604800
+      },
+      "cleanup_interval_seconds": {
+        "type": "int",
+        "description": "临时文件清理间隔（秒）",
+        "default": 600,
+        "minimum": 60,
+        "maximum": 86400
+      }
     }
   },
   "network": {
@@ -667,11 +897,35 @@
     "description": "网络下载安全",
     "default": {},
     "items": {
-      "allowed_domains": {"type": "list", "description": "允许的域名；留空表示不额外限制公网域名", "default": []},
-      "blocked_domains": {"type": "list", "description": "禁止的域名", "default": []},
-      "allow_private_network": {"type": "bool", "description": "允许访问私网地址", "default": false},
-      "timeout_seconds": {"type": "int", "description": "下载总超时（秒）", "default": 30, "minimum": 3, "maximum": 180},
-      "max_download_size_mb": {"type": "int", "description": "下载上限（MiB）", "default": 100, "minimum": 1, "maximum": 2048}
+      "allowed_domains": {
+        "type": "list",
+        "description": "允许的域名；留空表示不额外限制公网域名",
+        "default": []
+      },
+      "blocked_domains": {
+        "type": "list",
+        "description": "禁止的域名",
+        "default": []
+      },
+      "allow_private_network": {
+        "type": "bool",
+        "description": "允许访问私网地址",
+        "default": false
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "下载总超时（秒）",
+        "default": 30,
+        "minimum": 3,
+        "maximum": 180
+      },
+      "max_download_size_mb": {
+        "type": "int",
+        "description": "下载上限（MiB）",
+        "default": 100,
+        "minimum": 1,
+        "maximum": 2048
+      }
     }
   }
 }
