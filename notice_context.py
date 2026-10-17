@@ -217,7 +217,7 @@ def normalize_notice(raw: object) -> QQNotice | None:
     sub_type = raw.get("sub_type")
     if kind == "notify/poke":
         details = {"target_id": target_id}
-        target = "机器人" if str(target_id) == self_id else f"用户 {target_id}"
+        target = "你" if str(target_id) == self_id else f"用户 {target_id}"
         description = f"{subject}戳了{target}一下"
     elif kind == "friend_add":
         description = f"{subject}与机器人已成为好友"

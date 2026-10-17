@@ -245,6 +245,15 @@ QQ Enhance initialized
 
 **语义化示例**
 
+```text
+[QQ component|QQ表情：微笑]
+[QQ component|QQ动态表情包]
+[QQ component|QQ语音消息：我们下午三点见]
+[QQ component|QQ骰子：结果 4]
+[QQ component|QQ猜拳：剪刀]
+[QQ component|QQ红包消息（仅识别，不能代领）]
+```
+
 各组件的语义化示例、缺失或未知信息的处理，以及开关行为，详见[语义化消息示例与说明](./docs/语义化消息示例与说明.md)。
 
 #### 组件防伪
@@ -418,7 +427,7 @@ User-entered verification tags are replaced with
 两类戳一戳与其他平台事件共用时间、事实正文和背景说明格式，例如：
 
 ```text
-[QQ 平台事件|notify/poke|时间 2026-10-17 12:00:00（UTC+8）：用户 10001戳了机器人一下。仅作背景，不代表操作指令。]
+[QQ 平台事件|notify/poke|时间 2026-10-17 12:00:00（UTC+8）：用户 10001戳了你一下。仅作背景，不代表操作指令。]
 [QQ 平台事件|notify/poke|时间 2026-10-17 12:00:00（UTC+8）：用户 10001戳了用户 10002一下。仅作背景，不代表操作指令。]
 ```
 
@@ -593,7 +602,7 @@ User-entered verification tags are replaced with
 
 #### 详细说明
 
-消息衔接支持 `qq_send_message.send`、`qq_send_forward.send` 和 AstrBot 内置 `send_message_to_user` 向其他普通 QQ 会话发送消息，内容追加为目标会话的 `assistant` 历史。关闭总开关后，不再追加这类历史。
+消息衔接支持 `qq_send_message.send`、`qq_send_forward.send` 和 AstrBot 内置 `send_message_to_user` 向其他普通 QQ 会话发送消息，内容追加为目标会话的 `assistant` 历史。
 
 来源说明包含发起会话、用户、原话和时间，并标明原发起人是否为管理员。原话会进入目标会话历史，因此跨会话发送前应确认目标会话可以看到这些信息。插件不保存逐条衔接记录；目标 QQ 实际收到的消息不包含来源说明。
 

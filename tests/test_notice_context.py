@@ -23,7 +23,7 @@ from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
 CASES = [
-    ("notify/poke", {"target_id": 99}, "用户 7戳了机器人一下"),
+    ("notify/poke", {"target_id": 99}, "用户 7戳了你一下"),
     ("notify/poke", {"target_id": 8}, "用户 7戳了用户 8一下"),
     ("friend_add", {}, "已成为好友"),
     ("group_increase", {"sub_type": "invite", "operator_id": 8}, "受邀请加入"),
