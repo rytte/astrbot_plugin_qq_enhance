@@ -218,7 +218,8 @@ def normalize_notice(raw: object) -> QQNotice | None:
     if kind == "notify/poke":
         details = {"target_id": target_id}
         target = "你" if str(target_id) == self_id else f"用户 {target_id}"
-        description = f"{subject}戳了{target}一下"
+        scope = f"群聊（群号 {group_id}）" if group_id else "私聊"
+        description = f"{scope}，{subject}戳了{target}一下"
     elif kind == "friend_add":
         description = f"{subject}与机器人已成为好友"
     elif kind in {"group_increase", "group_decrease", "group_admin", "essence"}:

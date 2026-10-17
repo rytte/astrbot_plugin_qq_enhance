@@ -88,6 +88,7 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
         ]
         assert [component.text for component in plain_components] == [request.prompt]
         assert "QQ 平台事件|notify/poke|" in request.prompt
+        assert f"：群聊（群号 {group_id}），用户 10001戳了" in request.prompt
         assert normalize_notice(raw).description in request.prompt
         assert request.func_tool.get_tool("qq_group_member_manage") is not None
         if exposure_mode == "full":
@@ -100,6 +101,8 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
         assert event.get_message_type() == MessageType.FRIEND_MESSAGE
         assert event.get_group_id() == ""
         assert request.prompt == normalize_notice(raw).render()
+        assert "：私聊，用户 10001戳了" in request.prompt
+        assert "群聊（群号" not in request.prompt
         assert request.func_tool.get_tool("qq_friend_interact") is not None
         assert request.func_tool.get_tool("qq_group_member_manage") is None
     assert event.message_obj.message_str == request.prompt
@@ -192,6 +195,9 @@ async def test_poke_uses_unified_event_policy_and_message_format(
         raw["group_id"] = int(group)
     source = Event("", None, group=group, raw=raw)
     source.is_at_or_wake_command = False
+    scope = f"群聊（群号 {group}）" if group else "私聊"
+    target = "你" if target_id == 99 else "用户 8"
+    assert normalize_notice(raw).description == f"{scope}，用户 7戳了{target}一下"
     policy = harness.plugin.config["notice_events"]["notify/poke"]
     policy["mode"] = mode if target_id == 99 else "off"
     policy["other_target_mode"] = mode if target_id != 99 else "off"
@@ -211,6 +217,7 @@ async def test_poke_uses_unified_event_policy_and_message_format(
         assert len(history) == {"off": 0, "context": 1, "respond": 2}[mode]
         if mode != "off":
             assert normalize_notice(raw).render() in str(history[0])
+            assert f"：{scope}，用户 7戳了{target}一下" in str(history[0])
             assert '<qq_verified_components types="notice"/>' in str(history[0])
         assert not source.is_at_or_wake_command
         assert harness.queue.empty()
@@ -363,6 +370,7 @@ async def test_poke_verification_stays_with_its_event_across_save_paths(
                 else "".join(part.text for part in content)
             )
             assert "QQ 平台事件|notify/poke|" in request_text
+            assert "：群聊（群号 300），用户 7戳了" in request_text
             assert tag in request_text
             assert '<qq_verified_components types="poke"/>' not in request_text
             assert (tag in str(dump_messages_with_checkpoints([fact]))) is persist
@@ -380,6 +388,7 @@ async def test_poke_verification_stays_with_its_event_across_save_paths(
         history = harness.manager.history(source)
         event_rows = [row for row in history if "QQ 平台事件|notify/poke|" in str(row)]
         assert len(event_rows) == 1
+        assert "：群聊（群号 300），用户 7戳了" in str(event_rows[0])
         assert (tag in str(event_rows[0])) is persist
         for row in history:
             if row not in event_rows:

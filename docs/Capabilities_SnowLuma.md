@@ -6,7 +6,7 @@
 
 核对基线为 [SnowLuma v1.14.22 正式版](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，固定提交 [87527cb7641a5a42f8f0efb73cb066102e004dee](https://github.com/SnowLuma/SnowLuma/commit/87527cb7641a5a42f8f0efb73cb066102e004dee)。插件源码基线为 `e6ec4653a4ef3ff952e6ff666d0cdc853876a803`。
 
-核对方式：静态检查动作注册表、名称与别名、参数声明、处理器分支，以及相关消息/媒体处理代码。SnowLuma 状态文字可点击，直接定位到该固定提交的源码；“未注册”链接指向统一注册表。本文没有启动 SnowLuma、登录 QQ 或执行在线动作，因此“有实现”表示存在实际处理逻辑，不表示 QQ 实测通过，也不表示全部参数和行为与 NapCat 一致。未注册项按精确动作名称判断，相近功能不计为原名称可用。
+核对方式：静态检查动作注册表、名称与别名、参数声明、处理器分支，以及相关消息/媒体处理代码。“本文没有启动 SnowLuma、登录 QQ 或执行在线动作，因此“有实现”表示存在实际处理逻辑，不表示 QQ 实测通过，也不表示全部参数和行为与 NapCat 一致。未注册项按精确动作名称判断，相近功能不计为原名称可用。
 
 ## 核对结果统计
 
@@ -213,8 +213,6 @@ SnowLuma 列的状态口径：
 
 ## 当前适配状态
 
-`qq_send_message.lookup_face` 使用插件内置目录，本地查询表情名称、ID 和分类，无需新增 SnowLuma 动作；目录来源及数量见 [README 的表情查询说明](../README.md)。查询结果不代表客户端动画效果已获验证。
-
 已新增独立的 [SnowLuma provider](../providers/snowluma.py) 和 [v1.14.22 动作契约](../contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，接受 `>=1.14.22` 的版本，版本标识可为 `x.y.z` / `x.y.z-node`，且要求协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](../README.md#snowluma-支持范围) 为准。
 
 1. **动作注册与实际能力分别判断。** 74 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。
@@ -254,22 +252,20 @@ SnowLuma 列的状态口径：
 | `notify/group_name` | 已接入 | 使用上报的新群名。 |
 | `notify/title` | 已接入 | 使用上报的成员及新头衔。 |
 | `essence` | 已接入 | 支持添加和移除精华，保留消息 ID、作者及操作者。 |
-| `group_msg_emoji_like` | 已补齐 | 将 `sub_type=add/remove` 规范化为增减；保留数字和字母数字表情标识，数量只按原值展示。 |
+| `group_msg_emoji_like` | 已接入 | 将 `sub_type=add/remove` 规范化为增减；保留数字和字母数字表情标识，数量只按原值展示。 |
 | `notify/profile_like` | 已接入 | 按 `operator_id` 定位私聊，记录上报的点赞次数。 |
 | `notify/gray_tip` | 无法接入 | 上游仅解析部分已知灰条，不上报未知灰条原文，插件没有可用事件数据。 |
-| `notify/input_status` | 已补齐 | 接受不带 `group_id` 的私聊上报；保留原始状态码及文本，不推断状态含义。 |
+| `notify/input_status` | 已接入 | 接受不带 `group_id` 的私聊上报；保留原始状态码及文本，不推断状态含义。 |
 | `group_upload` | 已接入 | 记录上传者及文件元数据，不读取文件内容。 |
 | `online_file_receive` | 无法接入 | 上游没有在线文件取消事件；普通文件消息不能证明传输已取消。 |
 | `online_file_send` | 无法接入 | 上游没有在线文件接收或拒绝事件；发送成功不能证明对方已接收。 |
-| `bot_offline` | 已补齐 | 接收带原因的 `bot_offline`，同时将 `bot_status/offline` 作为无原因的离线事实，投递到原配置的接收者；不处理上线通知。 |
+| `bot_offline` | 已接入 | 接收带原因的 `bot_offline`，同时将 `bot_status/offline` 作为无原因的离线事实，投递到原配置的接收者；不处理上线通知。 |
 
 字段适配直接使用两种协议端当前的上报格式，不新增配置。缺少方向或方向冲突的表情回应、错误的私聊群号、机器人账号不匹配的离线通知仍会拒绝，不从表情数量、心跳或普通消息推测事件。
 
 核对依据：[OneBot 事件注册表](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/event-converter/index.ts#L79)、[通知字段转换](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/event-converter/to-notice.ts#L27)、[离线状态通知](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/instance.ts#L688)、[群名片变化触发条件](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/protocol/src/packet-pipeline.ts#L362)、[群灰条解析范围](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/protocol/src/msg-push/decoders/event-0x2dc.ts#L81)。
 
 ## 核对来源
-
-`qq_media.inspect` 和 `qq_media.inspect_animation` 是插件本地能力，分别按会话引用返回原文件或最多九帧的 3×3 动图预览及采样说明，不调用 SnowLuma 媒体接口；两者共用原图引用和会话隔离规则。
 
 - [统一动作注册表及分组绑定](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/index.ts)：普通动作、别名、流式动作及 raw action 的注册依据。
 - [动作参数解析与处理器生成](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/action-kit.ts#L491)：只解析已声明参数、校验并执行处理器。
