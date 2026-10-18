@@ -67,6 +67,11 @@ def test_unsupported_implementations_versions_and_protocols_are_rejected(info, c
         ("qq_group_request.list", {"group_id": 30001}, {"group_id": 30001}),
         ("qq_friend_list.friends", {"no_cache": False}, {}),
         (
+            "qq_user_info.detail",
+            {"user_id": 10001, "no_cache": False},
+            {"user_id": 10001},
+        ),
+        (
             "qq_group_manage.leave",
             {"group_id": 30001, "is_dismiss": False},
             {"group_id": 30001},
@@ -89,7 +94,7 @@ def test_snowluma_wire_parameters(operation, params, expected):
         ("qq_friend_history.list", {"message_id": -(2**31) - 1}),
         ("qq_status.clients", {"no_cache": True}),
         ("qq_friend_list.friends", {"no_cache": True}),
-        ("qq_user_info.stranger", {"no_cache": True}),
+        ("qq_user_info.detail", {"no_cache": True}),
         ("qq_account_manage.set_profile", {"company": "test"}),
         ("qq_account_manage.set_profile", {"email": "test@example.test"}),
         ("qq_account_manage.set_profile", {"college": "test"}),

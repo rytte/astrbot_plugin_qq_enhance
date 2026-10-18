@@ -9,7 +9,7 @@
 | 项目 | 数量 |
 |---|---:|
 | NapCat 已注册动作 | 177 |
-| 插件公开能力 | 29 个工具、83 个操作 |
+| 插件公开能力 | 29 个工具、82 个操作 |
 | 插件覆盖的 NapCat 动作 | 72 |
 
 统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 67 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
@@ -78,7 +78,7 @@
 | 群组接口 | `get_group_ignored_notifies` | 获取群忽略通知 | ✅️ | `qq_group_request.ignored` |
 | 群组接口 | `get_group_info` | 获取群信息 | ✅️ | `qq_group_info.detail` |
 | 群组接口 | `get_group_list` | 获取群列表 | ✅️ | `qq_group_list.list` |
-| 群组接口 | `get_group_member_info` | 获取群成员信息 | ✅️ | `qq_group_members.detail`<br>`qq_user_info.group_member` |
+| 群组接口 | `get_group_member_info` | 获取群成员信息 | ✅️ | `qq_group_members.detail` |
 | 群组接口 | `get_group_member_list` | 获取群成员列表 | ✅️ | `qq_group_members.list` |
 | 群组接口 | `get_group_shut_list` | 获取群禁言列表 | ✅️ | `qq_group_info.mute_list` |
 | 群组接口 | `send_group_msg` | 发送群消息 | ⚠️ 受限封装 | `qq_send_message.send` |
@@ -177,7 +177,7 @@
 | Go-CQHTTP | `get_group_msg_history` | 获取群历史消息 | ✅️ | `qq_group_history.list` |
 | Go-CQHTTP | `get_group_root_files` | 获取群根目录文件列表 | ✅️ | `qq_group_files.list_root` |
 | Go-CQHTTP | `get_online_clients` | 获取在线客户端 | ✅️ | `qq_status.clients` |
-| Go-CQHTTP | `get_stranger_info` | 获取陌生人信息 | ✅️ | `qq_user_info.stranger` |
+| Go-CQHTTP | `get_stranger_info` | 获取陌生人信息 | ✅️ | `qq_user_info.detail` |
 | Go-CQHTTP | `send_forward_msg` | 发送合并转发消息 | ❌️ | — |
 | Go-CQHTTP | `send_group_forward_msg` | 发送群合并转发消息 | ⚠️ 受限封装 | `qq_send_forward.send` |
 | Go-CQHTTP | `send_private_forward_msg` | 发送私聊合并转发消息 | ⚠️ 受限封装 | `qq_send_forward.send` |
@@ -216,7 +216,7 @@
 | `find_in_page` | find | 网页快照的字面量关键词查找 |
 | `qq_status` | `login`、`runtime`、`version`、`clients`、`capabilities` | `get_login_info`<br>`get_online_clients`<br>`get_status`<br>`get_version_info`<br>本地编排：`capabilities` |
 | `qq_account_manage` | `set_profile`、`set_avatar`、`set_online_status` | `set_online_status`<br>`set_qq_avatar`<br>`set_qq_profile` |
-| `qq_user_info` | `stranger`、`group_member` | `get_group_member_info`<br>`get_stranger_info` |
+| `qq_user_info` | `detail` | `get_stranger_info` |
 | `qq_friend_list` | `friends`、`unidirectional` | `get_friend_list`<br>`get_unidirectional_friend_list` |
 | `qq_friend_history` | `list` | `get_friend_msg_history` |
 | `qq_friend_interact` | `like`、`poke` | `friend_poke`<br>`send_like` |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
@@ -38,6 +39,87 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
     assert all(item.display_name.strip() for item in OPERATIONS)
     assert len(TOOL_OPERATIONS) == 29
+    assert len(OPERATIONS) == 82
+    assert TOOL_OPERATIONS["qq_user_info"] == ("detail",)
+    assert [
+        item.operation_id
+        for item in OPERATIONS
+        if item.action == "get_group_member_info"
+    ] == ["qq_group_members.detail"]
+
+
+@pytest.mark.parametrize(
+    "group,key", [("toolsets", "disabled_operations"), ("confirmation", "operations")]
+)
+@pytest.mark.parametrize(
+    "legacy,current",
+    [
+        ("qq_user_info.group_member", "qq_group_members.detail"),
+        ("qq_user_info.stranger", "qq_user_info.detail"),
+    ],
+)
+@pytest.mark.parametrize("order", [("old",), ("old", "new"), ("new", "old")])
+def test_legacy_user_query_rules_migrate_without_duplicates(
+    group, key, legacy, current, order
+) -> None:
+    names = {"old": legacy, "new": current}
+    operations = [names[item] for item in order]
+    raw = {group: {key: [*operations, "qq_group_members.list"]}}
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result[group][key] == [current, "qq_group_members.list"]
+    assert raw == original
+    assert validate_config(result) == result
+
+
+def test_legacy_user_query_rules_are_saved_after_migration(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "toolsets": {
+                    "disabled_operations": [
+                        "qq_user_info.group_member",
+                        "qq_group_members.detail",
+                        "qq_user_info.stranger",
+                        "qq_user_info.detail",
+                    ]
+                },
+                "confirmation": {
+                    "operations": ["qq_user_info.group_member", "qq_user_info.stranger"]
+                },
+                "notice_events": {"notify/poke": {"mode": "context"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+            return_value=str(tmp_path),
+        ),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
+    ):
+        runtime_factory.return_value.config = validate_config(dict(config))
+        plugin = QQEnhancePlugin(SimpleNamespace(register_web_api=Mock()), config)
+
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    for group, key in (
+        ("toolsets", "disabled_operations"),
+        ("confirmation", "operations"),
+    ):
+        assert plugin.config[group][key] == [
+            "qq_group_members.detail",
+            "qq_user_info.detail",
+        ]
+        assert reloaded[group][key] == plugin.config[group][key]
+    assert reloaded["notice_events"]["notify/poke"]["mode"] == "context"
 
 
 def test_version_range_is_explicit() -> None:
@@ -567,10 +649,13 @@ def test_legacy_poke_migrates_and_explicit_policy_wins_after_schema_fill(
         (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
     )
     config = AstrBotConfig(config_path=str(config_path), schema=schema)
-    with patch(
-        "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
-        return_value=str(tmp_path),
-    ), patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory:
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+            return_value=str(tmp_path),
+        ),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
+    ):
         runtime_factory.return_value.config = validate_config(dict(config))
         plugin = QQEnhancePlugin(SimpleNamespace(register_web_api=Mock()), config)
     expected = mode or ("respond" if legacy else "off")

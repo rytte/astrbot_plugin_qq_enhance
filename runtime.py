@@ -478,10 +478,20 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
     unknown_packs = set(result["toolsets"]["enabled_packs"]) - PACKS
     if unknown_packs:
         raise ValueError(f"未知能力包: {', '.join(sorted(unknown_packs))}")
+    operation_renames = {
+        "qq_user_info.group_member": "qq_group_members.detail",
+        "qq_user_info.stranger": "qq_user_info.detail",
+    }
     for group, key in (
         ("toolsets", "disabled_operations"),
         ("confirmation", "operations"),
     ):
+        # Preserve existing restrictions when renaming or removing query entries.
+        result[group][key] = list(
+            dict.fromkeys(
+                operation_renames.get(name, name) for name in result[group][key]
+            )
+        )
         unknown = set(result[group][key]) - set(OPERATION_MAP)
         if unknown:
             raise ValueError(
@@ -1653,14 +1663,14 @@ class QQRuntime:
                 or target_id != caller_id
             )
             if cross_session:
-                if spec.operation_id == "qq_user_info.stranger":
+                if spec.operation_id == "qq_user_info.detail":
                     allowed = is_admin and (
                         is_private or self.config["permissions"]["allow_cross_private"]
                     )
                     if not allowed:
                         raise QQToolError(
                             "permission_denied",
-                            "非好友公开资料查询仅允许 AstrBot 管理员发起；"
+                            "查询他人公开资料仅允许 AstrBot 管理员发起；"
                             "从群聊查询时需开启跨好友操作",
                         )
                 else:

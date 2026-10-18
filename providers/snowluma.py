@@ -32,7 +32,7 @@ class SnowLumaProvider:
             "仅返回本次 QQ 会话已观察到的设备快照，不支持强制刷新；尚无快照时查询会失败",
         ),
         "qq_friend_list.friends": ("不支持 no_cache=true 强制刷新",),
-        "qq_user_info.stranger": (
+        "qq_user_info.detail": (
             "不支持 no_cache=true；缺少可靠来源的资料字段可能省略或为空",
         ),
         "qq_group_history.list": (
@@ -54,9 +54,6 @@ class SnowLumaProvider:
         "qq_notice.send": ("不支持独立 title 字段，请将标题放入 content",),
         "qq_group_info.mute_list": ("禁言状态来源于成员列表，可能有约 60 秒延迟",),
         "qq_group_members.detail": (
-            "部分 QQ NT 未提供的资料字段使用固定值，不能视为真实成员属性",
-        ),
-        "qq_user_info.group_member": (
             "部分 QQ NT 未提供的资料字段使用固定值，不能视为真实成员属性",
         ),
         "qq_group_members.list": (
@@ -121,7 +118,7 @@ class SnowLumaProvider:
         if operation_id in {
             "qq_status.clients",
             "qq_friend_list.friends",
-            "qq_user_info.stranger",
+            "qq_user_info.detail",
         } and params.get("no_cache"):
             rejected.append("no_cache=true")
         if operation_id == "qq_group_manage.leave" and params.get("is_dismiss"):
@@ -171,7 +168,7 @@ class SnowLumaProvider:
         elif operation_id == "qq_group_files.move":
             result["parent_directory"] = result.pop("current_parent_directory")
             result["target_directory"] = result.pop("target_parent_directory")
-        elif operation_id in {"qq_friend_list.friends", "qq_user_info.stranger"}:
+        elif operation_id in {"qq_friend_list.friends", "qq_user_info.detail"}:
             result.pop("no_cache", None)
         elif operation_id == "qq_group_manage.leave":
             result.pop("is_dismiss", None)

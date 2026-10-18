@@ -54,8 +54,7 @@ OPERATION_DISPLAY_NAMES = {
     "qq_account_manage.set_profile": "修改机器人账号资料",
     "qq_account_manage.set_avatar": "修改机器人头像",
     "qq_account_manage.set_online_status": "设置机器人在线状态",
-    "qq_user_info.stranger": "查询陌生人资料",
-    "qq_user_info.group_member": "查询群成员资料",
+    "qq_user_info.detail": "查询用户公开资料",
     "qq_friend_list.friends": "获取好友列表",
     "qq_friend_list.unidirectional": "获取单向好友列表",
     "qq_friend_history.list": "获取私聊历史消息",
@@ -211,16 +210,7 @@ OPERATIONS = (
         risk="write",
         permission="astrbot_admin",
     ),
-    _op(
-        "qq_user_info", "stranger", "get_stranger_info", "friend", target_kind="private"
-    ),
-    _op(
-        "qq_user_info",
-        "group_member",
-        "get_group_member_info",
-        "group",
-        target_kind="group",
-    ),
+    _op("qq_user_info", "detail", "get_stranger_info", "friend", target_kind="private"),
     _op(
         "qq_friend_list",
         "friends",
@@ -746,8 +736,7 @@ OPERATION_PARAMETERS = {
             "listening、weather、meet_spring 或对应 QQ 基础状态码。"
         ),
     ),
-    "qq_user_info.stranger": _params("user_id", optional=("no_cache",)),
-    "qq_user_info.group_member": _params("group_id", "user_id", optional=("no_cache",)),
+    "qq_user_info.detail": _params("user_id", optional=("no_cache",)),
     "qq_friend_list.friends": _params(optional=(*PAGE_PARAMS, "no_cache")),
     "qq_friend_list.unidirectional": _params(optional=PAGE_PARAMS),
     "qq_friend_history.list": _params(
@@ -973,7 +962,7 @@ TOOL_DESCRIPTIONS = {
     "find_in_page": "在 read_url 的网页快照内进行不区分大小写的字面量查找，返回匹配行及附近正文；不执行正则表达式，不重新联网。",
     "qq_status": "查询 QQ 登录、运行、版本、客户端与消息能力。",
     "qq_account_manage": "修改机器人公开资料、头像或在线状态。",
-    "qq_user_info": "查询陌生人或群成员公开资料；查询非好友仅限管理员私聊。",
+    "qq_user_info": "查询 QQ 用户公开资料；查询他人资料需管理员权限，从群聊查询还需开启跨好友操作。",
     "qq_friend_list": "查询好友或单向好友列表。",
     "qq_friend_history": "分页查询好友私聊历史。",
     "qq_friend_interact": (

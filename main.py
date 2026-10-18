@@ -251,17 +251,31 @@ class QQEnhancePlugin(Star):
     ) -> None:
         super().__init__(context)
         self.config = validate_config(dict(config or {}))
-        if isinstance(config, AstrBotConfig) and (
-            config.get("interaction_response", {}).get("respond_to_poke") is not None
-            or config.get("notice_events", {}).get("notify/poke", {}).get("mode")
-            is None
-        ):
-            # Null schema defaults preserve the legacy value until migration.
-            config.setdefault("interaction_response", {})["respond_to_poke"] = None
-            config.setdefault("notice_events", {})["notify/poke"] = deepcopy(
-                self.config["notice_events"]["notify/poke"]
-            )
-            config.save_config()
+        if isinstance(config, AstrBotConfig):
+            config_migrated = False
+            if (
+                config.get("interaction_response", {}).get("respond_to_poke")
+                is not None
+                or config.get("notice_events", {}).get("notify/poke", {}).get("mode")
+                is None
+            ):
+                # Null schema defaults preserve the legacy value until migration.
+                config.setdefault("interaction_response", {})["respond_to_poke"] = None
+                config.setdefault("notice_events", {})["notify/poke"] = deepcopy(
+                    self.config["notice_events"]["notify/poke"]
+                )
+                config_migrated = True
+            for group, key in (
+                ("toolsets", "disabled_operations"),
+                ("confirmation", "operations"),
+            ):
+                if key in config.get(group, {}) and (
+                    config[group][key] != self.config[group][key]
+                ):
+                    config[group][key] = deepcopy(self.config[group][key])
+                    config_migrated = True
+            if config_migrated:
+                config.save_config()
         data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
@@ -2272,6 +2286,8 @@ class QQEnhancePlugin(Star):
                     "qq_message_manage",
                     "qq_media",
                 }
+                if is_admin and self.config["permissions"]["allow_cross_group"]:
+                    selected.add("qq_group_members")
             if mode == "balanced":
                 selected.update(requested)
                 if is_admin:
@@ -2723,7 +2739,7 @@ class QQEnhancePlugin(Star):
         """查询 QQ 用户公开资料。
 
         Args:
-            operation(string): stranger 或 group_member。
+            operation(string): detail。
             params(object): 当前 operation 的严格参数对象。
         """
 

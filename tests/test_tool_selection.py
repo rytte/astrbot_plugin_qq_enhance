@@ -474,6 +474,13 @@ async def test_initialize_uses_registered_tool_manager_api(
     assert all(
         manager.get_func(name).active for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES
     )
+    user_info_tool = manager.get_func("qq_user_info")
+    assert user_info_tool.parameters["properties"]["operation"]["enum"] == ["detail"]
+    assert "stranger" not in str(user_info_tool.parameters)
+    assert "group_member" not in str(user_info_tool.parameters)
+    assert manager.get_func("qq_group_members").parameters["properties"]["operation"][
+        "enum"
+    ] == ["list", "detail"]
     send_tool = manager.get_func("qq_send_message")
     params_schema = send_tool.parameters["properties"]["params"]
     params_description = params_schema["description"]
@@ -722,6 +729,46 @@ async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None
     await plugin.select_tools(PrivateAdminSelectionEvent(), request)
 
     assert request.func_tool.get_tool("qq_group_list") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+@pytest.mark.parametrize("provider", [NAPCAT, SNOWLUMA], ids=["napcat", "snowluma"])
+@pytest.mark.parametrize(
+    "is_admin,allow_cross_group", [(True, True), (True, False), (False, True)]
+)
+async def test_private_group_member_queries_use_group_tool_with_scope_checks(
+    mode, provider, is_admin, allow_cross_group
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = validate_config(
+        {
+            "toolsets": {"exposure_mode": mode, "enabled_packs": ["group"]},
+            "permissions": {"allow_cross_group": allow_cross_group},
+        }
+    )
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime._verified_platforms = {}
+    plugin.runtime.verify_platform = AsyncMock(return_value=provider)
+    plugin.runtime.config = plugin.config
+    event = PrivateAdminSelectionEvent()
+    event.is_admin = lambda: is_admin
+    request = ProviderRequest(
+        prompt="查一下 30001 中 20001 的资料",
+        func_tool=ToolSet(
+            [
+                FunctionTool(name=name, description="", parameters={"type": "object"})
+                for name in TOOL_OPERATIONS
+            ]
+        ),
+    )
+
+    await plugin.select_tools(event, request)
+
+    assert (request.func_tool.get_tool("qq_group_members") is not None) == (
+        is_admin and allow_cross_group
+    )
+    assert request.func_tool.get_tool("qq_user_info") is None
 
 
 @pytest.mark.asyncio

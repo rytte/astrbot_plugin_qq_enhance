@@ -1008,11 +1008,101 @@ async def test_cross_temporary_rejects_missing_group_id(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stranger_info_group_source_uses_cross_private_switch(tmp_path) -> None:
+@pytest.mark.parametrize("snowluma", [False, True], ids=["napcat", "snowluma"])
+async def test_group_member_query_only_uses_group_members_entry(tmp_path, snowluma):
+    runtime, client, _ = await make_runtime(tmp_path)
+    if snowluma:
+        client.version_info = {
+            "app_name": "SnowLuma",
+            "app_version": "1.14.22-node",
+            "protocol_version": "v11",
+        }
+    event = FakeEvent(group_id="30001", admin=False)
+    params = {"group_id": 30001, "user_id": 20001, "no_cache": False}
+
+    removed = json.loads(
+        await runtime.execute(event, "qq_user_info", "group_member", params)
+    )
+    assert removed["error"]["code"] == "invalid_parameters"
+    assert client.calls == []
+
+    retained = json.loads(
+        await runtime.execute(event, "qq_group_members", "detail", params)
+    )
+    assert retained["ok"] is True
+    assert retained["data"]["role"] == "member"
+    assert ("get_group_member_info", params) in client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snowluma", [False, True], ids=["napcat", "snowluma"])
+async def test_user_info_detail_uses_stranger_action(tmp_path, snowluma):
+    runtime, client, _ = await make_runtime(tmp_path)
+    if snowluma:
+        client.version_info = {
+            "app_name": "SnowLuma",
+            "app_version": "1.14.22-node",
+            "protocol_version": "v11",
+        }
+    client.responses["get_stranger_info"] = {"user_id": 30003, "nickname": "tester"}
+    event = FakeEvent(admin=True)
+    params = {"user_id": 30003, "no_cache": False}
+
+    removed = json.loads(
+        await runtime.execute(event, "qq_user_info", "stranger", params)
+    )
+    assert removed["error"]["code"] == "invalid_parameters"
+    assert client.calls == []
+
+    result = json.loads(await runtime.execute(event, "qq_user_info", "detail", params))
+    assert result["ok"] is True
+    assert result["data"]["nickname"] == "tester"
+    wire = {"user_id": 30003} if snowluma else params
+    assert ("get_stranger_info", wire) in client.calls
+    assert not any(action == "get_friend_list" for action, _ in client.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "legacy,tool,params",
+    [
+        (
+            "qq_user_info.group_member",
+            "qq_group_members",
+            {"group_id": 30001, "user_id": 20001},
+        ),
+        ("qq_user_info.stranger", "qq_user_info", {"user_id": 20001}),
+    ],
+)
+async def test_migrated_user_query_disable_rule_blocks_dispatch(
+    tmp_path, legacy, tool, params
+):
+    runtime, client, _ = await make_runtime(
+        tmp_path,
+        {"toolsets": {"disabled_operations": [legacy]}},
+    )
+
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001"),
+            tool,
+            "detail",
+            params,
+        )
+    )
+
+    assert result["error"]["code"] == "capability_unavailable"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_user_info_detail_group_source_uses_cross_private_switch(
+    tmp_path,
+) -> None:
     runtime, client, _ = await make_runtime(
         tmp_path, {"permissions": {"allow_cross_private": False}}
     )
-    spec = OPERATION_MAP["qq_user_info.stranger"]
+    spec = OPERATION_MAP["qq_user_info.detail"]
 
     assert await runtime.authorize(FakeEvent(admin=True), spec, {"user_id": 30003}) == (
         "private",
