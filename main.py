@@ -1146,7 +1146,7 @@ class QQEnhancePlugin(Star):
             run_context: Initialized AstrBot agent context.
         """
         if self.config["context_images"]["enabled"]:
-            self.context_images.mark_current_request_images(event, run_context)
+            self.context_images.bind_current_request_images(event, run_context)
         if (
             self.config.get("cross_session_handoff", {}).get("enabled", False)
             and getattr(run_context, "messages", None)
@@ -2020,19 +2020,30 @@ class QQEnhancePlugin(Star):
         return item
 
     @filter.on_agent_done(priority=-2000)
-    async def remove_inspected_images_before_history_save(
-        self, _event: AstrMessageEvent, run_context, _response
+    async def lighten_images_before_history_save(
+        self, event: AstrMessageEvent, run_context, _response
     ) -> None:
-        """Remove inspect-tool image bytes and cache paths before persistence.
+        """Archive and replace input and tool images before history persistence.
 
         Args:
-            _event: Original message event, unused by image cleanup.
+            event: Original QQ event carrying the bound conversation scope.
             run_context: Agent context containing messages awaiting persistence.
             _response: Final model response, unused by image cleanup.
         """
 
-        if self.config["context_images"]["enabled"]:
-            self.context_images.clean_runtime_images(run_context)
+        if not self.config["context_images"]["enabled"]:
+            return
+        if event.get_platform_name() != "aiocqhttp":
+            return
+        configured_id = self.config["platform"]["platform_id"]
+        if configured_id and event.get_platform_id() != configured_id:
+            return
+        try:
+            await self.context_images.finalize_images(event, run_context)
+        except ContextImageError as exc:
+            logger.warning(
+                "Failed to archive context images before history save: %s", exc.code
+            )
 
     @filter.on_llm_request()
     async def select_tools(

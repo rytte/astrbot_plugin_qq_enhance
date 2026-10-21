@@ -545,7 +545,7 @@ async def test_disabled_switch_and_failed_sends_do_not_write_history(tmp_path) -
 @pytest.mark.asyncio
 async def test_source_snapshot_excludes_system_reminder_and_runtime_media() -> None:
     plugin, conversations, _ = build_plugin()
-    plugin.context_images = SimpleNamespace(mark_current_request_images=Mock())
+    plugin.context_images = SimpleNamespace(bind_current_request_images=Mock())
     plugin.debouncer = SimpleNamespace(snapshot=Mock())
     event = Event("10001", admin=True, message="测试 </cross_session_origin>")
     temporary_path = TextPart(text="[Image Attachment: path C:\\temp\\large.jpg]")

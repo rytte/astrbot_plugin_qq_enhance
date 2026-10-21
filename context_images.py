@@ -29,7 +29,7 @@ from .group_image_cache import (
 )
 
 CONVERSATION_ID_EXTRA = "_qq_enhance_conversation_id"
-REQUEST_IMAGE_COUNT_EXTRA = "_qq_enhance_request_image_count"
+REQUEST_IMAGE_REFS_EXTRA = "_qq_enhance_request_image_refs"
 IMAGE_REF_PATTERN = re.compile(r"(?:img|gimg)_[0-9a-f]{24}")
 HISTORY_IMAGE_REF_PATTERN = re.compile(
     r"(?:\[QQ ImageRef image_ref=|；image_ref=)(img_[0-9a-f]{24})(?=[,；])"
@@ -39,6 +39,15 @@ CORE_IMAGE_ATTACHMENT_PREFIXES = (
     "[Image Attachment in quoted message: path ",
 )
 TOOL_IMAGE_PREFIX = "[Image from tool 'qq_media', path='"
+TOOL_IMAGE_ATTACHMENT_PATTERN = re.compile(
+    r"\[Image from tool '(?P<tool>[^']+)', path='(?P<path>.*)'\]", re.DOTALL
+)
+TOOL_IMAGE_RESULT_PATTERN = re.compile(
+    r"Image returned and cached at path='(?P<path>.*?)'\. "
+    r"Review the image below\. Use send_message_to_user to send it to the user "
+    r"if satisfied, with type='image' and path='(?P=path)'\.",
+    re.DOTALL,
+)
 
 
 class ContextImageError(Exception):
@@ -107,7 +116,7 @@ class ContextImageManager:
             event.set_extra(CONVERSATION_ID_EXTRA, conversation_id)
 
         inference_sources = list(getattr(request, "image_urls", None) or [])
-        event.set_extra(REQUEST_IMAGE_COUNT_EXTRA, len(inference_sources))
+        event.set_extra(REQUEST_IMAGE_REFS_EXTRA, [])
         cached_images = event.get_extra(GROUP_IMAGES_EXTRA, [])
         cached_sources = {item["source"] for item in cached_images}
         # Bind only references present in this request; do not claim other pending
@@ -153,26 +162,65 @@ class ContextImageManager:
                         source = str(image.path or image.url or image.file or "")
                         sources.append(source)
 
+        original_sources = list(sources)
         remaining_count = max(0, len(inference_sources) - len(sources))
         if remaining_count:
             sources.extend(
                 str(source) for source in inference_sources[-remaining_count:]
             )
 
-        if cached_sources:
-            for part in request.extra_user_content_parts:
-                if isinstance(part, TextPart) and part.text.startswith(
-                    CORE_IMAGE_ATTACHMENT_PREFIXES
-                ):
-                    part.mark_as_temp()
         sources = list(
             dict.fromkeys(source for source in sources if source not in cached_sources)
         )
+
+        source_records = await self._archive_sources(event, conversation_id, sources)
+        records_by_source = {
+            **{item["source"]: item for item in cached_images},
+            **source_records,
+        }
+        paired_sources = (
+            original_sources
+            if len(original_sources) == len(inference_sources)
+            else inference_sources
+        )
+        request_refs = []
+        for inference, source in zip(inference_sources, paired_sources):
+            record = records_by_source.get(inference) or records_by_source.get(source)
+            request_refs.append(record["image_ref"] if record else None)
+        event.set_extra(REQUEST_IMAGE_REFS_EXTRA, request_refs)
+
+        for part in getattr(request, "extra_user_content_parts", None) or []:
+            if isinstance(part, TextPart) and part.text.startswith(
+                CORE_IMAGE_ATTACHMENT_PREFIXES
+            ):
+                part.mark_as_temp()
+        merged = bind_image_references(event, source_records, request)
+        request.extra_user_content_parts.extend(
+            TextPart(text=self._reference_text(record))
+            for record in source_records.values()
+            if record["image_ref"] not in merged
+        )
+
+    @staticmethod
+    def _reference_text(record: dict[str, Any]) -> str:
+        return (
+            f"[QQ ImageRef image_ref={record['image_ref']}, "
+            f"{record['width']}x{record['height']}；"
+            "如需重新查看原图，调用 "
+            'qq_media(operation="inspect", '
+            f'params={{"image_ref":"{record["image_ref"]}"}})]'
+        )
+
+    async def _archive_sources(
+        self, event: Any, conversation_id: str, sources: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Validate and atomically archive one batch without modifying messages."""
         if not sources:
-            return
+            return {}
         if not conversation_id:
             raise ContextImageError(
-                "conversation_unavailable", "当前会话尚未建立，无法安全保存图片引用"
+                "conversation_unavailable",
+                "无法确定当前 AstrBot 会话，无法保存图片引用",
             )
 
         now = int(time.time())
@@ -183,7 +231,7 @@ class ContextImageManager:
             for source in sources:
                 if not source:
                     raise ContextImageError(
-                        "image_unavailable", "QQ 图片缺少可读取的原始媒体地址"
+                        "image_unavailable", "图片缺少可读取的原始媒体地址"
                     )
                 image_ref = f"img_{secrets.token_hex(12)}"
                 async with MediaResolver(
@@ -274,54 +322,28 @@ class ContextImageManager:
         except Exception as exc:
             self.remove_owned_files(created_paths)
             raise ContextImageError(
-                "image_archive_failed", "QQ 图片原图无法验证或保存"
+                "image_archive_failed", "图片原图无法验证或保存"
             ) from exc
 
-        for part in getattr(request, "extra_user_content_parts", None) or []:
-            if isinstance(part, TextPart) and part.text.startswith(
-                CORE_IMAGE_ATTACHMENT_PREFIXES
-            ):
-                part.mark_as_temp()
-        merged = bind_image_references(event, source_records, request)
-        request.extra_user_content_parts.extend(
-            TextPart(
-                text=(
-                    f"[QQ ImageRef image_ref={record['image_ref']}, "
-                    f"{record['width']}x{record['height']}；"
-                    "如需重新查看原图，调用 "
-                    'qq_media(operation="inspect", '
-                    f'params={{"image_ref":"{record["image_ref"]}"}})]'
-                )
-            )
-            for record in records
-            if record["image_ref"] not in merged
-        )
+        return source_records
 
-    def mark_current_request_images(self, event: Any, run_context: Any) -> None:
-        """Mark only the current request images as provider-only content.
-
-        Args:
-            event: Current QQ event carrying the expected image count.
-            run_context: Initialized AstrBot agent context.
-        """
-
-        remaining = event.get_extra(REQUEST_IMAGE_COUNT_EXTRA, 0)
-        if type(remaining) is not int or remaining <= 0:
-            return
+    def bind_current_request_images(self, event: Any, run_context: Any) -> None:
+        """Bind original references while retaining image bytes for debounce saves."""
+        refs = event.get_extra(REQUEST_IMAGE_REFS_EXTRA, [])
         messages = getattr(run_context, "messages", [])
-        if not messages:
+        if not refs or not messages:
             return
         current = messages[-1]
         if getattr(current, "role", None) != "user" or not isinstance(
             getattr(current, "content", None), list
         ):
             return
-        for part in reversed(current.content):
-            if remaining <= 0:
-                break
-            if isinstance(part, ImageURLPart):
-                part.mark_as_temp()
-                remaining -= 1
+        images = [part for part in current.content if isinstance(part, ImageURLPart)]
+        if len(images) < len(refs):
+            return
+        for part, image_ref in zip(images[-len(refs) :], refs):
+            if image_ref:
+                part.image_url.id = image_ref
 
     async def inspect(self, event: Any, image_ref: str) -> CallToolResult:
         """Load a scoped original image for the current model run.
@@ -442,6 +464,85 @@ class ContextImageManager:
                 "file_too_large", "图片原图超过单次视觉检查大小上限"
             )
         return await asyncio.to_thread(path.read_bytes), str(record["mime_type"])
+
+    async def finalize_images(self, event: Any, run_context: Any) -> None:
+        """Replace all persistent image payloads only after the agent has finished.
+
+        References attached to inbound images survive debounce serialization in
+        ``image_url.id``. Other images, including results from arbitrary tools,
+        are archived as one batch before any of those payloads are filtered.
+        Archive failures leave the unarchived images intact and raise an error.
+        """
+        self.clean_runtime_images(run_context)
+        messages = getattr(run_context, "messages", [])
+        images: list[tuple[ImageURLPart, TextPart | None, str | None]] = []
+        sources: list[str] = []
+        for message in messages:
+            if getattr(message, "_no_save", False) or not isinstance(
+                getattr(message, "content", None), list
+            ):
+                continue
+            text = "\n".join(
+                part.text for part in message.content if isinstance(part, TextPart)
+            )
+            pending_marker = None
+            for part in message.content:
+                if isinstance(part, ImageURLPart) and not part._no_save:
+                    image_ref = part.image_url.id
+                    if not (
+                        image_ref
+                        and IMAGE_REF_PATTERN.fullmatch(image_ref)
+                        and image_ref in text
+                    ):
+                        image_ref = None
+                        sources.append(part.image_url.url)
+                    images.append((part, pending_marker, image_ref))
+                pending_marker = (
+                    part
+                    if isinstance(part, TextPart)
+                    and TOOL_IMAGE_ATTACHMENT_PATTERN.fullmatch(part.text)
+                    else None
+                )
+
+        records = await self._archive_sources(
+            event,
+            event.get_extra(CONVERSATION_ID_EXTRA, ""),
+            list(dict.fromkeys(sources)),
+        )
+        cache_refs: dict[str, str] = {}
+        replacements: dict[int, TextPart] = {}
+        for part, marker, image_ref in images:
+            if image_ref is None:
+                record = records[part.image_url.url]
+                image_ref = record["image_ref"]
+                replacements[id(part)] = TextPart(text=self._reference_text(record))
+            part.mark_as_temp()
+            if marker is not None:
+                match = TOOL_IMAGE_ATTACHMENT_PATTERN.fullmatch(marker.text)
+                assert match is not None
+                cache_refs[match["path"]] = image_ref
+                marker.mark_as_temp()
+
+        for message in messages:
+            content = getattr(message, "content", None)
+            if isinstance(content, list):
+                expanded = []
+                for part in content:
+                    if replacement := replacements.get(id(part)):
+                        expanded.append(replacement)
+                    expanded.append(part)
+                message.content = expanded
+            elif getattr(message, "role", None) == "tool" and isinstance(content, str):
+
+                def replace_cache_path(match: re.Match[str]) -> str:
+                    image_ref = cache_refs.get(match["path"])
+                    if image_ref is None:
+                        return match[0]
+                    return f"图片已在当时的推理轮次中提供，历史引用为 {image_ref}。"
+
+                message.content = TOOL_IMAGE_RESULT_PATTERN.sub(
+                    replace_cache_path, content
+                )
 
     def clean_runtime_images(self, run_context: Any) -> None:
         """Prevent inspect-tool image bytes and cache paths from persistence.

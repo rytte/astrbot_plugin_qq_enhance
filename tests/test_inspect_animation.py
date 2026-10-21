@@ -149,7 +149,7 @@ async def test_private_semantics_binds_real_archive_reference_without_preprocess
     record = (await storage.list_context_images())[0]
     image_ref = record["image_ref"]
     expected = (
-        f'[QQ component|{label}；image_ref={image_ref}；32x24；'
+        f"[QQ component|{label}；image_ref={image_ref}；32x24；"
         '如需查看原图，调用 qq_media(operation="inspect", '
         f'params={{"image_ref":"{image_ref}"}})'
     )
@@ -475,8 +475,8 @@ async def test_runtime_dispatches_animation_preview_without_upstream_media_call(
             ),
         ],
     )
-    runtime.context_images.clean_runtime_images(
-        SimpleNamespace(messages=[assistant, tool, attachment])
+    await runtime.context_images.finalize_images(
+        event, SimpleNamespace(messages=[assistant, tool, attachment])
     )
     assert tool.content == result.content[0].text
     assert attachment._no_save is True

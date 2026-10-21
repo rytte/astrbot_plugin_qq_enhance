@@ -130,12 +130,12 @@ async def test_current_group_images_reuse_cache_without_second_archive(
     await plugin.virtualize_context_images(event, request)
     assert await storage.list_context_images() == []
     assert len(list(manager.group_cache.root.glob("blob_*"))) == 1
-    assert (
-        sum(prefix in part.text for part in request.extra_user_content_parts)
-        == 1
-    )
+    assert sum(prefix in part.text for part in request.extra_user_content_parts) == 1
     assembled = Message.model_validate(await request.assemble_context())
-    manager.mark_current_request_images(event, SimpleNamespace(messages=[assembled]))
+    manager.bind_current_request_images(event, SimpleNamespace(messages=[assembled]))
+    assert "data:image" in str(dump_messages_with_checkpoints([assembled]))
+    await manager.finalize_images(event, SimpleNamespace(messages=[assembled]))
+    assert await storage.list_context_images() == []
     persisted = str(dump_messages_with_checkpoints([assembled]))
     assert "data:image" not in persisted
     assert "gimg_" in persisted

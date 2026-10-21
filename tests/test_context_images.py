@@ -59,6 +59,9 @@ class Event:
     def get_platform_id(self) -> str:
         return self.platform_id
 
+    def get_platform_name(self) -> str:
+        return "aiocqhttp"
+
     def get_extra(self, key: str, default=None):
         return self.extras.get(key, default)
 
@@ -96,8 +99,8 @@ async def test_disabled_switch_skips_all_context_image_hooks() -> None:
     plugin.config = {"context_images": {"enabled": False}}
     plugin.context_images = SimpleNamespace(
         prepare_request=AsyncMock(),
-        mark_current_request_images=Mock(),
-        clean_runtime_images=Mock(),
+        bind_current_request_images=Mock(),
+        finalize_images=AsyncMock(),
     )
     plugin.debouncer = SimpleNamespace(snapshot=Mock())
     event = SimpleNamespace()
@@ -106,11 +109,11 @@ async def test_disabled_switch_skips_all_context_image_hooks() -> None:
 
     await plugin.virtualize_context_images(event, request)
     await plugin.snapshot_debounce_input(event, run_context)
-    await plugin.remove_inspected_images_before_history_save(event, run_context, None)
+    await plugin.lighten_images_before_history_save(event, run_context, None)
 
     plugin.context_images.prepare_request.assert_not_awaited()
-    plugin.context_images.mark_current_request_images.assert_not_called()
-    plugin.context_images.clean_runtime_images.assert_not_called()
+    plugin.context_images.bind_current_request_images.assert_not_called()
+    plugin.context_images.finalize_images.assert_not_awaited()
     plugin.debouncer.snapshot.assert_called_once_with(event, run_context)
     assert request.image_urls == ["original-image"]
 
@@ -184,7 +187,18 @@ async def test_request_keeps_inference_image_but_persists_only_image_ref(
     )
 
     run_context = SimpleNamespace(messages=[current])
-    manager.mark_current_request_images(event, run_context)
+    manager.bind_current_request_images(event, run_context)
+    snapshot = json.dumps(dump_messages_with_checkpoints(run_context.messages))
+    assert "data:image" in snapshot
+    image_part = next(
+        part for part in current.content if isinstance(part, ImageURLPart)
+    )
+    assert image_part._no_save is False
+    assert (
+        image_part.image_url.id == (await storage.list_context_images())[0]["image_ref"]
+    )
+
+    await manager.finalize_images(event, run_context)
     dumped = dump_messages_with_checkpoints(run_context.messages)
     serialized = json.dumps(dumped, ensure_ascii=False)
     assert "data:image" not in serialized
@@ -238,9 +252,204 @@ async def test_inspect_returns_original_only_inside_exact_conversation_scope(
         await manager.inspect(event, "../original.png")
 
 
+@pytest.mark.asyncio
+async def test_bind_keeps_exact_image_sources_when_request_order_changes(tmp_path):
+    manager, storage, _ = await build_manager(tmp_path)
+    paths = [tmp_path / "first.png", tmp_path / "second.png"]
+    payloads = [save_image(path, "PNG", (9 + i, 7)) for i, path in enumerate(paths)]
+    event = Event()
+    event.message_obj.message = [Image(file=str(path)) for path in paths]
+    request = ProviderRequest(
+        conversation=SimpleNamespace(cid="conversation-a"),
+        image_urls=[str(path) for path in reversed(paths)],
+    )
+    await manager.prepare_request(event, request)
+    message = Message.model_validate(await request.assemble_context())
+    run_context = SimpleNamespace(messages=[message])
+    manager.bind_current_request_images(event, run_context)
+    images = [part for part in message.content if isinstance(part, ImageURLPart)]
+    for image, payload in zip(images, reversed(payloads)):
+        original = await manager.inspect(event, image.image_url.id)
+        assert base64.b64decode(original.content[1].data) == payload
+
+    await manager.finalize_images(event, run_context)
+
+    assert len(await storage.list_context_images()) == 2
+    assert "data:image" not in json.dumps(dump_messages_with_checkpoints([message]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["draw_picture", "mcp__images__render"])
+async def test_other_tool_images_are_archived_at_finish_without_losing_text(
+    tmp_path: Path, tool_name: str
+) -> None:
+    manager, storage, _ = await build_manager(tmp_path)
+    event = Event()
+    await manager.prepare_request(
+        event, ProviderRequest(conversation=SimpleNamespace(cid="conversation-a"))
+    )
+    paths = ["C:\\temp\\artist's first.png", "C:\\temp\\second.png"]
+    payloads = [
+        save_image(tmp_path / f"source-{index}.png", "PNG", (10 + index, 8))
+        for index in range(2)
+    ]
+    notices = [
+        f"Image returned and cached at path='{path}'. "
+        "Review the image below. Use send_message_to_user to send it to the user "
+        f"if satisfied, with type='image' and path='{path}'."
+        for path in paths
+    ]
+    tool = Message(
+        role="tool",
+        tool_call_id="other-call",
+        content="\n\n".join(
+            ["生成说明", notices[0], "第二张的说明", notices[1], "末尾正文"]
+        ),
+    )
+    parts = [TextPart(text="混合消息中的其他内容")]
+    for path, payload in zip(paths, payloads):
+        parts.extend(
+            [
+                TextPart(text=f"[Image from tool '{tool_name}', path='{path}']"),
+                ImageURLPart(
+                    image_url=ImageURLPart.ImageURL(
+                        url="data:image/png;base64,"
+                        + base64.b64encode(payload).decode(),
+                        id=path,
+                    )
+                ),
+            ]
+        )
+    attachment = Message(role="user", content=parts)
+    run_context = SimpleNamespace(messages=[tool, attachment])
+    assert await storage.list_context_images() == []
+    assert all(not part._no_save for part in parts)
+
+    await manager.finalize_images(event, run_context)
+
+    records = await storage.list_context_images()
+    assert len(records) == 2
+    assert tool.tool_call_id == "other-call"
+    assert all(
+        text in tool.content for text in ("生成说明", "第二张的说明", "末尾正文")
+    )
+    assert attachment._no_save is False
+    serialized = json.dumps(dump_messages_with_checkpoints(run_context.messages))
+    assert "data:image" not in serialized
+    assert "C:" not in serialized
+    assert "Image from tool" not in serialized
+    assert attachment.content[0].text == "混合消息中的其他内容"
+    for record, payload in zip(records, payloads):
+        assert record["image_ref"] in serialized
+        assert record["image_ref"] in tool.content
+        result = await manager.inspect(event, record["image_ref"])
+        assert base64.b64decode(result.content[1].data) == payload
+
+    await manager.finalize_images(event, run_context)
+    assert len(await storage.list_context_images()) == 2
+    assert (
+        json.dumps(dump_messages_with_checkpoints(run_context.messages)) == serialized
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["user", "assistant", "tool"])
+async def test_unbound_images_get_their_own_refs_without_reusing_unrelated_text(
+    tmp_path: Path, role: str
+) -> None:
+    manager, storage, _ = await build_manager(tmp_path)
+    event = Event()
+    event.set_extra(CONVERSATION_ID_EXTRA, "conversation-a")
+    payload = save_image(tmp_path / "image.png", "PNG", (7, 5))
+    message = Message(
+        role=role,
+        content=[
+            TextPart(text="提到旧图 img_0123456789abcdef01234567"),
+            ImageURLPart(
+                image_url=ImageURLPart.ImageURL(
+                    url="data:image/png;base64," + base64.b64encode(payload).decode()
+                )
+            ),
+        ],
+    )
+
+    await manager.finalize_images(event, SimpleNamespace(messages=[message]))
+
+    record = (await storage.list_context_images())[0]
+    persisted = json.dumps(dump_messages_with_checkpoints([message]))
+    assert record["image_ref"] in persisted
+    assert "data:image" not in persisted
+    assert Path(record["path"]).read_bytes() == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["storage_full", "conversation_unavailable", "invalid_image"]
+)
+async def test_failed_final_archive_keeps_unarchived_images_and_creates_no_false_ref(
+    tmp_path: Path, failure: str
+) -> None:
+    manager, storage, _ = await build_manager(tmp_path)
+    event = Event()
+    if failure != "conversation_unavailable":
+        event.set_extra(CONVERSATION_ID_EXTRA, "conversation-a")
+    payload = save_image(tmp_path / "image.png", "PNG", (7, 5))
+    if failure == "storage_full":
+        manager.max_storage_bytes = 1
+    if failure == "invalid_image":
+        payload = b"not an image"
+    message = Message(
+        role="user",
+        content=[
+            TextPart(text="[Image from tool 'draw_picture', path='image.png']"),
+            ImageURLPart(
+                image_url=ImageURLPart.ImageURL(
+                    url="data:image/png;base64," + base64.b64encode(payload).decode()
+                )
+            ),
+        ],
+    )
+    before = dump_messages_with_checkpoints([message])
+
+    with pytest.raises(ContextImageError) as error:
+        await manager.finalize_images(event, SimpleNamespace(messages=[message]))
+
+    assert error.value.code == (
+        "image_archive_failed" if failure == "invalid_image" else failure
+    )
+    assert dump_messages_with_checkpoints([message]) == before
+    assert all(not part._no_save for part in message.content)
+    assert await storage.list_context_images() == []
+    assert not list(manager.root.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "platform_name,platform_id", [("telegram", "platform-a"), ("aiocqhttp", "other")]
+)
+async def test_finalization_respects_configured_qq_platform(platform_name, platform_id):
+    plugin = object.__new__(QQEnhancePlugin)
+    plugin.config = {
+        "context_images": {"enabled": True},
+        "platform": {"platform_id": "platform-a"},
+    }
+    plugin.context_images = SimpleNamespace(finalize_images=AsyncMock())
+    event = SimpleNamespace(
+        get_platform_name=lambda: platform_name,
+        get_platform_id=lambda: platform_id,
+    )
+
+    await plugin.lighten_images_before_history_save(
+        event, SimpleNamespace(messages=[]), None
+    )
+
+    plugin.context_images.finalize_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prefix", ["img", "gimg"])
 @pytest.mark.parametrize("operation", ["inspect", "inspect_animation"])
-def test_inspect_tool_images_and_cache_paths_are_not_persisted(
+async def test_inspect_tool_images_and_cache_paths_are_not_persisted(
     tmp_path: Path, prefix: str, operation: str
 ) -> None:
     manager = ContextImageManager(
@@ -294,7 +503,7 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(
     )
     messages = [assistant, tool, tool_image]
 
-    manager.clean_runtime_images(SimpleNamespace(messages=messages))
+    await manager.finalize_images(Event(), SimpleNamespace(messages=messages))
 
     if operation == "inspect":
         assert tool.content == (
@@ -317,10 +526,12 @@ def test_inspect_tool_images_and_cache_paths_are_not_persisted(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "label", [None, "QQ图片", "QQ动图", "QQ表情包", "QQ动态表情包", "QQ商城表情：开[心]；动态"]
+    "label",
+    [None, "QQ图片", "QQ动图", "QQ表情包", "QQ动态表情包", "QQ商城表情：开[心]；动态"],
 )
 async def test_reconcile_keeps_live_refs_then_deletes_expired_orphans(
-    tmp_path: Path, label: str | None,
+    tmp_path: Path,
+    label: str | None,
 ) -> None:
     manager, storage, conversations = await build_manager(tmp_path)
     original = tmp_path / "original.png"
@@ -334,7 +545,9 @@ async def test_reconcile_keeps_live_refs_then_deletes_expired_orphans(
     placeholder = request.extra_user_content_parts[0].text
     record = (await storage.list_context_images())[0]
     if label:
-        placeholder = f"[QQ component|{label}；image_ref={record['image_ref']}；10x10；...]"
+        placeholder = (
+            f"[QQ component|{label}；image_ref={record['image_ref']}；10x10；...]"
+        )
     stored_path = Path(record["path"])
     scope = (event.unified_msg_origin, "conversation-a")
     conversations.histories[scope] = [
