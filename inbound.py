@@ -517,16 +517,14 @@ def _describe_component(
     component: Any,
     *,
     image_is_animated: bool | None = None,
-    image_record: Mapping[str, Any] | None = None,
-    animation_inspection_enabled: bool = True,
+    image_id: str | None = None,
 ) -> str:
     """Convert one supported OneBot message component into semantic text.
 
     Args:
         component: Raw OneBot message component.
         image_is_animated: Animation state verified from the prepared image file.
-        image_record: Real saved reference and dimensions, after saving the image.
-        animation_inspection_enabled: Whether to advertise animation inspection.
+        image_id: Optional association with a separate media reference.
 
     Returns:
         A semantic annotation, or an empty string for components already handled by
@@ -612,21 +610,8 @@ def _describe_component(
             else:
                 label = "QQ动图" if image_is_animated is True else "QQ图片"
             content = f"{label}：{summary}" if summary else label
-        if image_record:
-            image_ref = image_record["image_ref"]
-            content += f"；image_ref={image_ref}"
-            content += f"；{image_record['width']}x{image_record['height']}"
-            if image_ref.startswith("gimg_"):
-                content += "；群聊短期缓存，可能过期或被淘汰"
-            content += (
-                '；如需查看原图，调用 qq_media(operation="inspect", '
-                f'params={{"image_ref":"{image_ref}"}})'
-            )
-            if image_is_animated is True and animation_inspection_enabled:
-                content += (
-                    '；如需查看动画，调用 qq_media(operation="inspect_animation", '
-                    f'params={{"image_ref":"{image_ref}"}})'
-                )
+        if image_id:
+            content += f"；image_id={image_id}"
         return format_component_semantics(content)
 
     if component_type == "video":
@@ -725,8 +710,7 @@ def describe_inbound_event(
     max_components: int,
     max_chars: int,
     image_animations: Mapping[int, bool] | None = None,
-    image_records: Mapping[int, Mapping[str, Any]] | None = None,
-    animation_inspection_enabled: bool = True,
+    image_ids: Mapping[int, str] | None = None,
 ) -> str:
     """Describe one supported NapCat message or targeted poke notice.
 
@@ -739,8 +723,7 @@ def describe_inbound_event(
         max_components: Maximum number of raw message components to inspect.
         max_chars: Maximum semantic text appended to the model prompt.
         image_animations: Verified animation states keyed by raw message-segment index.
-        image_records: Saved image references and sizes keyed by the same index.
-        animation_inspection_enabled: Whether to advertise animation inspection.
+        image_ids: Optional image association IDs keyed by raw segment index.
 
     Returns:
         Bounded semantic text, or an empty string when the event should not be
@@ -794,15 +777,14 @@ def describe_inbound_event(
                 _describe_component(
                     component,
                     image_is_animated=(image_animations or {}).get(index),
-                    image_record=(image_records or {}).get(index),
-                    animation_inspection_enabled=animation_inspection_enabled,
+                    image_id=(image_ids or {}).get(index),
                 )
                 if semanticize_components
                 else ""
             )
             if description:
-                if (image_records or {}).get(index):
-                    # Keep tool entries whole, just like forward read entries.
+                if (image_ids or {}).get(index):
+                    # Keep the complete association ID, just like forward read entries.
                     if description not in references:
                         references.append(description)
                         reference_fallbacks[description] = _describe_component(

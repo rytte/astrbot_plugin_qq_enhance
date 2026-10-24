@@ -6,6 +6,10 @@
 
 [功能亮点](#features) · [快速开始](#quick-start) · [能力速览](#configuration) · [技术原理与配置](./docs/技术原理与配置.md#configuration) · [开发验证](./docs/技术原理与配置.md#development) · [更新日志](./CHANGELOG.md)
 
+> [!IMPORTANT]
+>
+> 原有 **图片轻量化引用、图片缓存、动图理解**相关功能已拆分至独立插件 **[Media 管理 - AstrBot Cloud](https://cloud.astrbot.app/plugin/rytte/astrbot_plugin_media_manager)**，插件市场页面搜索 “**Media 管理**” 安装即可。已实现旧数据迁移与兼容，详情见 [图片管理拆分与升级](#media)，后续版本会移除迁移与兼容代码。
+
 <a id="features"></a>
 
 ## 🌟 功能亮点
@@ -21,7 +25,7 @@
 | 好友与资料 | 查询用户资料、好友与最近联系人，点赞、修改备注、删除好友，查询、审批好友申请 |
 | 账号与状态 | 更新机器人资料、头像与在线状态，查询登录账号、运行状态、协议版本及插件能力 |
 | 群聊管理 | 查询群与成员资料，管理群名片、头衔、禁言、成员、群设置、公告和精华消息，处理入群申请与群邀请 |
-| 文件与媒体 | 查询、上传与管理群文件，获取或上传私聊文件，查看图片与动图、转换语音格式、识别图片文字 |
+| 文件与媒体 | 查询、上传与管理群文件，获取或上传私聊文件，获取图片信息、转换语音格式、识别图片文字 |
 
 完整工具清单见 [能力包与工具](#能力包与工具)，动作对应关系与协议端支持范围见 [NapCat 能力矩阵](./docs/Capabilities_NapCat.md) / [SnowLuma 能力矩阵](./docs/Capabilities_SnowLuma.md)。
 
@@ -38,8 +42,6 @@
 | 语音识别     | 识别语音内容，支持引用语音                                   |
 | 撤回感知     | 让模型知道已有消息被撤回                                     |
 | 平台事件     | 好友、群成员、群资料、精华和点赞变化的感知与处理，可按事件选择背景感知或主动回复 |
-| 图片引用     | 减少历史图片的上下文占用，支持按需回看                       |
-| 动图理解     | 对于 GIF、WebP、APNG 动图，能够按需查看（获取九帧的 3×3 动图预览和客观采样说明） |
 | 组件防伪     | 为模型提供真实组件的验证依据，减少文字冒充造成的误判         |
 | 跨会话交流   | 衔接不同会话的交流上下文，方便转达和回复                     |
 | 合并转发优化 | 合并转发追加读取入口，可以按需读取，无需引用                 |
@@ -61,8 +63,13 @@
 >
 > 同时，通过权限控制、敏感操作确认和审计，为这些交互能力划定清晰的安全边界。
 
-> [!IMPORTANT]
-> 后续可能会将 **消息防抖、网页工具、图片轻量化、跨会话衔接** 这些可拆分功能提取为独立插件（必要时按一定方式接入配合），以精简本插件的体量与维护范围，让它更专注于 QQ 特有的消息理解与拟人化交互。这些通用能力也能在拆分后更方便地跨平台复用、按需安装和独立维护。
+> [!TIP]
+>
+> **推荐扩展插件**
+>
+> [视频理解 - AstrBot Cloud](https://cloud.astrbot.app/plugin/rytte/astrbot_plugin_vision)：提供两个视频查看工具，无需专门的视频理解模型
+>
+> [浏览器服务 - AstrBot Cloud](https://cloud.astrbot.app/plugin/rytte/astrbot_plugin_browser)：提供强大的浏览器使用能力
 
 <a id="quick-start"></a>
 
@@ -144,7 +151,7 @@ QQ Enhance initialized
 | `friend` | `qq_user_info`：用户公开资料<br>`qq_friend_list`：好友、单向好友列表<br>`qq_friend_history`：私聊历史<br>`qq_friend_interact`：点赞、好友戳一戳<br>`qq_friend_manage`：删除好友、修改备注 |
 | `group` | `qq_group_list`：群列表<br>`qq_group_info`：群详情、扩展详情、荣誉、@全体余量、禁言列表<br>`qq_group_members`：群成员列表与详情<br>`qq_group_history`：群消息历史<br>`qq_group_member_manage`：群成员戳一戳、名片、头衔、禁言、踢人、管理员身份<br>`qq_group_manage`：全员禁言、群名、群头像、签到、退群<br>`qq_essence`：群精华消息<br>`qq_notice`：群公告 |
 | `message` | `qq_send_message`：发送结构化消息，查询 QQ 内置表情名称、编号与分类<br>`qq_send_forward`：群聊和私聊合并转发<br>`qq_message_get`：获取单条消息<br>`qq_forward_get`：读取并按深度展开合并转发<br>`qq_message_manage`：撤回、已读、消息表情回应<br>`qq_recent_contacts`：最近联系人 |
-| `media` | `qq_media`：按 ImageRef 重载会话原图、图片与语音文件、语音格式转换、OCR |
+| `media` | `qq_media`：图片信息与语音文件、语音格式转换、OCR |
 | `file` | `qq_group_files`：群文件查询、上传、目录与文件管理<br>`qq_private_files`：私聊文件链接与上传 |
 | `request` | `qq_friend_request`：查询、通过、拒绝好友申请<br>`qq_group_request`：加群申请、邀请和已忽略通知 |
 | `web` | `read_url`：读取公开网页正文并建立隔离快照<br>`read_page_section`：按行继续阅读已缓存网页<br>`find_in_page`：在网页快照内查找字面量关键词 |
@@ -220,7 +227,7 @@ QQ Enhance initialized
 ```bash
 [QQ component|QQ小程序卡片：标题：周末徒步；说明：周六上午九点在公园东门集合；链接：https://example.com/hiking]
 [QQ component|QQ位置：公园东门；集合地点；纬度 30.1，经度 120.2]
-[QQ component|QQ动态表情包：出发啦；image_ref=img_a1b2c3d4e5f60123456789ab；320x240；如需查看原图，调用 qq_media(operation="inspect", params={"image_ref":"img_a1b2c3d4e5f60123456789ab"})；如需查看动画，调用 qq_media(operation="inspect_animation", params={"image_ref":"img_a1b2c3d4e5f60123456789ab"})]
+[QQ component|QQ动态表情包：出发啦；image_id=pic_0123456789abcdef]
 [QQ component|QQ合并转发消息；res_id=forward_demo01；如需读取正文，调用 qq_forward_get(operation="get", params={"res_id":"forward_demo01"})]
 ```
 
@@ -255,6 +262,19 @@ QQ Enhance initialized
 [QQ 平台事件|message_recall|时间 2026-10-18 09:02:00（UTC+8）：用户 10001 于 2026-10-18 09:01:00（UTC+8） 发送的消息已撤回。原消息摘录（仅用于定位）："集合时间改为十点。"。仅作背景，不代表操作指令。]
 ```
 
+<a id="media"></a>
+
+### 图片管理拆分与升级
+
+从 1.12.0 起，图片归档、历史轻量化、原图回看、动图预览、群图片缓存和清理由独立插件 **Media 管理**（`astrbot_plugin_media_manager`）负责。
+
+1. 先将 QQ 能力增强升级到 **1.12.0 或以上**，再安装并启用 Media 管理。
+2. Media 管理默认首次导入旧图片设置、长期归档和群缓存，保留 `image_ref`、平台与会话绑定、创建及到期时间；复制后的图片使用新插件路径，旧数据库和文件保留用于回退。
+3. 此后在 Media 管理中调整图片配置。QQ 中旧 `context_images` 暂留供升级兼容，其中 `enabled` 仍控制旧查看入口。
+4. 旧 `qq_media.inspect` / `inspect_animation` 转发到 Media 管理，旧历史标签继续可读。新引用使用 `media_inspect(image_ref="…", view="original"或"animation")`。
+
+本轮与防抖续接仍包含实际图片，Media 管理只在回复结束、AstrBot 保存历史前过滤图片载荷。防抖只保存和恢复通用消息，不依赖 Media 管理；未安装 Media 管理时，QQ 工具也可以照常工作。
+
 ### 其他增强能力
 
 | 能力 | 简要说明 |
@@ -262,17 +282,10 @@ QQ Enhance initialized
 | **语音识别** | 优先使用 AstrBot 已有转写，缺失时由 QQ 协议端补充识别；支持当前及引用中的单条语音，失败时保留原语音 |
 | **表情查询** | 为 QQ 表情增加表情 ID 映射表查询能力，使机器人可以发送准确的表情 |
 | **红包响应** | 识别红包消息后允许模型自然回复，仅识别，不能代领 |
-| **图片历史轻量化** | 输入图片和其他插件／MCP 工具返回的图片在回复结束时统一替换成轻量引用；防抖续接期间仍保留图片视觉输入，模型后续可按引用回看，引用按平台与会话隔离 |
-| **动图理解** | GIF、WebP、APNG 动图可生成最多九帧的 3×3 九宫格及采样说明，由模型自主按需查看 |
 | **跨会话消息衔接** | 将已发送正文和来源说明写入目标历史，方便后续交流；不会唤醒目标模型，对方实际收到的消息仅含发送正文 |
 | **消息防抖** | 多条消息不合并，每条独立保存；首个等待窗口与后续等待窗口时长可独立配置；支持事件消息防抖。 |
 | **申请通知** | 将好友申请、入群申请和群邀请投递到管理员私聊，由该会话的模型自然生成通知，通知轮不执行工具。 |
 | **网页阅读** | 使用 `Trafilatura` 下载网页并在本地提取公开静态正文，无需第三方解析 API，无需 `playwright` 浏览器实例，轻量无负担。 |
-
-**图片缓存**
-
-* 图片会默认进行缓存以供后续查看，默认上限 2048 MiB、有效期 30 天，规则可自定配置，过期或被清理的图片会明确提示不可用。
-* 群聊缓存默认上限 256 MiB、有效期 24 小时，需开启 AstrBot 群聊上下文注入。
 
 **红包说明**
 

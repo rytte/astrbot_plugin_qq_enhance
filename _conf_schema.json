@@ -350,25 +350,25 @@
   },
   "context_images": {
     "type": "object",
-    "description": "图片历史轻量化",
+    "description": "旧版图片配置（升级兼容）",
     "default": {},
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用图片历史轻量化",
-        "hint": "图片保存为历史上下文时替换为轻量引用；需要时模型可通过 qq_media.inspect 重新加载原图。",
+        "description": "开放旧版图片查看入口",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。 此开关仍控制旧 qq_media 查看入口是否开放。",
         "default": true
       },
       "group_cache_enabled": {
         "type": "bool",
         "description": "缓存群聊上下文图片",
-        "hint": "需要开启 AstrBot 群聊上下文注入。保留已下载的图片并注入可回看的引用，不额外下载或自动识图。",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
         "default": true
       },
       "group_cache_max_mb": {
         "type": "int",
         "description": "全插件群聊图片缓存上限（MiB）",
-        "hint": "相同图片共用文件，空间不足时淘汰最早收到的图片。独立于长期图片归档容量。",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
         "default": 256,
         "minimum": 1,
         "maximum": 10240
@@ -376,7 +376,7 @@
       "group_cache_ttl_hours": {
         "type": "int",
         "description": "群聊图片缓存保留小时数",
-        "hint": "按最后一次收到该图片计算；查看不会续期。过期后引用明确提示不可用。",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
         "default": 24,
         "minimum": 1,
         "maximum": 168
@@ -386,19 +386,20 @@
         "description": "图片引用从历史消失后的自然日宽限天数",
         "default": 3,
         "minimum": 1,
-        "maximum": 30
+        "maximum": 30,
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。"
       },
       "retention_days": {
         "type": "int",
         "description": "原图最长保留自然日数",
-        "hint": "按 AstrBot 所在主机的本地日期计算；0 表示关闭绝对保留期，孤儿与容量清理仍然生效。",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
         "default": 30,
         "minimum": 0
       },
       "max_storage_mb": {
         "type": "int",
         "description": "会话原图总存储上限（MiB）",
-        "hint": "空间不足时按本地自然日从最早日期开始整日淘汰，无论图片是否仍被会话历史引用。",
+        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
         "default": 2048,
         "minimum": 64,
         "maximum": 10240
@@ -941,7 +942,8 @@
       },
       "max_base64_size_mb": {
         "type": "int",
-        "description": "Base64 解码与单次图片重载上限（MiB）",
+        "description": "Base64 解码上限（MiB）",
+        "hint": "Media 管理首次迁移时会将此值用作单次图片查看上限，后续在 Media 管理独立配置。",
         "default": 10,
         "minimum": 1,
         "maximum": 100

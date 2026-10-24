@@ -99,8 +99,8 @@ OPERATION_DISPLAY_NAMES = {
     "qq_message_manage.reaction_add": "添加消息表情回应",
     "qq_message_manage.reaction_remove": "移除消息表情回应",
     "qq_recent_contacts.list": "获取最近联系人",
-    "qq_media.inspect": "重新加载会话图片",
-    "qq_media.inspect_animation": "查看动图九宫格预览",
+    "qq_media.inspect": "重新加载会话图片（转发 Media 管理）",
+    "qq_media.inspect_animation": "查看动图预览（转发 Media 管理）",
     "qq_media.get_image": "获取图片信息",
     "qq_media.get_record": "获取语音文件",
     "qq_media.convert_record": "转换语音文件格式",
@@ -885,12 +885,12 @@ OPERATION_PARAMETERS = {
     "qq_recent_contacts.list": _params(optional=("count", *PAGE_PARAMS)),
     "qq_media.inspect": _params(
         "image_ref",
-        hint="只能使用当前 AstrBot 会话历史中 QQ component 或 QQ ImageRef 提供的真实 image_ref。",
+        hint="兼容入口，需启用 Media 管理。只能使用当前会话 Media ImageRef 或旧 QQ 图片标签提供的真实 image_ref，不能使用 image_id。新请求优先使用 media_inspect。",
     ),
     "qq_media.inspect_animation": _params(
         "image_ref",
         hint=(
-            "使用当前会话 QQ component 或 QQ ImageRef 中提供的真实 image_ref，"
+            "兼容入口，转发 Media 管理。使用当前会话 Media ImageRef 或旧 QQ 图片标签提供的真实 image_ref，"
             "按需返回最多九帧的 3×3 动画预览及采样说明；原图请使用 inspect。"
         ),
     ),
@@ -995,6 +995,7 @@ TOOL_DESCRIPTIONS = {
     "qq_message_manage": "撤回、标记已读或增删消息表情回应。",
     "qq_recent_contacts": "查询最近联系人和消息摘要。",
     "qq_media": (
+        "inspect / inspect_animation 为兼容入口，需启用独立插件 Media 管理，新请求优先使用 media_inspect。"
         "inspect 按 image_ref 查看当前会话原图；inspect_animation 使用同一引用，"
         "按需返回最多九帧的 3×3 动图预览和采样说明，不覆盖原图。"
         "两者只能使用当前会话 ImageRef 或组件语义提供的 image_ref。"

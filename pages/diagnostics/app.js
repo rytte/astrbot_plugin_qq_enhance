@@ -26,7 +26,7 @@ const disabledReasonLabels = {
   pack_not_enabled: "分类未启用",
   disabled_by_config: "配置已禁用",
   web_reader_disabled: "网页阅读已关闭",
-  context_images_disabled: "会话图片已关闭",
+  context_images_disabled: "旧图片兼容入口已关闭",
   provider_unsupported: "上游不支持",
 };
 const auditResultLabels = {

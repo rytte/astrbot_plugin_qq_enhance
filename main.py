@@ -5,18 +5,16 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Mapping
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
 from weakref import WeakSet
 
 from mcp.types import CallToolResult, TextContent
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Image, Plain, Record, Reply
+from astrbot.api.message_components import File, Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import json_response
@@ -40,10 +38,8 @@ from .catalog import (
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
-from .context_images import IMAGE_REF_PATTERN, ContextImageError
 from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES
-from .group_image_cache import GROUP_IMAGES_EXTRA
 from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
 from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
 from .qq_debounce import ArrivalFilter, find_message_arrival
@@ -55,11 +51,8 @@ from .inbound import (
     is_red_packet_event,
 )
 from .image_semantics import (
-    IMAGE_SEMANTICS_EXTRA,
-    ImageSemantics,
-    bind_image_references,
+    prepared_image_ids,
     inspect_inbound_image_animations,
-    prepared_image_sources,
 )
 from .request_notification import (
     ConfirmationResultEvent,
@@ -107,17 +100,14 @@ VERIFIED_COMPONENT_FORMATS = {
     "face": ("[QQ component|QQ表情：<name>] or [QQ component|QQ超级表情：<name>]"),
     "market_face": (
         "[QQ component|QQ商城表情：<name>], with an optional ；动态 suffix "
-        "when animation frames were verified; saved images include image_ref, "
-        "dimensions and an inspect entry inside the wrapper. Animated components "
-        "may also include an inspect_animation entry using the same image_ref"
+        "when animation frames were verified; an optional image_id links this component to a separate media reference"
     ),
     "image": (
         "[QQ component|QQ图片], [QQ component|QQ动图], [QQ component|QQ表情包], "
         "or [QQ component|QQ动态表情包], optionally followed by ：<summary> "
         "inside the wrapper; animation labels require verified animation frames. "
-        "Saved images include image_ref, dimensions and an inspect entry inside "
-        "the wrapper; animated components may also include an inspect_animation "
-        "entry using the same image_ref. "
+        "An optional image_id links this component to a separate media reference; "
+        "matching IDs describe the same image occurrence, not additional images. "
         "An actual image content part is also supported"
     ),
     "video": "[QQ component|视频消息]",
@@ -246,6 +236,8 @@ def _format_audit_rows(rows: list[dict]) -> str:
 class QQEnhancePlugin(Star):
     """Expose bounded QQ tools and inbound semantics to AstrBot models."""
 
+    media_manager_bridge_version = 1
+
     def __init__(
         self, context: Context, config: AstrBotConfig | dict | None = None
     ) -> None:
@@ -280,7 +272,6 @@ class QQEnhancePlugin(Star):
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
         self.runtime.handoff_send_observer = self._schedule_cross_session_handoff
-        self.context_images = self.runtime.context_images
         self.web_reader = WebReader(self.runtime)
         self.cleanup_task: asyncio.Task[None] | None = None
         self.notification_tasks: set[asyncio.Task[None]] = set()
@@ -1110,31 +1101,6 @@ class QQEnhancePlugin(Star):
                 "_qq_enhance_handoff_conversation_id", request.conversation.cid
             )
 
-    @filter.on_llm_request(priority=-10000)
-    async def virtualize_context_images(
-        self, event: AstrMessageEvent, request: ProviderRequest
-    ) -> None:
-        """Archive QQ images and replace persistent attachment paths with refs.
-
-        Args:
-            event: Current QQ event.
-            request: Fully decorated provider request.
-        """
-
-        if not self.config["context_images"]["enabled"]:
-            return
-        if event.get_platform_name() != "aiocqhttp":
-            return
-        configured_id = self.config["platform"]["platform_id"]
-        if configured_id and event.get_platform_id() != configured_id:
-            return
-        try:
-            await self.context_images.prepare_request(event, request)
-        except ContextImageError as exc:
-            logger.warning("Failed to archive QQ context image: %s", exc.code)
-            event.set_result(f"图片无法安全加入会话：{exc.message}。")
-            event.stop_event()
-
     @filter.on_agent_begin(priority=-20000)
     async def snapshot_debounce_input(
         self, event: AstrMessageEvent, run_context
@@ -1145,8 +1111,6 @@ class QQEnhancePlugin(Star):
             event: Current QQ event.
             run_context: Initialized AstrBot agent context.
         """
-        if self.config["context_images"]["enabled"]:
-            self.context_images.bind_current_request_images(event, run_context)
         if (
             self.config.get("cross_session_handoff", {}).get("enabled", False)
             and getattr(run_context, "messages", None)
@@ -1326,29 +1290,18 @@ class QQEnhancePlugin(Star):
         self_id = str(event.get_self_id() or "")
         max_components = self.config["limits"]["max_components"]
 
-        def render_semantics(
-            image_records: dict[int, Mapping[str, Any]] | None = None,
-        ) -> str:
-            text = describe_inbound_event(
-                raw,
-                self_id,
-                semanticize_components=inbound["semanticize_components"],
-                respond_to_poke=False,
-                max_components=max_components,
-                max_chars=inbound["max_semantic_chars"],
-                image_animations=image_animations,
-                image_records=image_records,
-                animation_inspection_enabled=operation_availability(
-                    self.config, OPERATION_MAP["qq_media.inspect_animation"]
-                ).enabled,
-            )
-            if inbound["component_spoof_protection"]["enabled"]:
-                text = USER_VERIFICATION_TAG_PATTERN.sub(
-                    USER_VERIFICATION_TAG_REMOVED, text
-                )
-            return text
-
-        semantics = render_semantics()
+        semantics = describe_inbound_event(
+            raw,
+            self_id,
+            semanticize_components=inbound["semanticize_components"],
+            respond_to_poke=False,
+            max_components=max_components,
+            max_chars=inbound["max_semantic_chars"],
+            image_animations=image_animations,
+            image_ids=prepared_image_ids(
+                event, raw, event.get_messages(), max_components=max_components
+            ),
+        )
         if red_packet and not semantics:
             semantics = format_component_semantics("QQ红包消息（仅识别，不能代领）")
         if inbound["component_spoof_protection"]["enabled"]:
@@ -1362,106 +1315,15 @@ class QQEnhancePlugin(Star):
         enriched = f"{current}\n{semantics}" if current else semantics
         event.message_str = enriched
         event.message_obj.message_str = enriched
-        semantic_part = None
         if event.get_group_id():
             # AstrBot's group-context recorder inspects structured components,
             # not message_str. Preserve semantics for later requests and create
             # the native context cursor when this message wakes the model.
             semantic_part = Plain(semantics)
             event.message_obj.message.append(semantic_part)
-        if inbound["semanticize_components"]:
-            sources = prepared_image_sources(
-                raw,
-                event.get_messages(),
-                max_components=self.config["limits"]["max_components"],
-            )
-            if sources:
-                event.set_extra(
-                    IMAGE_SEMANTICS_EXTRA,
-                    ImageSemantics(
-                        text=semantics,
-                        sources=sources,
-                        render=render_semantics,
-                        part=semantic_part,
-                    ),
-                )
         if red_packet:
             event.is_wake = True
             event.is_at_or_wake_command = True
-
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=900)
-    async def cache_group_context_images(self, event: AstrMessageEvent) -> None:
-        """Retain prepared group images before core recording and event cleanup.
-
-        Args:
-            event: Preprocessed incoming QQ event.
-        """
-        settings = self.config["context_images"]
-        if not settings["enabled"] or not settings["group_cache_enabled"]:
-            return
-        if event.get_platform_name() != "aiocqhttp" or not event.get_group_id():
-            return
-        configured_id = self.config["platform"]["platform_id"]
-        if configured_id and event.get_platform_id() != configured_id:
-            return
-        if event.get_extra(GROUP_IMAGES_EXTRA) or event.get_extra(
-            "handlers_parsed_params", {}
-        ):
-            return
-        images = []
-        for component in event.get_messages():
-            if isinstance(component, Image):
-                images.append(component)
-            elif isinstance(component, Reply):
-                images.extend(
-                    part for part in component.chain or [] if isinstance(part, Image)
-                )
-        if not images:
-            return
-        config = self.context.get_config(umo=event.unified_msg_origin)
-        if not config["provider_ltm_settings"]["group_icl_enable"]:
-            return
-        conversation_id = (
-            await self.context.conversation_manager.get_curr_conversation_id(
-                event.unified_msg_origin
-            )
-        )
-        cached = []
-        for component in images[: self.config["limits"]["max_components"]]:
-            source = str(component.path or component.url or component.file or "")
-            try:
-                record = await self.context_images.group_cache.put(
-                    source,
-                    str(event.get_platform_id()),
-                    str(event.unified_msg_origin),
-                    str(conversation_id or ""),
-                )
-            except Exception as exc:
-                logger.warning("Unable to retain group image: %s", type(exc).__name__)
-                continue
-            if any(item["image_ref"] == record["image_ref"] for item in cached):
-                # The same bytes can occur twice in a message, but need one reference.
-                cached.append({**record, "source": source, "text": ""})
-                continue
-            text = (
-                f"[QQ ImageRef image_ref={record['image_ref']}, "
-                f"{record['width']}x{record['height']}；群聊短期缓存，可能过期或被淘汰；"
-                '如需查看图片，调用 qq_media(operation="inspect", '
-                f'params={{"image_ref":"{record["image_ref"]}"}})]'
-            )
-            cached.append({**record, "source": source, "text": text})
-        if cached:
-            merged = bind_image_references(
-                event, {item["source"]: item for item in cached}
-            )
-            for item in cached:
-                if item["image_ref"] in merged:
-                    item["text"] = ""
-                elif item["text"]:
-                    event.message_obj.message.append(Plain(item["text"]))
-                    event.message_str = f"{event.message_str}\n{item['text']}".strip()
-            event.message_obj.message_str = event.message_str
-            event.set_extra(GROUP_IMAGES_EXTRA, cached)
 
     @filter.on_llm_request(priority=-1000)
     async def add_verified_component_signal(
@@ -2019,32 +1881,6 @@ class QQEnhancePlugin(Star):
             self.debouncer.submit_context(related, item)
         return item
 
-    @filter.on_agent_done(priority=-2000)
-    async def lighten_images_before_history_save(
-        self, event: AstrMessageEvent, run_context, _response
-    ) -> None:
-        """Archive and replace input and tool images before history persistence.
-
-        Args:
-            event: Original QQ event carrying the bound conversation scope.
-            run_context: Agent context containing messages awaiting persistence.
-            _response: Final model response, unused by image cleanup.
-        """
-
-        if not self.config["context_images"]["enabled"]:
-            return
-        if event.get_platform_name() != "aiocqhttp":
-            return
-        configured_id = self.config["platform"]["platform_id"]
-        if configured_id and event.get_platform_id() != configured_id:
-            return
-        try:
-            await self.context_images.finalize_images(event, run_context)
-        except ContextImageError as exc:
-            logger.warning(
-                "Failed to archive context images before history save: %s", exc.code
-            )
-
     @filter.on_llm_request()
     async def select_tools(
         self, event: AstrMessageEvent, request: ProviderRequest
@@ -2233,7 +2069,10 @@ class QQEnhancePlugin(Star):
                 for text in reference_texts
             ):
                 requested.add("qq_forward_get")
-            if any(IMAGE_REF_PATTERN.search(text) for text in reference_texts):
+            if any(
+                re.search(r"(?:img|gimg)_[0-9a-f]{24}", text)
+                for text in reference_texts
+            ):
                 requested.add("qq_media")
         if re.search(r"https?://", prompt, re.IGNORECASE):
             requested.update(WEB_TOOL_NAMES)
@@ -3003,7 +2842,7 @@ class QQEnhancePlugin(Star):
         """读取、转换或识别 QQ 媒体。
 
         Args:
-            operation(string): inspect（原图）、inspect_animation（动图九宫格预览）、get_image、get_record、convert_record 或 ocr。
+            operation(string): inspect、inspect_animation（转交 Media 管理的旧版兼容入口）、get_image、get_record、convert_record 或 ocr。
             params(object): 当前 operation 的严格参数对象。
         """
 

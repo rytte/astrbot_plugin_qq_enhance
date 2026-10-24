@@ -207,7 +207,7 @@
 
 ## 插件公开工具与操作
 
-网页阅读的三个工具、`qq_media.inspect` 和 `qq_media.inspect_animation` 为本地能力，不调用 NapCat 动作。图片查看返回原文件，动图查看使用同一引用按需返回最多九帧的 3×3 预览及采样说明。网页工具直接接受工具参数；表中的 read/find 是配置和审计使用的内部操作名，不需要模型额外传入 operation。
+网页阅读的三个工具为本地能力，不调用 NapCat 动作。`qq_media.inspect` 和 `qq_media.inspect_animation` 自 1.12.0 起为兼容转发入口，需要启用独立插件“Media 管理”；其新工具 `media_inspect` 提供原图或最多九帧的 3×3 动画预览及采样说明，不调用 NapCat 动作。网页工具直接接受工具参数；表中的 read/find 是配置和审计使用的内部操作名，不需要模型额外传入 operation。
 
 | 工具 | 公开操作 | 对应 NapCat 动作或实现 |
 |---|---|---|
@@ -235,7 +235,7 @@
 | `qq_forward_get` | `get` | `get_forward_msg` |
 | `qq_message_manage` | `recall`、`mark_read`、`reaction_add`、`reaction_remove` | `delete_msg`<br>`mark_msg_as_read`<br>`set_msg_emoji_like` |
 | `qq_recent_contacts` | `list` | `get_recent_contact` |
-| `qq_media` | `inspect`、`inspect_animation`、`get_image`、`get_record`、`convert_record`、`ocr` | 本地会话图片重载／动图九宫格预览<br>`get_image`<br>`get_record`<br>`ocr_image` |
+| `qq_media` | `inspect`、`inspect_animation`、`get_image`、`get_record`、`convert_record`、`ocr` | 兼容转发 Media 管理原图／动图预览<br>`get_image`<br>`get_record`<br>`ocr_image` |
 | `qq_group_files` | `info`、`list_root`、`list_folder`、`url`、`upload`、`mkdir`、`delete`、`rmdir`、`move`、`rename`、`transfer` | `create_group_file_folder`<br>`delete_group_file`<br>`delete_group_folder`<br>`get_group_file_system_info`<br>`get_group_file_url`<br>`get_group_files_by_folder`<br>`get_group_root_files`<br>`move_group_file`<br>`rename_group_file`<br>`trans_group_file`<br>`upload_group_file` |
 | `qq_private_files` | `url`、`upload` | `get_private_file_url`<br>`upload_private_file` |
 | `qq_essence` | `list`、`add`、`remove` | `delete_essence_msg`<br>`get_essence_msg_list`<br>`set_essence_msg` |

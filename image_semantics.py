@@ -1,30 +1,46 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from PIL import Image as PillowImage
 
 from astrbot.api import logger
-from astrbot.api.message_components import Image, Plain
-from astrbot.core.agent.message import TextPart
+from astrbot.api.message_components import Image
 from astrbot.core.utils.media_utils import file_uri_to_path, is_file_uri
 
-IMAGE_SEMANTICS_EXTRA = "_qq_enhance_image_semantics"
+IMAGE_LINKS_EXTRA = "_image_context_links_v1"
 
 
-@dataclass
-class ImageSemantics:
-    """Bind verified component semantics after real image references exist."""
-
-    text: str
-    sources: dict[int, str]
-    render: Callable[[dict[int, Mapping[str, Any]]], str]
-    part: Plain | None = None
-    records: dict[int, Mapping[str, Any]] = field(default_factory=dict)
+def prepared_image_ids(event, raw_event, components, *, max_components):
+    """Read the optional v1 association without importing the media plugin."""
+    sources = prepared_image_sources(
+        raw_event, components, max_components=max_components
+    )
+    if not sources:
+        return {}
+    links = event.get_extra(IMAGE_LINKS_EXTRA, {})
+    if not isinstance(links, Mapping):
+        return {}
+    raw_images = [
+        index
+        for index, component in enumerate(raw_event["message"])
+        if isinstance(component, Mapping) and component.get("type") == "image"
+    ]
+    images = [component for component in components if isinstance(component, Image)]
+    result = {}
+    for index, component in zip(raw_images, images):
+        link = links.get(id(component))
+        if (
+            index in sources
+            and isinstance(link, str)
+            and re.fullmatch(r"pic_[0-9a-f]{16}", link)
+        ):
+            result[index] = link
+    return result
 
 
 def prepared_image_sources(
@@ -52,55 +68,6 @@ def prepared_image_sources(
         for index, component in zip(raw_images, prepared_images)
         if index < max_components
     }
-
-
-def bind_image_references(
-    event: Any, source_records: Mapping[str, Mapping[str, Any]], request: Any = None
-) -> set[str]:
-    """Merge saved references into this event's annotation and return merged IDs."""
-
-    state = event.get_extra(IMAGE_SEMANTICS_EXTRA)
-    if not isinstance(state, ImageSemantics):
-        return set()
-    state.records.update(
-        (index, source_records[source])
-        for index, source in state.sources.items()
-        if source in source_records
-    )
-    if not state.records:
-        return set()
-    previous = state.text
-    current = state.render(state.records)
-    # The semantic budget may have fallen back to a plain type label. Keep a
-    # standalone reference for any image whose complete entry did not fit.
-    merged = {
-        record["image_ref"]
-        for record in state.records.values()
-        if f'；image_ref={record["image_ref"]}；' in current
-    }
-    if current != previous:
-        # The generated block is appended after user input; replace its last
-        # occurrence so user-written copies of component text remain untouched.
-        prefix, found, suffix = event.message_str.rpartition(previous)
-        if found:
-            event.message_str = prefix + current + suffix
-            event.message_obj.message_str = event.message_str
-        if state.part is not None:
-            state.part.text = current
-        state.text = current
-    if request is not None:
-        prefix, found, suffix = (request.prompt or "").rpartition(previous)
-        if found:
-            request.prompt = prefix + current + suffix
-        # Extra parts may contain earlier group messages with identical labels.
-        # Never bind those annotations to this event's newly archived image.
-        found_annotation = bool(found) or any(
-            isinstance(part, TextPart) and current in part.text
-            for part in request.extra_user_content_parts
-        )
-        if not found_annotation and merged:
-            request.extra_user_content_parts.append(TextPart(text=current))
-    return merged
 
 
 def has_image_animation(path: str | Path) -> bool:

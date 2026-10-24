@@ -36,10 +36,9 @@ from .catalog import (
     TOOL_OPERATIONS,
     OperationSpec,
 )
-from .context_images import ContextImageError, ContextImageManager
+from .media_bridge import inspect_legacy_reference
 from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES, QQ_FACE_SOURCE, lookup_qq_faces
-from .group_image_cache import GroupImageCache
 from .notice_context import DEFAULT_NOTICE_POLICIES
 from .providers import resolve_provider
 from .providers.base import OneBotProvider, ProviderBinding, VersionInfo
@@ -668,22 +667,6 @@ class QQRuntime:
         )
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.context_images = ContextImageManager(
-            context,
-            storage,
-            self.data_dir / "context_images",
-            config["context_images"]["orphan_grace_days"],
-            config["context_images"]["retention_days"],
-            config["context_images"]["max_storage_mb"],
-            config["files"]["max_base64_size_mb"],
-            GroupImageCache(
-                self.data_dir / "group_image_cache",
-                config["context_images"]["group_cache_max_mb"],
-                config["context_images"]["group_cache_ttl_hours"],
-                config["files"]["max_base64_size_mb"],
-            ),
-        )
-        self._last_context_image_cleanup_day: tuple[int, int, int] | None = None
         self._verified_platforms: dict[str, ProviderBinding] = {}
 
     def operation_enabled(self, operation_id: str) -> bool:
@@ -1808,15 +1791,9 @@ class QQRuntime:
                 if operation_availability(self.config, item, provider).enabled
             ]
         elif operation_id in {"qq_media.inspect", "qq_media.inspect_animation"}:
-            try:
-                inspect = (
-                    self.context_images.inspect_animation
-                    if spec.operation == "inspect_animation"
-                    else self.context_images.inspect
-                )
-                local_result = await inspect(event, str(action_params["image_ref"]))
-            except ContextImageError as exc:
-                raise QQToolError(exc.code, exc.message) from exc
+            local_result = await inspect_legacy_reference(
+                self.context, event, str(action_params["image_ref"]), spec.operation
+            )
         elif operation_id == "qq_friend_request.list":
             local_result = await self.storage.list_requests(
                 "friend",
@@ -3452,13 +3429,6 @@ class QQRuntime:
     async def cleanup(self) -> None:
         """Remove expired plugin-owned files and retained metadata."""
 
-        await self.context_images.group_cache.cleanup()
-        if self.config["context_images"]["enabled"]:
-            local_time = time.localtime()
-            current_day = (local_time.tm_year, local_time.tm_mon, local_time.tm_mday)
-            if self._last_context_image_cleanup_day != current_day:
-                await self.context_images.reconcile()
-                self._last_context_image_cleanup_day = current_day
         paths = await self.storage.cleanup(
             self.config["events"]["retention_days"],
             self.config["audit"]["retention_days"],

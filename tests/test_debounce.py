@@ -177,10 +177,6 @@ class Harness:
             },
             get_all_stars=lambda: [],
         )
-        self.plugin.context_images = SimpleNamespace(
-            bind_current_request_images=lambda _event, _run_context: None,
-            finalize_images=AsyncMock(),
-        )
         self.runtime = AstrBotDebounceRuntime(
             self.plugin.context, self.plugin.config["debounce"]
         )
@@ -192,6 +188,9 @@ class Harness:
         self.plugin.notice_context = NoticeContext(self.plugin)
         self.tasks = []
         self.requests = []
+        self.request_hook = None
+        self.agent_begin_hook = None
+        self.agent_done_hook = None
 
     def make_resume(self, arrival, debouncer):
         source = arrival.event
@@ -275,6 +274,8 @@ class Harness:
                             return
                     if event.get_extra(ARRIVAL_KEY).replayed:
                         await self.runtime.finalize_resume(event, req)
+                    if self.request_hook is not None:
+                        await self.request_hook(event, req)
                     messages = bind_checkpoint_messages(req.contexts)
                     if req.prompt is not None:
                         current = await req.assemble_context()
@@ -290,7 +291,10 @@ class Harness:
                         event.result = SimpleNamespace(
                             result_content_type="STREAMING_RESULT"
                         )
-                    await self.plugin.snapshot_debounce_input(event, event.runtime)
+                    if self.agent_begin_hook is None:
+                        await self.plugin.snapshot_debounce_input(event, event.runtime)
+                    else:
+                        await self.agent_begin_hook(event, event.runtime)
                     self.requests.append(
                         deepcopy(
                             dump_messages_with_checkpoints(
@@ -312,9 +316,8 @@ class Harness:
                         return
                     await self.plugin.protect_debounce_response(event, None)
                     messages.append(Message(role="assistant", content="reply"))
-                    await self.plugin.lighten_images_before_history_save(
-                        event, event.runtime, None
-                    )
+                    if self.agent_done_hook is not None:
+                        await self.agent_done_hook(event, event.runtime, None)
                     await self.manager.update_conversation(
                         event.unified_msg_origin,
                         conversation.cid,
@@ -767,11 +770,9 @@ async def test_images_survive_debounce_replacement_until_final_reply(
     tmp_path, second_has_image
 ):
     from astrbot.api.message_components import Image
-    from test_context_images import build_manager, save_image
+    from PIL import Image as PillowImage
 
-    manager, storage, _ = await build_manager(tmp_path)
     harness = Harness()
-    harness.plugin.context_images = manager
     original_bind = harness.plugin.bind_debounce_request
 
     async def prepare_and_bind(event, request):
@@ -780,43 +781,34 @@ async def test_images_survive_debounce_replacement_until_final_reply(
             for component in event.get_messages()
             if isinstance(component, Image)
         ]
-        await harness.plugin.virtualize_context_images(event, request)
         await original_bind(event, request)
 
     harness.plugin.bind_debounce_request = prepare_and_bind
     first, second = Event("看看这张图", 1), Event("重点看右下角", 2)
     for index, event in enumerate([first, second] if second_has_image else [first]):
         path = tmp_path / f"input-{index}.png"
-        save_image(path, "PNG", (9 + index, 7))
+        PillowImage.new("RGB", (9 + index, 7)).save(path, format="PNG")
         event.message_obj.message = [Image(file=str(path))]
     try:
         first_task = harness.start(first)
         await wait(first.prepared)
-        first_ref = (await storage.list_context_images())[0]["image_ref"]
         second_task = harness.start(second)
         await wait(second.prepared)
         assert first_task.cancelled()
         # A is already persisted, and B still receives A's actual image bytes.
         saved_a = json.dumps(harness.manager.history(first))
         assert "data:image" in saved_a
-        assert first_ref in saved_a
         request_a = harness.requests[-1][0]
         image = next(
             part for part in request_a["content"] if part["type"] == "image_url"
         )
         assert image["image_url"]["url"].startswith("data:image/png;base64,")
-        assert image["image_url"]["id"] == first_ref
 
         second.allow_reply.set()
         await second_task
 
         history = json.dumps(harness.manager.history(second))
-        assert "data:image" not in history
-        assert first_ref in history
-        assert "input-0.png" not in history
-        assert len(await storage.list_context_images()) == (
-            2 if second_has_image else 1
-        )
+        assert "data:image" in history  # Without media manager, images remain intact.
         assert texts(harness.manager.history(second))[:2] == [
             "看看这张图",
             "重点看右下角",
