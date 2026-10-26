@@ -17,6 +17,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
+from .debounce import ARRIVAL_KEY
 from .notice_context import QQNotice
 
 
@@ -32,6 +33,9 @@ class PlatformNotificationEvent(AiocqhttpMessageEvent):
         text: Platform facts presented as the current user input.
         group: Group metadata of the source conversation, if applicable.
     """
+
+    notification_only = True
+    platform_event_type: str | None = None
 
     def __init__(
         self, context, platform, session, notification_id, self_id, text, group=None
@@ -114,7 +118,9 @@ class PlatformNotificationEvent(AiocqhttpMessageEvent):
 class RequestNotificationEvent(PlatformNotificationEvent):
     """Notify a private administrator session about a stored platform request."""
 
-    def __init__(self, context, platform, admin_user_id, request_id, self_id, text):
+    def __init__(
+        self, context, platform, admin_user_id, request_id, self_id, text, *, event_type
+    ):
         super().__init__(
             context,
             platform,
@@ -126,6 +132,7 @@ class RequestNotificationEvent(PlatformNotificationEvent):
             text,
         )
         self.request_id = request_id
+        self.platform_event_type = event_type
 
 
 class NoticeResponseEvent(PlatformNotificationEvent):
@@ -148,6 +155,7 @@ class NoticeResponseEvent(PlatformNotificationEvent):
         )
         self.owner = owner
         self.delivery = delivery
+        self.platform_event_type = notice.kind
         self.debounce_sender_id = (
             session.session_id.partition("_")[0]
             if notice.group_wide and "_" in session.session_id
@@ -217,3 +225,30 @@ class NotificationOnlyTool(FunctionTool):
                 )
             ],
         )
+
+
+def notification_tools_restricted(event, config: dict) -> bool:
+    """Apply event policy to standalone replies, merged inputs and continuations."""
+    kind = getattr(event, "platform_event_type", None)
+    if (
+        isinstance(event, PlatformNotificationEvent)
+        or getattr(event, "notification_only", False)
+    ) and kind is None:
+        # Internal operation results keep their independent execution guard.
+        return True
+    restricted = config["notice_events"]["tool_restricted_events"]
+    if kind in restricted:
+        return True
+    get_extra = getattr(event, "get_extra", None)
+    arrival = get_extra(ARRIVAL_KEY) if callable(get_extra) else None
+    return arrival is not None and any(
+        getattr(item, "platform_event_type", None) in restricted
+        for item in arrival.context_inputs
+    )
+
+
+def tool_session_user_id(event) -> str:
+    """Resolve a notification's private peer without impersonating its authority."""
+    if getattr(event, "notification_only", False) and not event.get_group_id():
+        return str(event.session.session_id)
+    return str(event.get_sender_id() or "")

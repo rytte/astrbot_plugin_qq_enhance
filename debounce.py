@@ -42,6 +42,7 @@ class ContextInput:
     included: bool = False
     expected_count: int = 0
     verified_type: str | None = None
+    platform_event_type: str | None = None
 
 
 @dataclass(eq=False)

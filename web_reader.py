@@ -17,6 +17,7 @@ from astrbot.api import logger
 
 from .catalog import OPERATION_MAP, TOOL_OPERATIONS
 from .errors import QQToolError
+from .request_notification import notification_tools_restricted
 from .runtime import QQRuntime
 
 
@@ -137,6 +138,8 @@ class WebReader:
         params_hash = ""
         created_page = None
         try:
+            if notification_tools_restricted(event, self.config):
+                raise QQToolError("permission_denied", "本轮平台事件已限制工具调用")
             if self.closed or not self.runtime.operation_enabled(operation_id):
                 raise QQToolError(
                     "capability_unavailable", "网页工具未启用或插件已停止"

@@ -274,12 +274,13 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
     mode, event_type, dialogue_prompt
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    toolsets = {"exposure_mode": mode}
+    dialogue = {}
     if dialogue_prompt is not None:
-        toolsets["dialogue_prompt"] = dialogue_prompt
+        dialogue["prompt"] = dialogue_prompt
     plugin.config = validate_config(
         {
-            "toolsets": toolsets,
+            "toolsets": {"exposure_mode": mode},
+            "dialogue": dialogue,
             "inbound": {"component_spoof_protection": {"enabled": False}},
         }
     )
@@ -304,7 +305,7 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
     await plugin.select_tools(event, request)
 
     assert request.system_prompt.startswith("Existing persona")
-    expected_prompt = plugin.config["toolsets"]["dialogue_prompt"]
+    expected_prompt = plugin.config["dialogue"]["prompt"]
     assert request.system_prompt.count(expected_prompt) == 1
     if dialogue_prompt is not None:
         assert DEFAULT_QQ_TOOL_DIALOGUE_PROMPT not in request.system_prompt
@@ -326,11 +327,8 @@ async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(
         plugin = object.__new__(QQEnhancePlugin)
         plugin.config = validate_config(
             {
-                "toolsets": {
-                    "exposure_mode": mode,
-                    "inject_dialogue_prompt": enabled,
-                    "dialogue_prompt": dialogue_prompt,
-                }
+                "toolsets": {"exposure_mode": mode},
+                "dialogue": {"enabled": enabled, "prompt": dialogue_prompt},
             }
         )
         plugin.runtime = object.__new__(QQRuntime)

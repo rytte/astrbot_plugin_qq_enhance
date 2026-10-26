@@ -277,7 +277,13 @@ async def test_respond_does_not_wake_unavailable_destination(harness, reason):
 
 
 @pytest.mark.asyncio
-async def test_standalone_notice_restricts_tools_including_after_resume(harness):
+@pytest.mark.parametrize("restricted", [False, True])
+async def test_standalone_notice_tool_policy_including_after_resume(
+    harness, restricted
+):
+    harness.plugin.config["notice_events"]["tool_restricted_events"] = (
+        ["group_card"] if restricted else []
+    )
     try:
         await harness.plugin.capture_notice_context(context_notice())
         event = await queued(harness)
@@ -290,6 +296,9 @@ async def test_standalone_notice_restricts_tools_including_after_resume(harness)
                 harness.runtime, SimpleNamespace(event=event), harness.plugin.debouncer
             ),
         ):
+            assert source.platform_event_type == "group_card"
+            source.role = "admin"
+            assert not source.is_admin()
             req = ProviderRequest(
                 prompt="temporary",
                 conversation=conversation,
@@ -298,10 +307,33 @@ async def test_standalone_notice_restricts_tools_including_after_resume(harness)
                 ),
             )
             await harness.plugin.prepare_platform_notification(source, req)
-            assert isinstance(req.func_tool.tools[0], NotificationOnlyTool)
+            assert (
+                isinstance(req.func_tool.tools[0], NotificationOnlyTool) is restricted
+            )
         assert (
             req.prompt == "temporary"
         )  # Continuations are prepared by the debounce runtime.
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+async def test_selected_event_restricts_tools_in_merged_user_batch(harness):
+    harness.plugin.config["notice_events"]["tool_restricted_events"] = ["group_card"]
+    first = Event("请看一下群里的情况", 1, group=300)
+    try:
+        task = harness.start(first)
+        await wait(first.prepared)
+        await harness.plugin.capture_notice_context(context_notice())
+        resumed = await harness.wait_resumed()
+        assert task.cancelled()
+        original = FunctionTool(name="action", description="action", parameters={})
+        request = ProviderRequest(func_tool=ToolSet([original]))
+        await harness.plugin.prepare_platform_notification(resumed, request)
+        assert isinstance(request.func_tool.tools[0], NotificationOnlyTool)
+        assert original.handler is None
+        resumed.allow_reply.set()
+        await harness.tasks[-1]
     finally:
         await harness.finish()
 

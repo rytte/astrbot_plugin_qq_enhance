@@ -29,6 +29,7 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .capabilities import operation_availability
+from .config_migration import migrate_legacy_settings
 from .catalog import (
     OPERATION_MAP,
     OPERATION_PARAMETERS,
@@ -39,18 +40,41 @@ from .catalog import (
 from .media_bridge import inspect_legacy_reference
 from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES, QQ_FACE_SOURCE, lookup_qq_faces
-from .notice_context import DEFAULT_NOTICE_POLICIES
+from .notice_context import (
+    DEFAULT_NOTICE_POLICIES,
+    DEFAULT_TOOL_RESTRICTED_EVENTS,
+    PLATFORM_EVENT_TYPES,
+)
 from .providers import resolve_provider
 from .providers.base import OneBotProvider, ProviderBinding, VersionInfo
 from .random_components import parse_random_component
-from .request_notification import PlatformNotificationEvent
+from .request_notification import (
+    PlatformNotificationEvent,
+    notification_tools_restricted,
+    tool_session_user_id,
+)
 from .storage import Storage
+from .verification import component_spoof_protection_enabled
 
-DEFAULT_QQ_TOOL_DIALOGUE_PROMPT = """QQ工具调用前后，发言是可选的：可以直接调用，也可以沿用当前人设与对话语气自然回应用户。
-不要输出内部行动计划、工具选择推演、措辞或情绪/语气安排，也不要缩成动作播报。没话对用户说时直接调用工具。
-戳一戳、点赞等轻量互动成功后，默认不复述“操作成功”等完成报告。
-可以继续自然聊天，没有新内容就结束，不必补发回复。
-查询结果、用户追问、必要澄清和失败信息仍应正常交代；不要提前或虚假宣称成功。"""
+DEFAULT_QQ_TOOL_DIALOGUE_PROMPT = """【表情包解读规则】
+1. **语境优先**：
+   - 若前文是**你我互动** → 默认图中**主动方=用户**，**被动方=我**。
+   - 若前文是**吐槽他人/吃瓜** → 我是**旁观者**，仅配合情绪（如“哈哈好惨”），勿强行代入。
+   - 若**无上下文** → 视为**通用情绪表达**或**试探**，用幽默/反问回应（如“这是在影射谁呀？”）。
+2. **禁止事项**：
+   - 严禁像AI看图说话一样描述画面。
+   - 严禁在明显非针对我的场景下强行加戏（如别人被骂时喊疼）。
+【工具调用与交互规范】
+1. **发言灵活性**：
+   - 工具调用前后**无需强制发言**。可根据人设自然衔接，或无话时直接静默调用。
+   - 严禁输出内部推演、行动计划、措辞安排或动作播报（如“正在查询...”）。
+2. **轻量互动静音**：
+   - 戳一戳、点赞等操作成功后，**默认不复述**“操作成功”等报告，保持对话流畅。
+3. **结果与异常处理**：
+   - 仅在查询结果、用户追问、必要澄清或调用失败时，才进行正常交代。
+   - 严禁提前或虚假宣称成功。
+4. **自然结束**：
+   - 聊天无新内容时直接结束，不必强行补发回复。"""
 
 SENT_RANDOM_RESULT_TIMEOUT = 10.0
 SENT_RANDOM_HISTORY_DELAYS = (0.0, 0.5, 1.0, 2.0, 4.0)
@@ -59,10 +83,12 @@ DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
         "exposure_mode": "full",
-        "inject_dialogue_prompt": True,
-        "dialogue_prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
         "enabled_packs": [],
         "disabled_operations": [],
+    },
+    "dialogue": {
+        "enabled": True,
+        "prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
     },
     "permissions": {
         "allow_group_admin": True,
@@ -129,6 +155,7 @@ DEFAULT_CONFIG = {
     "notice_events": {
         "message_recall": {"mode": "context"},
         **DEFAULT_NOTICE_POLICIES,
+        "tool_restricted_events": list(DEFAULT_TOOL_RESTRICTED_EVENTS),
     },
     "request_notifications": {
         "enabled": False,
@@ -366,20 +393,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         config = {}
     if not isinstance(config, dict):
         raise ValueError("插件配置必须是对象")
-    config = deepcopy(config)
-    interactions = config.get("interaction_response", {})
-    if isinstance(interactions, dict):
-        legacy_poke = interactions.pop("respond_to_poke", None)
-        if legacy_poke is not None and type(legacy_poke) is not bool:
-            raise ValueError("interaction_response.respond_to_poke 必须是布尔值")
-        notices = config.setdefault("notice_events", {})
-        if isinstance(notices, dict):
-            poke = notices.get("notify/poke", {})
-            if isinstance(poke, dict) and poke.get("mode") is None:
-                notices["notify/poke"] = {
-                    **poke,
-                    "mode": "off" if legacy_poke is False else "respond",
-                }
+    config = migrate_legacy_settings(config, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
     unknown_top = set(config) - set(DEFAULT_CONFIG)
     if unknown_top:
         raise ValueError(f"未知配置分组: {', '.join(sorted(unknown_top))}")
@@ -393,6 +407,10 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(f"未知配置字段 {group}: {', '.join(sorted(unknown))}")
         copied_group = deepcopy(raw_group)
         if group == "notice_events":
+            if "tool_restricted_events" in copied_group:
+                result[group]["tool_restricted_events"] = copied_group.pop(
+                    "tool_restricted_events"
+                )
             for kind, policy in copied_group.items():
                 default_policy = DEFAULT_CONFIG["notice_events"][kind]
                 allowed_fields = set(default_policy)
@@ -438,9 +456,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("platform.platform_id 必须是字符串")
     if result["toolsets"]["exposure_mode"] not in {"compact", "balanced", "full"}:
         raise ValueError("toolsets.exposure_mode 必须是 compact、balanced 或 full")
-    dialogue_prompt = result["toolsets"]["dialogue_prompt"]
+    dialogue_prompt = result["dialogue"]["prompt"]
     if not isinstance(dialogue_prompt, str) or not dialogue_prompt.strip():
-        raise ValueError("toolsets.dialogue_prompt 必须是非空字符串")
+        raise ValueError("dialogue.prompt 必须是非空字符串")
 
     list_fields = (
         ("toolsets", "enabled_packs"),
@@ -453,6 +471,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("request_notifications", "admin_user_ids"),
         ("temporary_sessions", "admin_user_ids"),
         ("debounce", "ignore_prefixes"),
+        ("notice_events", "tool_restricted_events"),
     )
     for group, key in list_fields:
         value = result[group][key]
@@ -462,6 +481,15 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(f"{group}.{key} 必须是字符串列表")
         if len(value) != len(set(value)):
             raise ValueError(f"{group}.{key} 不允许重复项")
+
+    unknown_event_types = (
+        set(result["notice_events"]["tool_restricted_events"]) - PLATFORM_EVENT_TYPES
+    )
+    if unknown_event_types:
+        raise ValueError(
+            "notice_events.tool_restricted_events 包含未知事件类型: "
+            + ", ".join(sorted(unknown_event_types))
+        )
 
     protected_types = result["inbound"]["component_spoof_protection"]["protected_types"]
     if not isinstance(protected_types, list) or any(
@@ -512,7 +540,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
             "网页只读工具不支持二次确认；请通过能力包或 disabled_operations 控制开放"
         )
     bool_fields = (
-        ("toolsets", "inject_dialogue_prompt"),
+        ("dialogue", "enabled"),
         ("permissions", "allow_group_admin"),
         ("permissions", "allow_group_owner"),
         ("permissions", "allow_cross_group"),
@@ -543,14 +571,9 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(
             "inbound.component_spoof_protection.persist_verification_in_history 必须是布尔值"
         )
-    if spoof_protection["enabled"] and not protected_types:
+    if component_spoof_protection_enabled(result) and not protected_types:
         raise ValueError(
             "inbound.component_spoof_protection.enabled=true 时必须填写 protected_types"
-        )
-    if spoof_protection["enabled"] and not result["inbound"]["semanticize_components"]:
-        raise ValueError(
-            "inbound.component_spoof_protection.enabled=true 时必须同时开启 "
-            "inbound.semanticize_components"
         )
 
     ranges = {
@@ -751,8 +774,8 @@ class QQRuntime:
         warnings: list[str] = []
         spec = OPERATION_MAP.get(operation_id)
         try:
-            if isinstance(event, PlatformNotificationEvent):
-                raise QQToolError("permission_denied", "平台事件通知不具备工具执行授权")
+            if notification_tools_restricted(event, self.config):
+                raise QQToolError("permission_denied", "本轮平台事件已限制工具调用")
             if spec is None or operation not in TOOL_OPERATIONS.get(tool, ()):
                 raise QQToolError(
                     "invalid_parameters", f"不支持的 operation：{operation}"
@@ -1187,7 +1210,9 @@ class QQRuntime:
         """
 
         result = {"status": "not_executed", "message": ""}
-        if isinstance(event, PlatformNotificationEvent):
+        if isinstance(event, PlatformNotificationEvent) or getattr(
+            event, "notification_only", False
+        ):
             result["message"] = "平台事件通知不具备操作确认授权。"
             return result
         if not re.fullmatch(r"[0-9a-f]{8}", pending_id):
@@ -1599,7 +1624,7 @@ class QQRuntime:
             QQToolError: If any authorization boundary cannot be proven.
         """
 
-        caller_id = str(event.get_sender_id() or "")
+        caller_id = tool_session_user_id(event)
         if not caller_id:
             raise QQToolError("permission_denied", "无法识别调用者 ID")
         is_admin = event.is_admin()
@@ -1720,6 +1745,8 @@ class QQRuntime:
             raise QQToolError("permission_denied", "该操作仅允许 AstrBot 管理员")
         caller_role = "member"
         if spec.permission in {"group_admin", "group_owner"} and not is_admin:
+            if getattr(event, "notification_only", False):
+                raise QQToolError("permission_denied", "平台事件不继承群管理权限")
             if not current_group or target_id != current_group:
                 raise QQToolError("permission_denied", "该群管理操作只能作用于当前群")
             caller_role = await self.group_role(
@@ -2287,7 +2314,7 @@ class QQRuntime:
                     "message": message,
                 }
             return "send_private_msg", {
-                "user_id": int(event.get_sender_id()),
+                "user_id": int(tool_session_user_id(event)),
                 "message": message,
             }
         if target_type == "group":
@@ -2465,7 +2492,7 @@ class QQRuntime:
                     "messages": built_nodes,
                 }
             return "send_private_forward_msg", {
-                "user_id": int(event.get_sender_id()),
+                "user_id": int(tool_session_user_id(event)),
                 "messages": built_nodes,
             }
         if target_type == "group":

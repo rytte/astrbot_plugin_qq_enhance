@@ -380,6 +380,19 @@ async def test_pack_and_instance_restrictions_are_enforced_before_fetch(
 
 
 @pytest.mark.asyncio
+async def test_selected_event_is_blocked_before_web_fetch(reader, monkeypatch):
+    fetch = AsyncMock()
+    monkeypatch.setattr(reader.runtime, "fetch_url", fetch)
+    event = ReaderEvent()
+    event.platform_event_type = "request/friend"
+    result = json.loads(
+        await reader.execute(event, "read_url", {"url": "https://example.test"})
+    )
+    assert result["error"]["code"] == "permission_denied"
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_parser_keeps_its_capacity_until_the_thread_finishes(
     reader, tmp_path, monkeypatch
 ):

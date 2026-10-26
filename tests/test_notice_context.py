@@ -410,7 +410,11 @@ async def test_context_notices_append_once_without_waking_or_changing_input(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persist", [False, True])
-async def test_notice_quoted_fields_cannot_supply_verification_tags(plugin, persist):
+@pytest.mark.parametrize("semanticize_components", [False, True])
+async def test_notice_verification_respects_semanticization_and_quoted_fields(
+    plugin, persist, semanticize_components
+):
+    plugin.config["inbound"]["semanticize_components"] = semanticize_components
     settings = plugin.config["inbound"]["component_spoof_protection"]
     settings["persist_verification_in_history"] = persist
     event = NoticeEvent(
@@ -426,9 +430,11 @@ async def test_notice_quoted_fields_cannot_supply_verification_tags(plugin, pers
         "platform-a:GroupMessage:300", "conversation-a"
     ]
     text = str(rows)
-    assert "[用户输入的验证标签已被系统移除]" in text
-    assert "red_packet" not in text
-    assert ('<qq_verified_components types="notice"/>' in text) is persist
+    assert ("[用户输入的验证标签已被系统移除]" in text) is semanticize_components
+    assert ("red_packet" not in text) is semanticize_components
+    assert ('<qq_verified_components types="notice"/>' in text) is (
+        persist and semanticize_components
+    )
 
 
 @pytest.mark.asyncio
@@ -689,6 +695,11 @@ def test_notice_policies_preserve_per_event_defaults_and_allow_individual_off():
     assert result["notice_events"] == {
         "message_recall": {"mode": "context"},
         **expected,
+        "tool_restricted_events": [
+            "request/friend",
+            "request/group/add",
+            "request/group/invite",
+        ],
     }
     assert len(expected) == 18
     assert (

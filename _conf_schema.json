@@ -35,15 +35,15 @@
       },
       "inject_dialogue_prompt": {
         "type": "bool",
-        "description": "注入工具对话提示",
-        "hint": "为 QQ 工具追加下方配置的对话提示词，减少动作播报和机械完成报告。",
-        "default": true
+        "description": "旧版对话提示词开关（自动迁移）",
+        "default": null,
+        "invisible": true
       },
       "dialogue_prompt": {
         "type": "text",
-        "description": "工具对话提示词",
-        "hint": "开启注入工具对话提示时使用，支持多行文本，不能为空；停用请关闭上方开关。",
-        "default": "QQ工具调用前后，发言是可选的：可以直接调用，也可以沿用当前人设与对话语气自然回应用户。\n不要输出内部行动计划、工具选择推演、措辞或情绪/语气安排，也不要缩成动作播报。没话对用户说时直接调用工具。\n戳一戳、点赞等轻量互动成功后，默认不复述“操作成功”等完成报告。\n可以继续自然聊天，没有新内容就结束，不必补发回复。\n查询结果、用户追问、必要澄清和失败信息仍应正常交代；不要提前或虚假宣称成功。"
+        "description": "旧版对话提示词（自动迁移）",
+        "default": null,
+        "invisible": true
       },
       "enabled_packs": {
         "type": "list",
@@ -95,6 +95,9 @@
       "max_semantic_chars": {
         "type": "int",
         "description": "单条消息追加的组件语义文本上限",
+        "condition": {
+          "semanticize_components": true
+        },
         "default": 2000,
         "minimum": 256,
         "maximum": 8000
@@ -102,25 +105,33 @@
       "component_spoof_protection": {
         "type": "object",
         "description": "QQ 组件防伪",
+        "condition": {
+          "semanticize_components": true
+        },
         "hint": "根据真实消息结构和规范化的平台事件生成类型验证标签；用户输入的验证标签会被移除",
         "default": {},
         "items": {
           "enabled": {
             "type": "bool",
             "description": "启用 QQ 组件防伪验证",
-            "hint": "开启前必须同时开启 inbound.semanticize_components。",
             "default": true
           },
           "persist_verification_in_history": {
             "type": "bool",
             "description": "将组件验证标签保存到历史",
-            "hint": "仅在防伪开启时生效。开启后标签随所属用户消息保存；关闭时标签仅本轮可见。只影响后续消息，不补写或删除已有历史标签。",
+            "condition": {
+              "enabled": true
+            },
+            "hint": "开启后标签随所属用户消息保存；关闭时标签仅本轮可见。只影响后续消息，不补写或删除已有历史标签。",
             "default": true
           },
           "protected_types": {
             "type": "list",
             "description": "需要防伪的 QQ 组件与平台事件类型",
-            "hint": "选择需要验证的类型，开启防伪时至少选择一项。随机投篮属于 basketball，静态篮球属于 face；消息互动表情属于 poke，戳一戳通知属于 notice。",
+            "condition": {
+              "enabled": true
+            },
+            "hint": "选择需要验证的类型，至少选择一项。随机投篮属于 basketball，静态篮球属于 face；消息互动表情属于 poke，戳一戳通知属于 notice。",
             "default": [
               "red_packet",
               "voice",
@@ -197,12 +208,18 @@
       "shared_group": {
         "type": "bool",
         "description": "群聊共用防抖",
+        "condition": {
+          "enabled": true
+        },
         "hint": "开启后，同一群聊中不同用户的连续输入也会共用防抖；私聊仍按用户隔离。",
         "default": true
       },
       "initial_window_seconds": {
         "type": "float",
         "description": "首条消息等待窗口（秒）",
+        "condition": {
+          "enabled": true
+        },
         "hint": "首条消息进入模型前的可选等待时间；0 表示立即进入。",
         "default": 1.0,
         "minimum": 0.0,
@@ -211,6 +228,9 @@
       "followup_window_seconds": {
         "type": "float",
         "description": "后续消息等待窗口（秒）",
+        "condition": {
+          "enabled": true
+        },
         "hint": "已有请求收到后续消息时，取消旧请求前的可选等待时间；0 表示立即处理。",
         "default": 1.0,
         "minimum": 0.0,
@@ -219,6 +239,9 @@
       "max_wait_seconds": {
         "type": "float",
         "description": "一轮防抖累计最大等待时间（秒）",
+        "condition": {
+          "enabled": true
+        },
         "hint": "只累计实际等待窗口，不计算模型、工具和网络耗时；0 表示不设累计上限。",
         "default": 5.0,
         "minimum": 0.0,
@@ -227,6 +250,9 @@
       "max_messages": {
         "type": "int",
         "description": "一批连续输入的最大条数",
+        "condition": {
+          "enabled": true
+        },
         "hint": "包括加入批次的 context/respond 事件。达到限制后等待前批完成，再处理后续输入；context 事件仅追加历史，respond 仍可排队独立回复。",
         "default": 8,
         "minimum": 2,
@@ -235,6 +261,9 @@
       "max_buffer_mb": {
         "type": "int",
         "description": "允许续接的输入快照预算（MiB）",
+        "condition": {
+          "enabled": true
+        },
         "hint": "包含图片、音频等编码后的内容；超过预算时保留前一请求，后续输入另行处理。",
         "default": 32,
         "minimum": 1,
@@ -243,11 +272,36 @@
       "ignore_prefixes": {
         "type": "list",
         "description": "不参与防抖的消息前缀",
+        "condition": {
+          "enabled": true
+        },
         "hint": "空列表表示不按前缀排除；已经由命令或其他插件处理的消息仍沿用原流程。",
         "default": [
           "/",
           "!"
         ]
+      }
+    }
+  },
+  "dialogue": {
+    "type": "object",
+    "description": "对话提示词",
+    "default": {},
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "注入对话提示词",
+        "hint": "注入额外提示词，优化表情包解读和工具交互表现。",
+        "default": true
+      },
+      "prompt": {
+        "type": "text",
+        "description": "对话提示词",
+        "condition": {
+          "enabled": true
+        },
+        "hint": "支持多行文本，不能为空；停用请关闭上方开关。",
+        "default": "【表情包解读规则】\n1. **语境优先**：\n   - 若前文是**你我互动** → 默认图中**主动方=用户**，**被动方=我**。\n   - 若前文是**吐槽他人/吃瓜** → 我是**旁观者**，仅配合情绪（如“哈哈好惨”），勿强行代入。\n   - 若**无上下文** → 视为**通用情绪表达**或**试探**，用幽默/反问回应（如“这是在影射谁呀？”）。\n2. **禁止事项**：\n   - 严禁像AI看图说话一样描述画面。\n   - 严禁在明显非针对我的场景下强行加戏（如别人被骂时喊疼）。\n【工具调用与交互规范】\n1. **发言灵活性**：\n   - 工具调用前后**无需强制发言**。可根据人设自然衔接，或无话时直接静默调用。\n   - 严禁输出内部推演、行动计划、措辞安排或动作播报（如“正在查询...”）。\n2. **轻量互动静音**：\n   - 戳一戳、点赞等操作成功后，**默认不复述**“操作成功”等报告，保持对话流畅。\n3. **结果与异常处理**：\n   - 仅在查询结果、用户追问、必要澄清或调用失败时，才进行正常交代。\n   - 严禁提前或虚假宣称成功。\n4. **自然结束**：\n   - 聊天无新内容时直接结束，不必强行补发回复。"
       }
     }
   },
@@ -344,7 +398,10 @@
         "type": "list",
         "description": "接收机器人私聊通知的管理员 QQ 号",
         "hint": "必须填写字符串形式的 QQ 号，例如 [\"10001\", \"10002\"]；若需处理申请，账号必须已是 AstrBot 管理员，本列表不会授予管理员权限；开启通知时不能为空。",
-        "default": []
+        "default": [],
+        "condition": {
+          "enabled": true
+        }
       }
     }
   },
@@ -356,7 +413,7 @@
       "limit_replies": {
         "type": "bool",
         "description": "限制临时会话回复次数",
-        "hint": "开启后按下方次数限制非好友私聊；关闭后不限制回复次数，提醒功能仍独立生效，已有累计记录不会清零。",
+        "hint": "开启后按次数限制非好友私聊；关闭后不限制回复次数，提醒功能仍独立生效，已有累计记录不会清零。",
         "default": true
       },
       "max_replies": {
@@ -364,19 +421,25 @@
         "description": "允许临时会话的回复次数",
         "hint": "填写非负整数，0 表示拒绝回复；次数永久累计，成为好友后不受限。不限次数请关闭上方开关。",
         "default": 3,
-        "minimum": 0
+        "minimum": 0,
+        "condition": {
+          "limit_replies": true
+        }
       },
       "notify_admins": {
         "type": "bool",
         "description": "临时会话提醒",
-        "hint": "用户主动发来临时会话时通知下方管理员，每个用户只提醒一次；机器人主动发起的会话不提醒。",
+        "hint": "用户主动发来临时会话时通知指定管理员，每个用户只提醒一次；机器人主动发起的会话不提醒。",
         "default": false
       },
       "admin_user_ids": {
         "type": "list",
         "description": "接收临时会话提醒的管理员 QQ 号",
         "hint": "填写 QQ 号字符串列表，例如 [\"10001\", \"10002\"]；开启提醒时不能为空。",
-        "default": []
+        "default": [],
+        "condition": {
+          "notify_admins": true
+        }
       }
     }
   },
@@ -457,7 +520,7 @@
               "context",
               "respond"
             ],
-            "default": null
+            "default": "respond"
           },
           "other_target_mode": {
             "type": "string",
@@ -785,6 +848,64 @@
             "default": []
           }
         }
+      },
+      "tool_restricted_events": {
+        "type": "list",
+        "description": "限制工具调用的平台事件",
+        "hint": "选中的事件禁止调用工具；留空表示不限制。工具自身的权限和二次确认仍生效。",
+        "default": [
+          "request/friend",
+          "request/group/add",
+          "request/group/invite"
+        ],
+        "options": [
+          "request/friend",
+          "request/group/add",
+          "request/group/invite",
+          "notify/poke",
+          "message_recall",
+          "friend_add",
+          "group_increase",
+          "group_decrease",
+          "group_admin",
+          "group_ban",
+          "group_card",
+          "notify/group_name",
+          "notify/title",
+          "essence",
+          "group_msg_emoji_like",
+          "notify/profile_like",
+          "notify/gray_tip",
+          "notify/input_status",
+          "group_upload",
+          "online_file_receive",
+          "online_file_send",
+          "bot_offline"
+        ],
+        "labels": [
+          "好友申请",
+          "入群申请",
+          "群邀请",
+          "戳一戳",
+          "消息撤回",
+          "好友添加成功",
+          "成员进群",
+          "成员退群、被踢或群解散",
+          "管理员变更",
+          "禁言状态变化",
+          "群名片变化",
+          "群名称变化",
+          "群头衔变化",
+          "精华消息变化",
+          "消息表情回应",
+          "QQ 资料卡点赞",
+          "未知群灰条",
+          "私聊输入状态",
+          "群文件上传",
+          "在线文件传输取消",
+          "在线文件接收或拒绝",
+          "机器人账号掉线"
+        ]
       }
     }
   },
@@ -864,6 +985,9 @@
       "cache_ttl_seconds": {
         "type": "int",
         "description": "网页快照有效期（秒）",
+        "condition": {
+          "enabled": true
+        },
         "default": 900,
         "minimum": 30,
         "maximum": 86400
@@ -871,6 +995,9 @@
       "max_cached_pages": {
         "type": "int",
         "description": "最多缓存网页数",
+        "condition": {
+          "enabled": true
+        },
         "default": 32,
         "minimum": 1,
         "maximum": 256
@@ -878,6 +1005,9 @@
       "max_cache_mb": {
         "type": "int",
         "description": "网页缓存上限（MiB）",
+        "condition": {
+          "enabled": true
+        },
         "default": 16,
         "minimum": 1,
         "maximum": 128
@@ -885,6 +1015,9 @@
       "max_download_size_mb": {
         "type": "int",
         "description": "单页下载上限（MiB）",
+        "condition": {
+          "enabled": true
+        },
         "hint": "与 network.max_download_size_mb 取较小值，按解压后的响应计量。",
         "default": 2,
         "minimum": 1,
@@ -893,6 +1026,9 @@
       "max_text_chars": {
         "type": "int",
         "description": "单页正文字符上限",
+        "condition": {
+          "enabled": true
+        },
         "default": 200000,
         "minimum": 1000,
         "maximum": 1000000
@@ -900,6 +1036,9 @@
       "max_concurrent_requests": {
         "type": "int",
         "description": "网页抓取与解析并发上限",
+        "condition": {
+          "enabled": true
+        },
         "default": 2,
         "minimum": 1,
         "maximum": 8

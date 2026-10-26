@@ -12,6 +12,10 @@ import pytest
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import File, Plain
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot_plugin_qq_enhance.debounce_runtime import ResumedMessageEvent
+from astrbot_plugin_qq_enhance.notice_context import QQNotice
+from astrbot_plugin_qq_enhance.request_notification import NoticeResponseEvent
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.errors import QQToolError
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
@@ -190,6 +194,144 @@ async def make_runtime(tmp_path, config: dict | None = None):
     ):
         runtime = QQRuntime(FakeContext(client), validate_config(config), storage)
     return runtime, client, storage
+
+
+def notice_tool_event(runtime, client, group_id=""):
+    owner = SimpleNamespace(
+        plugin=SimpleNamespace(context=runtime.context), closed=False
+    )
+    platform = SimpleNamespace(
+        meta=lambda: PlatformMetadata(
+            id="platform-a", name="aiocqhttp", description=""
+        ),
+        get_client=lambda: client,
+    )
+    notice = QQNotice(
+        kind="notify/poke",
+        self_id="99999",
+        group_id=group_id,
+        user_id="20001",
+        occurred_at=1000,
+        details={"target_id": 99999},
+        description="用户戳了你一下",
+    )
+    delivery = SimpleNamespace(
+        umo=f"platform-a:GroupMessage:{group_id}"
+        if group_id
+        else "platform-a:FriendMessage:20001",
+        notice=notice,
+    )
+    event = NoticeResponseEvent(owner, platform, delivery, "99999")
+    event.role = "admin"
+    return event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_id", ["", "30001"])
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_unrestricted_notice_can_poke_in_its_original_session(
+    tmp_path, group_id, resumed
+):
+    runtime, client, _ = await make_runtime(tmp_path)
+    event = notice_tool_event(runtime, client, group_id)
+    if resumed:
+        event = ResumedMessageEvent(
+            event, SimpleNamespace(closed=False, config={"enabled": True})
+        )
+    assert not event.is_admin()
+    params = {"user_id": 20001}
+    if group_id:
+        params["group_id"] = int(group_id)
+    result = json.loads(
+        await runtime.execute(
+            event,
+            "qq_group_member_manage" if group_id else "qq_friend_interact",
+            "poke",
+            params,
+        )
+    )
+    assert result["ok"] is True
+    assert ("group_poke" if group_id else "friend_poke", params) in client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_selected_notice_is_rejected_by_runtime_before_any_qq_call(
+    tmp_path, resumed
+):
+    runtime, client, _ = await make_runtime(
+        tmp_path, {"notice_events": {"tool_restricted_events": ["notify/poke"]}}
+    )
+    event = notice_tool_event(runtime, client)
+    if resumed:
+        event = ResumedMessageEvent(
+            event, SimpleNamespace(closed=False, config={"enabled": True})
+        )
+    result = json.loads(
+        await runtime.execute(event, "qq_friend_interact", "poke", {"user_id": 20001})
+    )
+    assert result["error"]["code"] == "permission_denied"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unrestricted_notice_still_cannot_cross_sessions_or_inherit_admin(
+    tmp_path,
+):
+    runtime, client, _ = await make_runtime(tmp_path)
+    for group_id, tool, operation, params in (
+        ("", "qq_friend_interact", "poke", {"user_id": 10001}),
+        ("", "qq_friend_manage", "delete", {"user_id": 20001}),
+        (
+            "30001",
+            "qq_group_member_manage",
+            "poke",
+            {"group_id": 30002, "user_id": 20001},
+        ),
+        (
+            "30001",
+            "qq_group_member_manage",
+            "ban",
+            {"group_id": 30001, "user_id": 20001, "duration": 60},
+        ),
+    ):
+        event = notice_tool_event(runtime, client, group_id)
+        result = json.loads(await runtime.execute(event, tool, operation, params))
+        assert result["error"]["code"] == "permission_denied"
+    assert not any(
+        action in {"friend_poke", "group_poke", "delete_friend", "set_group_ban"}
+        for action, _ in client.calls
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forward", [False, True])
+async def test_notice_current_private_target_resolves_to_real_session_peer(
+    tmp_path, forward
+):
+    runtime, client, _ = await make_runtime(tmp_path)
+    event = notice_tool_event(runtime, client)
+    params = {"target": {"type": "current"}}
+    if forward:
+        params["nodes"] = [
+            {
+                "sender_name": "机器人",
+                "sender_id": 99999,
+                "components": [{"type": "text", "text": "你好"}],
+            }
+        ]
+    else:
+        params["components"] = [{"type": "text", "text": "你好"}]
+    result = json.loads(
+        await runtime.execute(
+            event, "qq_send_forward" if forward else "qq_send_message", "send", params
+        )
+    )
+    assert result["ok"] is True
+    action = "send_private_forward_msg" if forward else "send_private_msg"
+    assert any(
+        name == action and data["user_id"] == 20001 for name, data in client.calls
+    )
 
 
 @pytest.mark.asyncio

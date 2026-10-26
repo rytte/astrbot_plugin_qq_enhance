@@ -15,7 +15,11 @@ from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.utils.session_lock import session_lock_manager
 
 from .debounce import ARRIVAL_KEY, Arrival, ContextInput, batch_size, debounce_sender
-from .verification import USER_VERIFICATION_TAG_PATTERN, USER_VERIFICATION_TAG_REMOVED
+from .verification import (
+    USER_VERIFICATION_TAG_PATTERN,
+    USER_VERIFICATION_TAG_REMOVED,
+    component_spoof_protection_enabled,
+)
 
 
 DEFAULT_NOTICE_POLICIES = {
@@ -38,6 +42,14 @@ DEFAULT_NOTICE_POLICIES = {
     "online_file_send": {"mode": "off"},
     "bot_offline": {"mode": "off", "admin_user_ids": []},
 }
+DEFAULT_TOOL_RESTRICTED_EVENTS = (
+    "request/friend",
+    "request/group/add",
+    "request/group/invite",
+)
+PLATFORM_EVENT_TYPES = frozenset(
+    {*DEFAULT_NOTICE_POLICIES, "message_recall", *DEFAULT_TOOL_RESTRICTED_EVENTS}
+)
 NOTICE_MAX_PENDING = 256
 NOTICE_MAX_PER_SESSION = 32
 NOTICE_DEDUP_TTL = 180
@@ -724,7 +736,7 @@ class NoticeContext:
         settings = self.plugin.config["inbound"]["component_spoof_protection"]
         if not (
             item.verified_type
-            and settings["enabled"]
+            and component_spoof_protection_enabled(self.plugin.config)
             and item.verified_type in settings["protected_types"]
         ):
             return Message(role="user", content=item.content)
@@ -802,7 +814,7 @@ class NoticeContext:
         )
         delivery = NoticeDelivery(notice, umo, cid, barriers, ready, recall_entry)
         content = notice.render()
-        if self.plugin.config["inbound"]["component_spoof_protection"]["enabled"]:
+        if component_spoof_protection_enabled(self.plugin.config):
             # Quoted event fields remain user data, never plugin verification.
             content = USER_VERIFICATION_TAG_PATTERN.sub(
                 USER_VERIFICATION_TAG_REMOVED, content
@@ -813,6 +825,7 @@ class NoticeContext:
             content,
             conversation_id=cid,
             verified_type="notice",
+            platform_event_type=notice.kind,
         )
         if not defer:
             delivery.dispatched.set()

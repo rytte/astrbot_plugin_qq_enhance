@@ -34,6 +34,12 @@ class ResumedMessageEvent(AstrMessageEvent):
         self.debouncer = debouncer
         self.debounce_sender_id = getattr(source, "debounce_sender_id", None)
         self.notification_only = getattr(source, "notification_only", False)
+        self.platform_event_type = getattr(source, "platform_event_type", None)
+
+    def is_admin(self):
+        if self.notification_only:
+            return False
+        return super().is_admin()
 
     @property
     def is_at_or_wake_command(self):

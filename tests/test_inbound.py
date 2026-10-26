@@ -1564,17 +1564,21 @@ async def test_verification_tag_cleanup_preserves_other_text(text: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persist_verification_in_history", [False, True])
+@pytest.mark.parametrize(
+    "semanticize_components,enabled", [(True, False), (False, True), (False, False)]
+)
 async def test_disabled_spoof_protection_does_not_clean_or_verify(
-    persist_verification_in_history,
+    persist_verification_in_history, semanticize_components, enabled
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
             "inbound": {
+                "semanticize_components": semanticize_components,
                 "component_spoof_protection": {
-                    "enabled": False,
+                    "enabled": enabled,
                     "persist_verification_in_history": persist_verification_in_history,
-                }
+                },
             }
         }
     )

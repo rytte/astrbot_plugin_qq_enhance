@@ -202,7 +202,7 @@ class Harness:
             raw={"post_type": "notice", "notice_type": "debounce_resume"},
         )
         event.unified_msg_origin = source.unified_msg_origin
-        for name in ("debounce_sender_id", "notification_only"):
+        for name in ("debounce_sender_id", "notification_only", "platform_event_type"):
             if hasattr(source, name):
                 setattr(event, name, getattr(source, name))
         self.resumed.append(event)

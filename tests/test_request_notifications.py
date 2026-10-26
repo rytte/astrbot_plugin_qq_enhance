@@ -412,6 +412,7 @@ async def test_notification_queues_platform_input(
     )
 
     assert isinstance(event, RequestNotificationEvent)
+    assert event.platform_event_type == kind
     assert event.session.message_type == MessageType.FRIEND_MESSAGE
     assert event.session.session_id == "10001"
     assert event.unified_msg_origin == "platform-a:FriendMessage:10001"
@@ -567,6 +568,65 @@ async def test_ordinary_request_is_unchanged(notification_plugin):
     assert request.func_tool is tools
     assert request.system_prompt == "原提示"
     notification_plugin.storage.bind_request_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_type,sub_type,kind",
+    [
+        ("friend", "", "request/friend"),
+        ("group", "add", "request/group/add"),
+        ("group", "invite", "request/group/invite"),
+    ],
+)
+@pytest.mark.parametrize("restricted", [False, True])
+async def test_each_request_notification_uses_its_own_tool_policy(
+    notification_plugin, request_type, sub_type, kind, restricted
+):
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+
+    notification_plugin.config["notice_events"]["tool_restricted_events"] = (
+        [kind] if restricted else ["notify/poke"]
+    )
+    event = await queue_notification(notification_plugin, request_type, sub_type)
+    handler = AsyncMock(return_value="已执行测试工具")
+    original = FunctionTool(
+        name="test_tool",
+        description="test",
+        parameters={"type": "object"},
+        handler=handler,
+    )
+    request = ProviderRequest(
+        func_tool=ToolSet([original]),
+        conversation=SimpleNamespace(cid="conversation-a"),
+    )
+    await notification_plugin.prepare_platform_notification(event, request)
+    tool = request.func_tool.tools[0]
+    assert isinstance(tool, NotificationOnlyTool) is restricted
+    context = SimpleNamespace(context=SimpleNamespace(event=event), tool_call_timeout=5)
+    results = [result async for result in FunctionToolExecutor.execute(tool, context)]
+    if restricted:
+        assert results[0].isError
+        handler.assert_not_awaited()
+    else:
+        assert tool is original
+        handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_results_stay_restricted_when_event_list_is_empty(
+    notification_plugin,
+):
+    notification_plugin.config["notice_events"]["tool_restricted_events"] = []
+    event = await queue_confirmation(notification_plugin)
+    request = ProviderRequest(
+        func_tool=ToolSet(
+            [FunctionTool(name="test", description="test", parameters={})]
+        ),
+        conversation=SimpleNamespace(cid="conversation-a"),
+    )
+    await notification_plugin.prepare_platform_notification(event, request)
+    assert isinstance(request.func_tool.tools[0], NotificationOnlyTool)
 
 
 @pytest.mark.asyncio

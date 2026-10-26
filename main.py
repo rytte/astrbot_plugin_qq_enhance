@@ -30,6 +30,7 @@ from astrbot.core.utils.astrbot_path import (
 from astrbot.core.utils.session_lock import session_lock_manager
 
 from .capabilities import operation_availability
+from .config_migration import migrate_installed_config
 from .catalog import (
     KEYWORD_TOOLS,
     OPERATION_MAP,
@@ -60,14 +61,23 @@ from .request_notification import (
     NotificationOnlyTool,
     PlatformNotificationEvent,
     RequestNotificationEvent,
+    notification_tools_restricted,
 )
 from .providers import provider_contracts, resolve_provider
 from .providers.base import VersionInfo
-from .runtime import QQRuntime, validate_config
+from .runtime import DEFAULT_QQ_TOOL_DIALOGUE_PROMPT, QQRuntime, validate_config
 from .storage import Storage
 from .temporary_session import TURN_KEY, TemporarySessions
-from .verification import USER_VERIFICATION_TAG_PATTERN, USER_VERIFICATION_TAG_REMOVED
+from .verification import (
+    USER_VERIFICATION_TAG_PATTERN,
+    USER_VERIFICATION_TAG_REMOVED,
+    component_spoof_protection_enabled,
+)
 from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, WebReader
+
+# AstrBot imports this module before filling missing schema fields. Migrate
+# while missing values can still be distinguished from explicit user settings.
+migrate_installed_config(Path(__file__).parent, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
 
 RECALL_TRACK_TTL_SECONDS = 180
 RECALL_TRACK_MAX_ENTRIES = 1000
@@ -246,13 +256,22 @@ class QQEnhancePlugin(Star):
         self.config = validate_config(dict(config or {}))
         if isinstance(config, AstrBotConfig):
             config_migrated = False
+            legacy_dialogue_keys = ("inject_dialogue_prompt", "dialogue_prompt")
+            if config.get("dialogue", {}).get("enabled") is None or any(
+                config.get("toolsets", {}).get(key) is not None
+                for key in legacy_dialogue_keys
+            ):
+                config["dialogue"] = deepcopy(self.config["dialogue"])
+                for key in legacy_dialogue_keys:
+                    config["toolsets"][key] = None
+                config_migrated = True
             if (
                 config.get("interaction_response", {}).get("respond_to_poke")
                 is not None
                 or config.get("notice_events", {}).get("notify/poke", {}).get("mode")
                 is None
             ):
-                # Null schema defaults preserve the legacy value until migration.
+                # Clear legacy fields after normalizing old or null values.
                 config.setdefault("interaction_response", {})["respond_to_poke"] = None
                 config.setdefault("notice_events", {})["notify/poke"] = deepcopy(
                     self.config["notice_events"]["notify/poke"]
@@ -804,7 +823,9 @@ class QQEnhancePlugin(Star):
                     "enhance_voice_messages": self.config["voice_recognition"][
                         "enhance_voice_messages"
                     ],
-                    "component_spoof_protection_enabled": spoof_config["enabled"],
+                    "component_spoof_protection_enabled": (
+                        component_spoof_protection_enabled(self.config)
+                    ),
                     "persist_verification_in_history": spoof_config[
                         "persist_verification_in_history"
                     ],
@@ -1295,9 +1316,10 @@ class QQEnhancePlugin(Star):
         if platform_id and event.get_platform_id() != platform_id:
             return
         inbound = self.config["inbound"]
+        verify_components = component_spoof_protection_enabled(self.config)
         interaction_response = self.config["interaction_response"]
         raw = getattr(event.message_obj, "raw_message", None)
-        if inbound["component_spoof_protection"]["enabled"]:
+        if verify_components:
             self._verify_inbound_components(event, raw)
         await self._enhance_inbound_qq_voice(event, raw)
         red_packet = interaction_response[
@@ -1330,7 +1352,7 @@ class QQEnhancePlugin(Star):
         )
         if red_packet and not semantics:
             semantics = format_component_semantics("QQ红包消息（仅识别，不能代领）")
-        if inbound["component_spoof_protection"]["enabled"]:
+        if verify_components:
             self._remove_inbound_verification_tags(event)
             semantics = USER_VERIFICATION_TAG_PATTERN.sub(
                 USER_VERIFICATION_TAG_REMOVED, semantics
@@ -1363,7 +1385,7 @@ class QQEnhancePlugin(Star):
         """
 
         spoof_protection = self.config["inbound"]["component_spoof_protection"]
-        if not spoof_protection["enabled"]:
+        if not component_spoof_protection_enabled(self.config):
             return
         if event.get_platform_name() != "aiocqhttp":
             return
@@ -1901,7 +1923,10 @@ class QQEnhancePlugin(Star):
         item = event.get_extra("_qq_enhance_recall_input")
         if item is None:
             item = ContextInput(
-                key, asyncio.get_running_loop().create_future(), content
+                key,
+                asyncio.get_running_loop().create_future(),
+                content,
+                platform_event_type="message_recall",
             )
             event.set_extra("_qq_enhance_recall_input", item)
             self.debouncer.submit_context(related, item)
@@ -2203,9 +2228,9 @@ class QQEnhancePlugin(Star):
                 request.system_prompt = (
                     f"{request.system_prompt or ''}\n{implementation_prompt}\n"
                 )
-        dialogue_prompt = self.config["toolsets"]["dialogue_prompt"]
+        dialogue_prompt = self.config["dialogue"]["prompt"]
         if (
-            self.config["toolsets"]["inject_dialogue_prompt"]
+            self.config["dialogue"]["enabled"]
             and any(
                 request.func_tool.get_tool(tool_name)
                 for tool_name in visible - WEB_TOOL_NAMES
@@ -2403,6 +2428,7 @@ class QQEnhancePlugin(Star):
                 request["request_id"],
                 request["self_id"],
                 text,
+                event_type=kind,
             )
             if not await self._queue_platform_notification(event):
                 continue
@@ -2416,7 +2442,7 @@ class QQEnhancePlugin(Star):
     async def _queue_platform_notification(
         self, event: PlatformNotificationEvent
     ) -> bool:
-        """Queue a read-only event only when native session generation is enabled.
+        """Queue a notification only when native session generation is enabled.
 
         Args:
             event: Trusted notification already bound to its destination session.
@@ -2471,9 +2497,11 @@ class QQEnhancePlugin(Star):
             request: Request assembled from the destination's current conversation.
         """
 
-        if not isinstance(event, PlatformNotificationEvent) and not getattr(
+        notification = isinstance(event, PlatformNotificationEvent) or getattr(
             event, "notification_only", False
-        ):
+        )
+        restricted = notification_tools_restricted(event, self.config)
+        if not notification and not restricted:
             return
         try:
             if not await SessionPluginManager.is_plugin_enabled_for_session(
@@ -2485,7 +2513,7 @@ class QQEnhancePlugin(Star):
                 await self.notice_context.prepare_response(event, request)
                 if event.is_stopped():
                     return
-            if request.func_tool is not None:
+            if restricted and request.func_tool is not None:
                 request.func_tool = ToolSet(
                     [
                         NotificationOnlyTool(
@@ -2496,7 +2524,7 @@ class QQEnhancePlugin(Star):
                         for tool in request.func_tool.tools
                     ]
                 )
-            if request.conversation is None:
+            if notification and request.conversation is None:
                 raise RuntimeError("QQ 平台通知缺少目标会话")
             if isinstance(event, RequestNotificationEvent):
                 await self.storage.bind_request_notification(

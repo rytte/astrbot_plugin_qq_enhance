@@ -18,7 +18,15 @@ from astrbot_plugin_qq_enhance.catalog import (
     OPERATIONS,
     TOOL_OPERATIONS,
 )
+from astrbot_plugin_qq_enhance.config_migration import (
+    migrate_config_file,
+    migrate_installed_config,
+)
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.notice_context import (
+    DEFAULT_TOOL_RESTRICTED_EVENTS,
+    PLATFORM_EVENT_TYPES,
+)
 from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.runtime import (
     DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
@@ -129,31 +137,210 @@ def test_version_range_is_explicit() -> None:
     assert SNOWLUMA.supported_versions == ">=1.14.22"
 
 
-@pytest.mark.parametrize("config", [None, {}, {"toolsets": {}}])
+def test_platform_event_tool_restrictions_match_schema_and_accept_empty_list():
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    items = schema["notice_events"]["items"]
+    setting = items["tool_restricted_events"]
+    assert list(items)[-1] == "tool_restricted_events"
+    assert setting["default"] == list(DEFAULT_TOOL_RESTRICTED_EVENTS)
+    assert set(setting["options"]) == PLATFORM_EVENT_TYPES
+    assert len(setting["labels"]) == len(setting["options"])
+    assert "confirmation_result" not in setting["options"]
+    assert validate_config(None)["notice_events"]["tool_restricted_events"] == (
+        list(DEFAULT_TOOL_RESTRICTED_EVENTS)
+    )
+    assert (
+        validate_config({"notice_events": {"tool_restricted_events": []}})[
+            "notice_events"
+        ]["tool_restricted_events"]
+        == []
+    )
+
+
+@pytest.mark.parametrize("kind", sorted(PLATFORM_EVENT_TYPES))
+def test_each_platform_event_can_restrict_tools(kind):
+    raw = {"notice_events": {"tool_restricted_events": [kind]}}
+    assert validate_config(raw)["notice_events"]["tool_restricted_events"] == [kind]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        True,
+        "notify/poke",
+        [1],
+        ["notify/poke", "notify/poke"],
+        ["unknown"],
+        ["confirmation_result"],
+    ],
+)
+def test_invalid_platform_event_tool_restrictions_are_rejected(value):
+    with pytest.raises(ValueError, match="notice_events[.]tool_restricted_events"):
+        validate_config({"notice_events": {"tool_restricted_events": value}})
+
+
+@pytest.mark.parametrize(
+    "config", [None, {}, {"dialogue": {}}, {"dialogue": {"enabled": None}}]
+)
 def test_tool_dialogue_prompt_is_enabled_by_default(config) -> None:
-    toolsets = validate_config(config)["toolsets"]
-    assert toolsets["inject_dialogue_prompt"] is True
-    assert toolsets["dialogue_prompt"] == DEFAULT_QQ_TOOL_DIALOGUE_PROMPT
+    dialogue = validate_config(config)["dialogue"]
+    assert dialogue["enabled"] is True
+    assert dialogue["prompt"] == DEFAULT_QQ_TOOL_DIALOGUE_PROMPT
 
 
 def test_tool_dialogue_prompt_preserves_custom_text() -> None:
     prompt = "\n请沿用当前人设自然回应。\n不要播报工具调用过程。\n"
-    config = validate_config({"toolsets": {"dialogue_prompt": prompt}})
-    assert config["toolsets"]["dialogue_prompt"] == prompt
+    config = validate_config({"dialogue": {"prompt": prompt}})
+    assert config["dialogue"]["prompt"] == prompt
 
 
 @pytest.mark.parametrize("value", [None, True, 0, 1, [], {}, "", " \n\t"])
 def test_tool_dialogue_prompt_rejects_invalid_text(value) -> None:
-    with pytest.raises(ValueError, match="toolsets[.]dialogue_prompt 必须是非空字符串"):
-        validate_config({"toolsets": {"dialogue_prompt": value}})
+    with pytest.raises(ValueError, match="dialogue[.]prompt 必须是非空字符串"):
+        validate_config({"dialogue": {"prompt": value}})
 
 
-@pytest.mark.parametrize("value", ["true", "false", 0, 1, None, [], {}])
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, [], {}])
 def test_tool_dialogue_prompt_requires_a_boolean(value) -> None:
-    with pytest.raises(
-        ValueError, match="toolsets[.]inject_dialogue_prompt 必须是布尔值"
+    with pytest.raises(ValueError, match="dialogue[.]enabled 必须是布尔值"):
+        validate_config({"dialogue": {"enabled": value}})
+
+
+def test_legacy_dialogue_settings_migrate_without_mutating_input() -> None:
+    raw = {
+        "toolsets": {
+            "inject_dialogue_prompt": False,
+            "dialogue_prompt": "\n请简短回应。\n",
+            "exposure_mode": "balanced",
+        }
+    }
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result["dialogue"] == {"enabled": False, "prompt": "\n请简短回应。\n"}
+    assert result["toolsets"] == {
+        "exposure_mode": "balanced",
+        "enabled_packs": [],
+        "disabled_operations": [],
+    }
+    assert raw == original
+    assert validate_config(result) == result
+
+
+@pytest.mark.parametrize("legacy_prompt", [None, "", " \n\t", "旧版自定义提示词"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_explicit_dialogue_settings_override_stale_legacy_values(
+    legacy_prompt, enabled
+) -> None:
+    raw = {
+        "toolsets": {
+            "inject_dialogue_prompt": not enabled,
+            "dialogue_prompt": legacy_prompt,
+        },
+        "dialogue": {"enabled": enabled, "prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT},
+    }
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result["dialogue"] == original["dialogue"]
+    assert raw == original
+    assert validate_config(result) == result
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_legacy_dialogue_settings_are_saved_once_after_schema_fill(
+    tmp_path, enabled
+) -> None:
+    prompt = "\n请沿用人设自然回应。\n"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "toolsets": {
+                    "inject_dialogue_prompt": enabled,
+                    "dialogue_prompt": prompt,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+            return_value=str(tmp_path),
+        ),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
     ):
-        validate_config({"toolsets": {"inject_dialogue_prompt": value}})
+        runtime_factory.return_value.config = validate_config(dict(config))
+        plugin = QQEnhancePlugin(SimpleNamespace(register_web_api=Mock()), config)
+
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    assert plugin.config["dialogue"] == {"enabled": enabled, "prompt": prompt}
+    assert reloaded["dialogue"] == plugin.config["dialogue"]
+    assert reloaded["toolsets"]["inject_dialogue_prompt"] is None
+    assert reloaded["toolsets"]["dialogue_prompt"] is None
+    saved = config_path.read_bytes()
+    assert not migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    assert config_path.read_bytes() == saved
+
+    # Editing the new group must not be overwritten by legacy values on reload.
+    reloaded["dialogue"] = {"enabled": not enabled, "prompt": "新的提示词"}
+    reloaded.save_config()
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    assert validate_config(dict(reloaded))["dialogue"] == {
+        "enabled": not enabled,
+        "prompt": "新的提示词",
+    }
+
+
+@pytest.mark.parametrize("legacy_prompt", ["", " \n\t", "旧版自定义提示词"])
+def test_new_dialogue_settings_survive_schema_fill_and_plugin_reload(
+    tmp_path, legacy_prompt
+) -> None:
+    config_path = tmp_path / "config.json"
+    expected = {"enabled": True, "prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT}
+    config_path.write_text(
+        json.dumps(
+            {
+                "toolsets": {
+                    "inject_dialogue_prompt": False,
+                    "dialogue_prompt": legacy_prompt,
+                },
+                "dialogue": expected,
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.main.get_astrbot_plugin_data_path",
+            return_value=str(tmp_path),
+        ),
+        patch("astrbot_plugin_qq_enhance.main.QQRuntime") as runtime_factory,
+    ):
+        runtime_factory.return_value.config = validate_config(dict(config))
+        plugin = QQEnhancePlugin(SimpleNamespace(register_web_api=Mock()), config)
+
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    assert plugin.config["dialogue"] == expected
+    assert validate_config(dict(reloaded))["dialogue"] == expected
+    assert reloaded["toolsets"]["inject_dialogue_prompt"] is None
+    assert reloaded["toolsets"]["dialogue_prompt"] is None
 
 
 @pytest.mark.parametrize("config", [None, {}])
@@ -163,9 +350,14 @@ def test_all_runtime_defaults_match_webui_schema(config) -> None:
     pending = [("", schema, validate_config(config))]
     while pending:
         prefix, items, defaults = pending.pop()
-        if prefix == "interaction_response":
-            assert items["respond_to_poke"]["invisible"] is True
-            items = {k: v for k, v in items.items() if k != "respond_to_poke"}
+        legacy_keys = {
+            "interaction_response": {"respond_to_poke"},
+            "toolsets": {"inject_dialogue_prompt", "dialogue_prompt"},
+        }.get(prefix, set())
+        for key in legacy_keys:
+            assert items[key]["invisible"] is True
+            assert items[key]["default"] is None
+        items = {k: v for k, v in items.items() if k not in legacy_keys}
         assert set(items) == set(defaults), prefix
         for name, item in items.items():
             path = f"{prefix}.{name}" if prefix else name
@@ -174,14 +366,105 @@ def test_all_runtime_defaults_match_webui_schema(config) -> None:
                 assert isinstance(defaults[name], dict), path
                 pending.append((path, item["items"], defaults[name]))
             else:
-                if path == "notice_events.notify/poke.mode":
-                    assert (
-                        item["default"] is None
-                    )  # Migration sentinel before initialization.
-                    assert defaults[name] == "respond"
-                    continue
                 assert type(item["default"]) is type(defaults[name]), path
                 assert item["default"] == defaults[name], path
+
+
+def test_restoring_dialogue_and_poke_defaults_survives_save_and_reload(tmp_path):
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    config_path = tmp_path / "config.json"
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    config["dialogue"] = {"enabled": False, "prompt": "自定义提示词"}
+    config["notice_events"]["notify/poke"] = {
+        "mode": "off",
+        "other_target_mode": "off",
+    }
+    # The dashboard reset control assigns the schema default directly.
+    config["dialogue"]["enabled"] = schema["dialogue"]["items"]["enabled"]["default"]
+    config["notice_events"]["notify/poke"]["mode"] = schema["notice_events"]["items"][
+        "notify/poke"
+    ]["items"]["mode"]["default"]
+    assert config["dialogue"]["enabled"] is True
+    assert config["notice_events"]["notify/poke"]["mode"] == "respond"
+    config.save_config()
+    assert not migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    reloaded = AstrBotConfig(config_path=str(config_path), schema=schema)
+    result = validate_config(dict(reloaded))
+    assert result["dialogue"] == {"enabled": True, "prompt": "自定义提示词"}
+    assert result["notice_events"]["notify/poke"] == {
+        "mode": "respond",
+        "other_target_mode": "off",
+    }
+
+
+def test_installed_config_migrates_before_schema_fill_and_ignores_checkouts(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    plugin_dir = plugins_dir / "qq_enhance"
+    config_path = config_dir / "qq_enhance_config.json"
+    original = {
+        "toolsets": {"inject_dialogue_prompt": False, "dialogue_prompt": "旧提示词"},
+        "interaction_response": {"respond_to_poke": False},
+        "unrelated": {"value": "保留"},
+    }
+    config_path.write_text(json.dumps(original), encoding="utf-8-sig")
+    with (
+        patch(
+            "astrbot_plugin_qq_enhance.config_migration.get_astrbot_plugin_path",
+            return_value=str(plugins_dir),
+        ),
+        patch(
+            "astrbot_plugin_qq_enhance.config_migration.get_astrbot_config_path",
+            return_value=str(config_dir),
+        ),
+    ):
+        migrate_installed_config(tmp_path / "checkout", DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+        assert json.loads(config_path.read_text(encoding="utf-8-sig")) == original
+        migrate_installed_config(plugin_dir, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    migrated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert migrated["dialogue"] == {"enabled": False, "prompt": "旧提示词"}
+    assert migrated["notice_events"]["notify/poke"]["mode"] == "off"
+    assert migrated["unrelated"] == original["unrelated"]
+    assert not migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+
+
+def test_pre_schema_migration_accepts_previous_null_markers(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "dialogue": {
+                    "enabled": None,
+                    "prompt": DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
+                },
+                "notice_events": {"notify/poke": {"mode": None}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    assert config["dialogue"]["enabled"] is True
+    assert config["notice_events"]["notify/poke"]["mode"] == "respond"
+
+
+def test_failed_pre_schema_migration_preserves_original_file(tmp_path):
+    config_path = tmp_path / "config.json"
+    original = b'{"interaction_response": {"respond_to_poke": false}}'
+    config_path.write_bytes(original)
+    with (
+        patch.object(Path, "replace", side_effect=OSError("write failed")),
+        pytest.raises(OSError, match="write failed"),
+    ):
+        migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    assert config_path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [config_path]
 
 
 def test_web_reader_defaults_and_private_network_default_match_schema() -> None:
@@ -540,26 +823,36 @@ def test_plugin_import_does_not_prevalidate_persisted_config(tmp_path) -> None:
     assert config_path.read_text(encoding="utf-8") == original
 
 
-def test_component_spoof_protection_requires_semanticization() -> None:
-    for persist_verification_in_history in (False, True):
-        with pytest.raises(
-            ValueError,
-            match=(
-                "inbound.component_spoof_protection.enabled=true 时必须同时开启 "
-                "inbound.semanticize_components"
-            ),
-        ):
-            validate_config(
-                {
-                    "inbound": {
-                        "semanticize_components": False,
-                        "component_spoof_protection": {
-                            "enabled": True,
-                            "persist_verification_in_history": persist_verification_in_history,
-                        },
-                    }
-                }
-            )
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("persist_verification_in_history", [False, True])
+def test_disabled_semanticization_preserves_component_spoof_settings(
+    enabled, persist_verification_in_history
+) -> None:
+    raw = {
+        "inbound": {
+            "semanticize_components": False,
+            "component_spoof_protection": {
+                "enabled": enabled,
+                "persist_verification_in_history": persist_verification_in_history,
+                "protected_types": ["dice", "notice"],
+            },
+        }
+    }
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result["inbound"] == {
+        **original["inbound"],
+        "max_semantic_chars": 2000,
+    }
+    assert raw == original
+    assert validate_config(result) == result
+    result["inbound"]["semanticize_components"] = True
+    assert (
+        validate_config(result)["inbound"]["component_spoof_protection"]
+        == (original["inbound"]["component_spoof_protection"])
+    )
 
 
 def test_component_spoof_protection_requires_protected_types() -> None:
@@ -648,6 +941,7 @@ def test_legacy_poke_migrates_and_explicit_policy_wins_after_schema_fill(
     schema = json.loads(
         (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
     )
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
     config = AstrBotConfig(config_path=str(config_path), schema=schema)
     with (
         patch(
