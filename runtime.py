@@ -134,6 +134,12 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "admin_user_ids": [],
     },
+    "temporary_sessions": {
+        "limit_replies": True,
+        "max_replies": 3,
+        "notify_admins": False,
+        "admin_user_ids": [],
+    },
     "debounce": {
         "enabled": True,
         "shared_group": True,
@@ -445,6 +451,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("network", "blocked_domains"),
         ("events", "enabled_types"),
         ("request_notifications", "admin_user_ids"),
+        ("temporary_sessions", "admin_user_ids"),
         ("debounce", "ignore_prefixes"),
     )
     for group, key in list_fields:
@@ -517,6 +524,8 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("context_images", "group_cache_enabled"),
         ("cross_session_handoff", "enabled"),
         ("request_notifications", "enabled"),
+        ("temporary_sessions", "limit_replies"),
+        ("temporary_sessions", "notify_admins"),
         ("debounce", "enabled"),
         ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
@@ -603,6 +612,19 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         )
     if result["request_notifications"]["enabled"] and not admin_user_ids:
         raise ValueError("request_notifications.enabled=true 时必须填写 admin_user_ids")
+    max_replies = result["temporary_sessions"]["max_replies"]
+    if type(max_replies) is not int or max_replies < 0:
+        raise ValueError("temporary_sessions.max_replies 必须是大于等于 0 的整数")
+    temporary_admin_ids = result["temporary_sessions"]["admin_user_ids"]
+    if any(
+        not user_id.isdecimal() or int(user_id) <= 0 for user_id in temporary_admin_ids
+    ):
+        raise ValueError("temporary_sessions.admin_user_ids 只能包含正整数 QQ 号字符串")
+    if result["temporary_sessions"]["notify_admins"] and not temporary_admin_ids:
+        raise ValueError(
+            "temporary_sessions.notify_admins=true 时必须填写 "
+            "temporary_sessions.admin_user_ids"
+        )
 
     offline = result["notice_events"]["bot_offline"]
     offline_admins = offline["admin_user_ids"]
@@ -2459,6 +2481,26 @@ class QQRuntime:
         }
 
     async def call_action(
+        self,
+        event: Any,
+        action: str,
+        params: dict[str, Any],
+        *,
+        skip_contract: bool = False,
+    ) -> Any:
+        """Share private reply accounting with native message delivery."""
+
+        async def deliver():
+            return await self._call_action(
+                event, action, params, skip_contract=skip_contract
+            )
+
+        sessions = getattr(self, "temporary_sessions", None)
+        if sessions is not None:
+            return await sessions.send_action(event, action, params, deliver)
+        return await deliver()
+
+    async def _call_action(
         self,
         event: Any,
         action: str,

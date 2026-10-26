@@ -348,6 +348,38 @@
       }
     }
   },
+  "temporary_sessions": {
+    "type": "object",
+    "description": "临时会话",
+    "default": {},
+    "items": {
+      "limit_replies": {
+        "type": "bool",
+        "description": "限制临时会话回复次数",
+        "hint": "开启后按下方次数限制非好友私聊；关闭后不限制回复次数，提醒功能仍独立生效，已有累计记录不会清零。",
+        "default": true
+      },
+      "max_replies": {
+        "type": "int",
+        "description": "允许临时会话的回复次数",
+        "hint": "填写非负整数，0 表示拒绝回复；次数永久累计，成为好友后不受限。不限次数请关闭上方开关。",
+        "default": 3,
+        "minimum": 0
+      },
+      "notify_admins": {
+        "type": "bool",
+        "description": "临时会话提醒",
+        "hint": "用户主动发来临时会话时通知下方管理员，每个用户只提醒一次；机器人主动发起的会话不提醒。",
+        "default": false
+      },
+      "admin_user_ids": {
+        "type": "list",
+        "description": "接收临时会话提醒的管理员 QQ 号",
+        "hint": "填写 QQ 号字符串列表，例如 [\"10001\", \"10002\"]；开启提醒时不能为空。",
+        "default": []
+      }
+    }
+  },
   "context_images": {
     "type": "object",
     "description": "旧版图片配置（升级兼容）",

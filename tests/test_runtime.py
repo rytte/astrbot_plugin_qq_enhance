@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.message.components import File
+from astrbot.core.message.components import File, Plain
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot_plugin_qq_enhance.catalog import OPERATION_MAP, TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.errors import QQToolError
@@ -25,6 +25,7 @@ from astrbot_plugin_qq_enhance.runtime import (
     validate_config,
 )
 from astrbot_plugin_qq_enhance.storage import Storage
+from astrbot_plugin_qq_enhance.temporary_session import TemporarySessions
 
 
 @pytest.fixture(autouse=True)
@@ -189,6 +190,82 @@ async def make_runtime(tmp_path, config: dict | None = None):
     ):
         runtime = QQRuntime(FakeContext(client), validate_config(config), storage)
     return runtime, client, storage
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_temporary_send_tracks_only_successful_admin_initiation(
+    tmp_path, rejected
+) -> None:
+    runtime, client, storage = await make_runtime(
+        tmp_path,
+        {
+            "temporary_sessions": {
+                "max_replies": 0,
+                "notify_admins": True,
+                "admin_user_ids": ["10001"],
+            },
+        },
+    )
+    runtime.context.send_message = AsyncMock(return_value=True)
+    sessions = TemporarySessions(runtime.context, runtime.config, storage, runtime)
+    runtime.temporary_sessions = sessions
+    if rejected:
+        client.responses["send_private_msg"] = {"retcode": 100, "data": None}
+    result = json.loads(
+        await runtime.execute(
+            FakeEvent(group_id="30001"),
+            "qq_send_message",
+            "send",
+            {
+                "target": {"type": "temporary", "id": 30003, "group_id": 30001},
+                "components": [{"type": "text", "text": "你好"}],
+            },
+        )
+    )
+    assert result["ok"] is not rejected, result
+    state = await storage.get_temporary_session("platform-a", "99999", "30003")
+    assert state["bot_initiated"] == int(not rejected)
+    assert state["replies"] == 0
+
+    reply = FakeEvent(sender_id="30003", admin=False)
+    reply.message_obj.raw_message = {"post_type": "message", "message_type": "private"}
+    reply.send = AsyncMock()
+    reply.stop_event = lambda: reply.set_extra("stopped", True)
+    reply.get_sender_name = lambda: "临时用户"
+    await sessions.prepare(reply)
+    assert reply.get_extra("stopped")
+    assert runtime.context.send_message.await_count == (1 if rejected else 0)
+
+
+@pytest.mark.asyncio
+async def test_current_temporary_tool_reply_spends_one_quota(tmp_path) -> None:
+    runtime, _, storage = await make_runtime(
+        tmp_path, {"temporary_sessions": {"max_replies": 1}}
+    )
+    sessions = TemporarySessions(runtime.context, runtime.config, storage, runtime)
+    runtime.temporary_sessions = sessions
+    event = FakeEvent(sender_id="30003", admin=False)
+    event.message_obj.raw_message = {"post_type": "message", "message_type": "private"}
+    event.send = AsyncMock()
+    event.stop_event = lambda: event.set_extra("stopped", True)
+    await sessions.prepare(event)
+    for text in ("第一条", "第二条"):
+        result = json.loads(
+            await runtime.execute(
+                event,
+                "qq_send_message",
+                "send",
+                {
+                    "target": {"type": "current"},
+                    "components": [{"type": "text", "text": text}],
+                },
+            )
+        )
+        assert result["ok"], result
+    await event.send(SimpleNamespace(chain=[Plain("后续回复")]))
+    state = await storage.get_temporary_session("platform-a", "99999", "30003")
+    assert state["replies"] == 1
 
 
 @pytest.mark.asyncio

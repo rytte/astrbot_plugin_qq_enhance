@@ -125,10 +125,110 @@ class Storage:
                     CREATE INDEX IF NOT EXISTS idx_media_expiry
                         ON media_refs(expires_at);
 
+                    CREATE TABLE IF NOT EXISTS temporary_sessions (
+                        platform_id TEXT NOT NULL,
+                        self_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        replies INTEGER NOT NULL DEFAULT 0,
+                        bot_initiated INTEGER NOT NULL DEFAULT 0,
+                        notified INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (platform_id, self_id, user_id)
+                    );
+
                     """
                 )
 
         await asyncio.to_thread(initialize_sync)
+
+    async def get_temporary_session(
+        self, platform_id: str, self_id: str, user_id: str
+    ) -> dict[str, Any]:
+        """Read lifetime private-session metadata, isolated by bot account."""
+
+        def read_sync() -> dict[str, Any]:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    "SELECT replies, bot_initiated, notified FROM temporary_sessions "
+                    "WHERE platform_id = ? AND self_id = ? AND user_id = ?",
+                    (platform_id, self_id, user_id),
+                ).fetchone()
+                return (
+                    dict(row)
+                    if row
+                    else {"replies": 0, "bot_initiated": 0, "notified": 0}
+                )
+
+        return await asyncio.to_thread(read_sync)
+
+    async def record_temporary_reply(
+        self, platform_id: str, self_id: str, user_id: str
+    ) -> None:
+        """Count one successfully delivered reply without resetting old usage."""
+
+        await self._update_temporary_session(
+            platform_id, self_id, user_id, "replies = replies + 1"
+        )
+
+    async def mark_temporary_outbound(
+        self, platform_id: str, self_id: str, user_id: str
+    ) -> None:
+        """Remember an administrator-authorized successful temporary send."""
+
+        await self._update_temporary_session(
+            platform_id, self_id, user_id, "bot_initiated = 1"
+        )
+
+    async def claim_temporary_notification(
+        self, platform_id: str, self_id: str, user_id: str
+    ) -> bool:
+        """Atomically claim the first unsolicited private-contact reminder."""
+
+        return await self._update_temporary_session(
+            platform_id,
+            self_id,
+            user_id,
+            "notified = 1",
+            "notified = 0 AND bot_initiated = 0",
+        )
+
+    async def release_temporary_notification(
+        self, platform_id: str, self_id: str, user_id: str
+    ) -> None:
+        """Allow a later retry when none of the administrator sends succeeded."""
+
+        await self._update_temporary_session(
+            platform_id, self_id, user_id, "notified = 0"
+        )
+
+    async def _update_temporary_session(
+        self,
+        platform_id: str,
+        self_id: str,
+        user_id: str,
+        assignment: str,
+        condition: str = "1",
+    ) -> bool:
+        """Apply only caller-owned SQL fragments to one persistent identity."""
+
+        def update_sync() -> bool:
+            with sqlite3.connect(self.database_path, timeout=10) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                identity = (platform_id, self_id, user_id)
+                connection.execute(
+                    "INSERT OR IGNORE INTO temporary_sessions "
+                    "(platform_id, self_id, user_id) VALUES (?, ?, ?)",
+                    identity,
+                )
+                updated = connection.execute(
+                    f"UPDATE temporary_sessions SET {assignment} "
+                    "WHERE platform_id = ? AND self_id = ? AND user_id = ? "
+                    f"AND ({condition})",
+                    identity,
+                ).rowcount
+                return updated == 1
+
+        return await asyncio.to_thread(update_sync)
 
     async def create_pending(self, record: dict[str, Any]) -> None:
         """Persist a pending operation with exact normalized parameters.

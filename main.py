@@ -65,6 +65,7 @@ from .providers import provider_contracts, resolve_provider
 from .providers.base import VersionInfo
 from .runtime import QQRuntime, validate_config
 from .storage import Storage
+from .temporary_session import TURN_KEY, TemporarySessions
 from .verification import USER_VERIFICATION_TAG_PATTERN, USER_VERIFICATION_TAG_REMOVED
 from .web_reader import WEB_READER_PROMPT, WEB_TOOL_NAMES, WEB_TOOL_SCHEMAS, WebReader
 
@@ -271,6 +272,10 @@ class QQEnhancePlugin(Star):
         data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_qq_enhance"
         self.storage = Storage(data_dir / "qq_enhance.sqlite3")
         self.runtime = QQRuntime(context, self.config, self.storage)
+        self.temporary_sessions = TemporarySessions(
+            context, self.config, self.storage, self.runtime
+        )
+        self.runtime.temporary_sessions = self.temporary_sessions
         self.runtime.handoff_send_observer = self._schedule_cross_session_handoff
         self.web_reader = WebReader(self.runtime)
         self.cleanup_task: asyncio.Task[None] | None = None
@@ -1059,6 +1064,27 @@ class QQEnhancePlugin(Star):
             except Exception:
                 logger.exception("QQ Enhance cleanup failed")
             await asyncio.sleep(self.config["files"]["cleanup_interval_seconds"])
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=30000)
+    async def guard_temporary_session(self, event: AstrMessageEvent) -> None:
+        """Apply non-friend private-session limits before other plugin work."""
+        if isinstance(event, ResumedMessageEvent):
+            transport = event.transport
+            while isinstance(transport, ResumedMessageEvent):
+                transport = transport.transport
+            turn = transport.get_extra(TURN_KEY)
+            if turn is not None:
+                event.set_extra(TURN_KEY, turn)
+                self.temporary_sessions.bind_transport(transport)
+            return
+        await self.temporary_sessions.prepare(event)
+
+    @filter.on_llm_request(priority=-40000)
+    async def guard_temporary_session_tools(
+        self, event: AstrMessageEvent, request: ProviderRequest
+    ) -> None:
+        """Keep native tool deliveries inside the current user's reply quota."""
+        self.temporary_sessions.wrap_tools(event, request)
 
     @filter.custom_filter(ArrivalFilter, priority=-20000)
     async def debounce_inbound_message(self, event: AstrMessageEvent) -> None:
