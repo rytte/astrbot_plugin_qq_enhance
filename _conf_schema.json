@@ -456,64 +456,6 @@
       }
     }
   },
-  "context_images": {
-    "type": "object",
-    "description": "旧版图片配置（升级兼容）",
-    "default": {},
-    "items": {
-      "enabled": {
-        "type": "bool",
-        "description": "开放旧版图片查看入口",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。 此开关仍控制旧 qq_media 查看入口是否开放。",
-        "default": true
-      },
-      "group_cache_enabled": {
-        "type": "bool",
-        "description": "缓存群聊上下文图片",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
-        "default": true
-      },
-      "group_cache_max_mb": {
-        "type": "int",
-        "description": "全插件群聊图片缓存上限（MiB）",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
-        "default": 256,
-        "minimum": 1,
-        "maximum": 10240
-      },
-      "group_cache_ttl_hours": {
-        "type": "int",
-        "description": "群聊图片缓存保留小时数",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
-        "default": 24,
-        "minimum": 1,
-        "maximum": 168
-      },
-      "orphan_grace_days": {
-        "type": "int",
-        "description": "图片引用从历史消失后的自然日宽限天数",
-        "default": 3,
-        "minimum": 1,
-        "maximum": 30,
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。"
-      },
-      "retention_days": {
-        "type": "int",
-        "description": "原图最长保留自然日数",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
-        "default": 30,
-        "minimum": 0
-      },
-      "max_storage_mb": {
-        "type": "int",
-        "description": "会话原图总存储上限（MiB）",
-        "hint": "图片归档、缓存和清理由独立插件“Media 管理”负责；首次启动会导入旧设置。QQ 插件不再管理图片。",
-        "default": 2048,
-        "minimum": 64,
-        "maximum": 10240
-      }
-    }
-  },
   "notice_events": {
     "type": "object",
     "description": "平台事件处理",
@@ -1127,7 +1069,7 @@
       "max_base64_size_mb": {
         "type": "int",
         "description": "Base64 解码上限（MiB）",
-        "hint": "Media 管理首次迁移时会将此值用作单次图片查看上限，后续在 Media 管理独立配置。",
+        "hint": "限制媒体输入及协议端返回的 Base64 数据解码后的文件大小。",
         "default": 10,
         "minimum": 1,
         "maximum": 100

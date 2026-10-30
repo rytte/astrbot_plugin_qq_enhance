@@ -19,7 +19,6 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
-from mcp.types import CallToolResult
 
 from astrbot.api import logger
 from astrbot.api.message_components import File
@@ -37,7 +36,6 @@ from .catalog import (
     TOOL_OPERATIONS,
     OperationSpec,
 )
-from .media_bridge import inspect_legacy_reference
 from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES, QQ_FACE_SOURCE, lookup_qq_faces
 from .notice_context import (
@@ -124,15 +122,6 @@ DEFAULT_CONFIG = {
         "max_base64_size_mb": 10,
         "temp_ttl_seconds": 21600,
         "cleanup_interval_seconds": 600,
-    },
-    "context_images": {
-        "enabled": True,
-        "group_cache_enabled": True,
-        "group_cache_max_mb": 256,
-        "group_cache_ttl_hours": 24,
-        "orphan_grace_days": 3,
-        "retention_days": 30,
-        "max_storage_mb": 2048,
     },
     "cross_session_handoff": {"enabled": True},
     "network": {
@@ -549,8 +538,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("permissions", "allow_cross_private_to_admin"),
         ("network", "allow_private_network"),
         ("web_reader", "enabled"),
-        ("context_images", "enabled"),
-        ("context_images", "group_cache_enabled"),
         ("cross_session_handoff", "enabled"),
         ("request_notifications", "enabled"),
         ("temporary_sessions", "limit_replies"),
@@ -598,10 +585,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("files", "max_base64_size_mb"): (1, 100),
         ("files", "temp_ttl_seconds"): (600, 604800),
         ("files", "cleanup_interval_seconds"): (60, 86400),
-        ("context_images", "orphan_grace_days"): (1, 30),
-        ("context_images", "max_storage_mb"): (64, 10240),
-        ("context_images", "group_cache_max_mb"): (1, 10240),
-        ("context_images", "group_cache_ttl_hours"): (1, 168),
         ("network", "timeout_seconds"): (3, 180),
         ("network", "max_download_size_mb"): (1, 2048),
         ("events", "retention_days"): (1, 365),
@@ -613,9 +596,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("debounce", "followup_window_seconds"): (0.0, 60.0),
         ("debounce", "max_wait_seconds"): (0.0, 300.0),
     }
-    retention_days = result["context_images"]["retention_days"]
-    if type(retention_days) is not int or retention_days < 0:
-        raise ValueError("context_images.retention_days 必须是大于等于 0 的整数")
     for (group, key), (minimum, maximum) in float_ranges.items():
         value = result[group][key]
         if type(value) not in {int, float} or isinstance(value, bool):
@@ -755,7 +735,7 @@ class QQRuntime:
 
     async def execute(
         self, event: Any, tool: str, operation: str, params: dict[str, Any] | None
-    ) -> str | CallToolResult:
+    ) -> str:
         """Validate and execute one model-selected resource operation.
 
         Args:
@@ -978,19 +958,6 @@ class QQRuntime:
                     except Exception:
                         logger.exception("Failed to schedule cross-session handoff")
                         warnings.append("消息已发送，但跨会话历史衔接失败")
-            if isinstance(data, CallToolResult):
-                await self.audit(
-                    event,
-                    spec,
-                    target_kind,
-                    target_id,
-                    "allowed",
-                    "ok",
-                    params_hash,
-                    "",
-                    int((time.monotonic() - started) * 1000),
-                )
-                return data
             data = await self.normalize_media_result(event, spec, data, normalized)
             result = self.success_result(
                 operation_id, data, normalized, provider_name=provider.display_name
@@ -1841,10 +1808,6 @@ class QQRuntime:
                 for item in OPERATIONS
                 if operation_availability(self.config, item, provider).enabled
             ]
-        elif operation_id in {"qq_media.inspect", "qq_media.inspect_animation"}:
-            local_result = await inspect_legacy_reference(
-                self.context, event, str(action_params["image_ref"]), spec.operation
-            )
         elif operation_id == "qq_friend_request.list":
             local_result = await self.storage.list_requests(
                 "friend",
@@ -1947,7 +1910,7 @@ class QQRuntime:
             action, action_params = provider.prepare_action(
                 spec, action_params, page_size=page_size, resolved_media=resolved_media
             )
-        if local_result is not None and not isinstance(local_result, CallToolResult):
+        if local_result is not None:
             local_result = self.paginate(local_result, cursor, page_size)
         return action, action_params, local_result
 

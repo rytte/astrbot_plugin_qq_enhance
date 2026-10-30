@@ -117,9 +117,12 @@ def install_dispatch(monkeypatch, instances):
 async def test_separate_labels_share_ids_for_multiple_and_quoted_images(
     tmp_path, adapter, monkeypatch
 ):
-    media = await build_media(tmp_path / "media", config={"max_components": 1})
+    media = await build_media(tmp_path / "media")
     qq = object.__new__(QQEnhancePlugin)
     qq.config = validate_config(None)
+    media.context.get_registered_star = lambda _name: SimpleNamespace(
+        activated=True, star_cls_type=QQEnhancePlugin, star_cls=qq
+    )
     first = make_image(tmp_path / "first.gif", frames=2)
     second = make_image(tmp_path / "second.png", image_format="PNG")
     event = await make_event(

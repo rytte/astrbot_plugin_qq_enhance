@@ -47,7 +47,13 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
     assert all(item.display_name.strip() for item in OPERATIONS)
     assert len(TOOL_OPERATIONS) == 29
-    assert len(OPERATIONS) == 82
+    assert len(OPERATIONS) == 80
+    assert TOOL_OPERATIONS["qq_media"] == (
+        "get_image",
+        "get_record",
+        "convert_record",
+        "ocr",
+    )
     assert TOOL_OPERATIONS["qq_user_info"] == ("detail",)
     assert [
         item.operation_id
@@ -734,6 +740,7 @@ def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
         json.dumps(
             {
                 "removed_group": {"enabled": True},
+                "context_images": {"enabled": True, "max_storage_mb": 2048},
                 "inbound": {
                     "removed_field": True,
                     "component_spoof_protection": spoof_config,
@@ -763,6 +770,7 @@ def test_astrbot_cleans_obsolete_fields_before_plugin_initialization(
     saved_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     assert plugin.config == validate_config(saved_config)
     assert "removed_group" not in plugin.config
+    assert "context_images" not in plugin.config
     assert "removed_field" not in plugin.config["inbound"]
     assert plugin.config["inbound"]["component_spoof_protection"] == {
         "enabled": enabled,

@@ -500,32 +500,14 @@ async def test_confirmation_checks_support_and_reuses_exact_wire_params(
         assert not sent
 
 
-def test_context_images_switch_defaults_enabled_and_controls_inspect() -> None:
-    runtime = object.__new__(QQRuntime)
-    runtime.config = validate_config(None)
-    assert runtime.config["context_images"]["enabled"] is True
-    assert runtime.config["context_images"]["orphan_grace_days"] == 3
-    assert runtime.config["context_images"]["retention_days"] == 30
-    assert runtime.operation_enabled("qq_media.inspect") is True
-    assert runtime.operation_enabled("qq_media.inspect_animation") is True
-
-    runtime.config = validate_config({"context_images": {"enabled": False}})
-    assert runtime.operation_enabled("qq_media.inspect") is False
-    assert runtime.operation_enabled("qq_media.inspect_animation") is False
-    assert runtime.operation_enabled("qq_media.get_image") is True
-
-    with pytest.raises(ValueError, match="context_images.enabled"):
-        validate_config({"context_images": {"enabled": 1}})
-    assert (
-        validate_config({"context_images": {"retention_days": 0}})["context_images"][
-            "retention_days"
-        ]
-        == 0
-    )
-    with pytest.raises(ValueError, match="context_images.retention_days"):
-        validate_config({"context_images": {"retention_days": -1}})
-    with pytest.raises(ValueError, match="context_images.retention_days"):
-        validate_config({"context_images": {"retention_days": False}})
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["inspect", "inspect_animation"])
+async def test_removed_image_tools_do_not_call_protocol(tmp_path, operation):
+    runtime, client, _ = await make_runtime(tmp_path)
+    result = json.loads(await runtime.execute(FakeEvent(), "qq_media", operation, {}))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_parameters"
+    assert client.calls == []
 
 
 @pytest.mark.asyncio

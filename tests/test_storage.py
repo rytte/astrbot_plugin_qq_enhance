@@ -10,19 +10,8 @@ from astrbot_plugin_qq_enhance.storage import Storage
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_legacy_images", [False, True])
-async def test_qq_no_longer_creates_or_cleans_image_archive(
-    tmp_path, has_legacy_images
-):
+async def test_storage_does_not_create_image_archives(tmp_path):
     database_path = tmp_path / "data.sqlite3"
-    if has_legacy_images:
-        with sqlite3.connect(database_path) as db:
-            db.execute(
-                "CREATE TABLE context_images (image_ref TEXT PRIMARY KEY, path TEXT)"
-            )
-            db.execute(
-                "INSERT INTO context_images VALUES ('legacy-reference', 'legacy-file.png')"
-            )
     storage = Storage(database_path)
     await storage.initialize()
     await storage.cleanup(1, 1)
@@ -30,11 +19,7 @@ async def test_qq_no_longer_creates_or_cleans_image_archive(
         exists = db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='context_images'"
         ).fetchone()
-        assert bool(exists) == has_legacy_images
-        if exists:
-            assert db.execute("SELECT * FROM context_images").fetchall() == [
-                ("legacy-reference", "legacy-file.png")
-            ]
+        assert exists is None
 
 
 @pytest.mark.asyncio

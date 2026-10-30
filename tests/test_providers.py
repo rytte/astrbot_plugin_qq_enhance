@@ -146,11 +146,6 @@ def test_unknown_upstream_is_reported_without_claiming_support() -> None:
 @pytest.mark.parametrize(
     ("operation_id", "config", "reason"),
     [
-        (
-            "qq_media.inspect",
-            {"context_images": {"enabled": False}},
-            "context_images_disabled",
-        ),
         ("read_url.read", {"web_reader": {"enabled": False}}, "web_reader_disabled"),
         (
             "qq_media.get_image",

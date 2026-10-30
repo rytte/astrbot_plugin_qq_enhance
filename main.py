@@ -253,6 +253,8 @@ def _format_audit_rows(rows: list[dict]) -> str:
 class QQEnhancePlugin(Star):
     """Expose bounded QQ tools and inbound semantics to AstrBot models."""
 
+    # Media Manager checks this marker before assigning image IDs. It indicates
+    # that QQ no longer owns image archives; it does not expose a tool bridge.
     media_manager_bridge_version = 1
 
     def __init__(
@@ -2189,11 +2191,6 @@ class QQEnhancePlugin(Star):
                 for text in reference_texts
             ):
                 requested.add("qq_forward_get")
-            if any(
-                re.search(r"(?:img|gimg)_[0-9a-f]{24}", text)
-                for text in reference_texts
-            ):
-                requested.add("qq_media")
         if re.search(r"https?://", prompt, re.IGNORECASE):
             requested.update(WEB_TOOL_NAMES)
         for context_item in request.contexts[-12:]:
@@ -2965,7 +2962,7 @@ class QQEnhancePlugin(Star):
         """读取、转换或识别 QQ 媒体。
 
         Args:
-            operation(string): inspect、inspect_animation（转交 Media 管理的旧版兼容入口）、get_image、get_record、convert_record 或 ocr。
+            operation(string): get_image、get_record、convert_record 或 ocr。
             params(object): 当前 operation 的严格参数对象。
         """
 

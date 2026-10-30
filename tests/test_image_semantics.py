@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,8 +15,10 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
     AiocqhttpAdapter,
 )
 from astrbot_plugin_qq_enhance.image_semantics import (
+    IMAGE_LINKS_EXTRA,
     has_image_animation,
     inspect_inbound_image_animations,
+    prepared_image_ids,
 )
 from astrbot_plugin_qq_enhance.inbound import (
     describe_inbound_event,
@@ -109,6 +112,40 @@ def test_image_association_is_kept_whole_or_omitted_when_budget_is_small():
     full = describe_inbound_event(raw, max_chars=2000, **kwargs)
     assert "image_id=pic_" + "a" * 16 in full
     assert full.endswith("]")
+
+
+def test_optional_image_ids_pair_current_images_without_using_quoted_ids():
+    first, second, quoted = (Image(file=f"{name}.png") for name in ("a", "b", "c"))
+    ids = ["pic_" + value * 16 for value in ("a", "b", "c")]
+    links = {id(image): link for image, link in zip((first, second, quoted), ids)}
+    event = SimpleNamespace(
+        get_extra=lambda key, default: links if key == IMAGE_LINKS_EXTRA else default
+    )
+    raw = {
+        "post_type": "message",
+        "message": [
+            {"type": "reply", "data": {"id": "123"}},
+            {"type": "image", "data": {}},
+            {"type": "text", "data": {"text": "两张图"}},
+            {"type": "image", "data": {}},
+        ],
+    }
+    components = [Reply(id=123, chain=[quoted]), first, Plain("两张图"), second]
+    assert prepared_image_ids(event, raw, components, max_components=30) == {
+        1: ids[0],
+        3: ids[1],
+    }
+    assert prepared_image_ids(event, raw, components, max_components=2) == {1: ids[0]}
+    assert prepared_image_ids(event, raw, components[:-1], max_components=30) == {}
+
+
+@pytest.mark.parametrize("links", [None, {}, [], {"unused": "pic_" + "a" * 16}])
+def test_optional_image_ids_are_unnecessary_for_normal_image_semantics(links):
+    image = Image(file="a.png")
+    event = SimpleNamespace(get_extra=lambda _key, _default: links)
+    raw = {"post_type": "message", "message": [{"type": "image", "data": {}}]}
+    assert prepared_image_ids(event, raw, [image], max_components=30) == {}
+    assert describe_image({}) == "[QQ component|QQ图片]"
 
 
 def test_mface_keeps_market_type_and_image_verification_covers_stickers():
