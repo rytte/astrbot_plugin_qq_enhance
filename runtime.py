@@ -194,6 +194,7 @@ DEFAULT_CONFIG = {
             ],
         },
     },
+    "message_id_tag": {"enabled": True},
     "voice_recognition": {
         "enhance_voice_messages": True,
     },
@@ -557,6 +558,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("debounce", "enabled"),
         ("debounce", "shared_group"),
         ("inbound", "semanticize_components"),
+        ("message_id_tag", "enabled"),
         ("voice_recognition", "enhance_voice_messages"),
         ("interaction_response", "respond_to_red_packet"),
     )

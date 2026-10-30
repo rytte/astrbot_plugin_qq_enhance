@@ -262,6 +262,7 @@ class Harness:
                     if added_contexts:
                         req.contexts.extend(deepcopy(added_contexts))
                     # Use AstrBot's real message assembly and history serialization.
+                    await self.plugin.add_message_id_signal(event, req)
                     await self.plugin.add_verified_component_signal(event, req)
                     await self.plugin.track_context_message(event, req)
                     await self.plugin.bind_debounce_request(event, req)
@@ -642,6 +643,12 @@ async def test_three_inputs_remain_separate_and_unanswered_until_final_reply(
             "我上一条发了什么？",
         ]
         assert [m["role"] for m in harness.requests[-1]] == ["user", "user", "user"]
+        for index, message in enumerate(harness.requests[-1], 101):
+            assert [
+                part["text"]
+                for part in message["content"]
+                if part.get("text", "").startswith("<qq_message_id ")
+            ] == [f'<qq_message_id value="{index}"/>']
         for message in harness.requests[-1]:
             assert (
                 sum(
@@ -672,6 +679,10 @@ async def test_three_inputs_remain_separate_and_unanswered_until_final_reply(
             for part in final_user.content
         )
         history = harness.manager.history(events[-1])
+        for index, message in enumerate(history[:-1], 101):
+            assert f'<qq_message_id value="{index}"/>' in [
+                part.get("text") for part in message["content"]
+            ]
         for message in history[:-1]:
             assert json.dumps(message).count("qq_verified_components") == int(
                 persist_verification_in_history

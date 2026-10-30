@@ -302,3 +302,39 @@ async def test_disabled_semantics_do_not_add_component_history(adapter, plugin, 
         pass
 
     assert not core.group_chat_context.raw_records.get(event.unified_msg_origin)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("semanticize", [False, True])
+async def test_message_ids_reach_group_context_and_current_input_separately(
+    adapter, plugin, core, semanticize
+):
+    plugin.config["inbound"]["semanticize_components"] = semanticize
+    earlier = await make_event(
+        adapter, [{"type": "text", "data": {"text": "earlier-text"}}]
+    )
+    earlier.message_obj.raw_message["message_id"] = 101
+    await plugin.enrich_inbound_qq_components(earlier)
+    await plugin.record_group_message_id(earlier)
+    async for _ in core.on_message(earlier):
+        pass
+
+    current = await make_event(
+        adapter, [{"type": "text", "data": {"text": "what happened?"}}]
+    )
+    current.message_obj.raw_message["message_id"] = 102
+    current.is_at_or_wake_command = True
+    await plugin.enrich_inbound_qq_components(current)
+    await plugin.record_group_message_id(current)
+    async for _ in core.on_message(current):
+        pass
+
+    request = ProviderRequest(prompt=current.message_str)
+    await core.decorate_llm_req(current, request)
+    await plugin.add_message_id_signal(current, request)
+    background = "\n".join(part.text for part in request.extra_user_content_parts[:-1])
+    assert "earlier-text" in background
+    assert background.count('<qq_message_id value="101"/>') == 1
+    assert '<qq_message_id value="102"/>' not in background
+    assert request.extra_user_content_parts[-1].text == '<qq_message_id value="102"/>'
+    assert request.prompt == "what happened?"

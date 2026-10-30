@@ -305,6 +305,19 @@
       }
     }
   },
+  "message_id_tag": {
+    "type": "object",
+    "description": "消息 ID 标签",
+    "default": {},
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "附加消息 ID 标签",
+        "hint": "为 QQ 消息附加真实 message_id，用于引用、撤回、添加表情回应或设置精华的工具参数，否则模型需要一次额外工具调用检索消息历史获取 message_id；标签随所属消息保存到历史。",
+        "default": true
+      }
+    }
+  },
   "voice_recognition": {
     "type": "object",
     "description": "语音识别",
@@ -313,7 +326,7 @@
       "enhance_voice_messages": {
         "type": "bool",
         "description": "使用 QQ 协议端语音识别作为回退",
-        "hint": "仅在 AstrBot 未产生转写、消息仍为 Record 时调用 NapCat 或 SnowLuma；支持顶层和引用语音。",
+        "hint": "在未配置 AstrBot ASR 或转写失败时调用 NapCat 或 SnowLuma 接口获取 QQ 原生语音转写文本，支持顶层和引用语音。",
         "default": true
       }
     }

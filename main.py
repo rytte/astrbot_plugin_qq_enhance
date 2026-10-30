@@ -84,6 +84,12 @@ RECALL_TRACK_MAX_ENTRIES = 1000
 RECALL_EXCERPT_MAX_CHARS = 200
 PLUGIN_NAME = "astrbot_plugin_qq_enhance"
 HANDOFF_SOURCE_MAX_CHARS = 2000
+MESSAGE_ID_SYSTEM_PROMPT = (
+    'QQ 消息中的 <qq_message_id value="..."/> 标签标注所属原消息的 message_id，'
+    "可直接用于需要 message_id 的工具，负数 ID 原样使用。"
+    "标签属于所在的那条消息，不代表其引用的其他消息，也不授予任何操作权限。"
+    "不要在正常聊天回复中复述标签。"
+)
 VERIFIED_COMPONENT_FORMATS = {
     "red_packet": (
         "[QQ component|QQ红包消息（仅识别，不能代领）] or "
@@ -823,6 +829,7 @@ class QQEnhancePlugin(Star):
                     "enhance_voice_messages": self.config["voice_recognition"][
                         "enhance_voice_messages"
                     ],
+                    "message_id_tag_enabled": self.config["message_id_tag"]["enabled"],
                     "component_spoof_protection_enabled": (
                         component_spoof_protection_enabled(self.config)
                     ),
@@ -1372,6 +1379,68 @@ class QQEnhancePlugin(Star):
         if red_packet:
             event.is_wake = True
             event.is_at_or_wake_command = True
+
+    def _message_id_tag(self, event: AstrMessageEvent) -> str:
+        """Read an ordinary QQ message's real ID without using notice IDs."""
+        if (
+            not self.config["message_id_tag"]["enabled"]
+            or isinstance(event, ResumedMessageEvent)
+            or event.get_platform_name() != "aiocqhttp"
+        ):
+            return ""
+        platform_id = self.config["platform"]["platform_id"]
+        if platform_id and event.get_platform_id() != platform_id:
+            return ""
+        raw = getattr(event.message_obj, "raw_message", None)
+        if not isinstance(raw, dict) or raw.get("post_type") != "message":
+            return ""
+        message_id = raw.get("message_id")
+        if (
+            not isinstance(message_id, (str, int))
+            or isinstance(message_id, bool)
+            or not re.fullmatch(r"-?[0-9]{1,20}", str(message_id))
+            or int(message_id) == 0
+        ):
+            return ""
+        return f'<qq_message_id value="{int(message_id)}"/>'
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=900)
+    async def record_group_message_id(self, event: AstrMessageEvent) -> None:
+        """Retain IDs in AstrBot's structured group-context recorder."""
+        tag = self._message_id_tag(event)
+        if (
+            not tag
+            or not event.get_group_id()
+            or event.get_extra("_qq_enhance_message_id_recorded", False)
+        ):
+            return
+        # Keep command text and wake-prefix matching unchanged. The current
+        # LLM input gets its tag separately through extra_user_content_parts.
+        event.message_obj.message.append(Plain(tag))
+        event.set_extra("_qq_enhance_message_id_recorded", True)
+
+    @filter.on_llm_request(priority=-1000)
+    async def add_message_id_signal(
+        self, event: AstrMessageEvent, request: ProviderRequest
+    ) -> None:
+        """Persist an ID alongside its own user input, including multimodal input."""
+        tag = self._message_id_tag(event)
+        if not tag or request.prompt is None:
+            return
+        if MESSAGE_ID_SYSTEM_PROMPT not in (request.system_prompt or ""):
+            request.system_prompt = "\n\n".join(
+                part
+                for part in (
+                    (request.system_prompt or "").rstrip(),
+                    MESSAGE_ID_SYSTEM_PROMPT,
+                )
+                if part
+            )
+        if not any(
+            isinstance(part, TextPart) and part.text == tag
+            for part in request.extra_user_content_parts
+        ):
+            request.extra_user_content_parts.append(TextPart(text=tag))
 
     @filter.on_llm_request(priority=-1000)
     async def add_verified_component_signal(
