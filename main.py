@@ -253,10 +253,6 @@ def _format_audit_rows(rows: list[dict]) -> str:
 class QQEnhancePlugin(Star):
     """Expose bounded QQ tools and inbound semantics to AstrBot models."""
 
-    # Media Manager checks this marker before assigning image IDs. It indicates
-    # that QQ no longer owns image archives; it does not expose a tool bridge.
-    media_manager_bridge_version = 1
-
     def __init__(
         self, context: Context, config: AstrBotConfig | dict | None = None
     ) -> None:
