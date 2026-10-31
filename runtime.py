@@ -159,6 +159,7 @@ DEFAULT_CONFIG = {
     "debounce": {
         "enabled": True,
         "shared_group": True,
+        "inherit_group_wake": True,
         "initial_window_seconds": 1.0,
         "followup_window_seconds": 1.0,
         "max_wait_seconds": 5.0,
@@ -544,6 +545,7 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         ("temporary_sessions", "notify_admins"),
         ("debounce", "enabled"),
         ("debounce", "shared_group"),
+        ("debounce", "inherit_group_wake"),
         ("inbound", "semanticize_components"),
         ("message_id_tag", "enabled"),
         ("voice_recognition", "enhance_voice_messages"),

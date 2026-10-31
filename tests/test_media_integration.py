@@ -312,11 +312,10 @@ async def test_resume_rebuild_happens_before_media_request_preparation(
     dispatch = install_dispatch(
         monkeypatch, [(media, ["prepare_images"]), (qq, ["finalize_debounce_resume"])]
     )
-    request = ProviderRequest(
-        prompt="占位请求", extra_user_content_parts=[TextPart(text="待清空")]
-    )
+    injected = TextPart(text="已注入的上下文")
+    request = ProviderRequest(prompt="占位请求", extra_user_content_parts=[injected])
     await dispatch(EventType.OnLLMRequestEvent, event, request)
     assert request.prompt is None
-    assert request.extra_user_content_parts == []
+    assert request.extra_user_content_parts == [injected]
     assert event.get_extra("_media_manager_conversation_id") == "c1"
     assert "Media 管理" in request.system_prompt

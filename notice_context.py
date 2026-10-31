@@ -143,6 +143,18 @@ class QQNotice:
     description: str
 
     @property
+    def bot_poke_sender(self) -> str | None:
+        """Return the member deliberately poking this bot in a group."""
+        if (
+            self.kind == "notify/poke"
+            and self.group_id
+            and self.user_id not in {"0", self.self_id}
+            and str(self.details.get("target_id")) == self.self_id
+        ):
+            return self.user_id
+        return None
+
+    @property
     def group_wide(self) -> bool:
         """Facts about the whole group rather than an individual member."""
         return bool(self.group_id) and (
@@ -768,10 +780,11 @@ class NoticeContext:
             return
         request.conversation = conversation
         request.contexts = json.loads(conversation.history or "[]")
+        # Native group history and other plugins' additions remain valid even
+        # though the synthetic event prompt is replaced at agent begin.
         request.prompt = None
         request.image_urls = []
         request.audio_urls = []
-        request.extra_user_content_parts = []
 
     async def queue_pinned(
         self,
@@ -826,6 +839,9 @@ class NoticeContext:
             conversation_id=cid,
             verified_type="notice",
             platform_event_type=notice.kind,
+            wake_sender_id=notice.bot_poke_sender
+            if notice.bot_poke_sender and self._mode(notice) == "respond"
+            else None,
         )
         if not defer:
             delivery.dispatched.set()

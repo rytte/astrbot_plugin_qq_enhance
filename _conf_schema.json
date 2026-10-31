@@ -214,6 +214,15 @@
         "hint": "开启后，同一群聊中不同用户的连续输入也会共用防抖；私聊仍按用户隔离。",
         "default": true
       },
+      "inherit_group_wake": {
+        "type": "bool",
+        "description": "群聊唤醒继承",
+        "condition": {
+          "enabled": true
+        },
+        "hint": "防抖等待窗口内，已唤醒机器人的成员可继续发送消息，无需重复 @ 或添加唤醒词；其他成员主动唤醒后也可加入。窗口结束即失效，命令及明确指向其他人的消息不继承；关闭后每条消息仍需独立唤醒。",
+        "default": true
+      },
       "initial_window_seconds": {
         "type": "float",
         "description": "首条消息等待窗口（秒）",

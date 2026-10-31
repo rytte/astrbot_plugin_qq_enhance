@@ -27,12 +27,152 @@ from astrbot_plugin_qq_enhance.runtime import QQRuntime, validate_config
 harness = notice_tests.harness
 
 
+def poke_source(target_id=99):
+    from test_debounce import Event as MessageEvent
+    from test_notice_context import payload
+
+    event = MessageEvent(
+        "", None, group="300", raw=payload("notify/poke", target_id=target_id)
+    )
+    event.is_at_or_wake_command = False
+    return event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_group", [True, False])
+@pytest.mark.parametrize("restricted", [True, False])
+async def test_bot_poke_grants_only_initiator_followup_with_original_tool_policy(
+    harness, shared_group, restricted
+):
+    from test_debounce_wake import accept, followup
+    from astrbot_plugin_qq_enhance.request_notification import (
+        notification_tools_restricted,
+    )
+
+    config = harness.plugin.config
+    config["debounce"].update(
+        initial_window_seconds=0.1,
+        followup_window_seconds=0.05,
+        shared_group=shared_group,
+    )
+    if restricted:
+        config["notice_events"]["tool_restricted_events"].append("notify/poke")
+    try:
+        await harness.plugin.capture_notice_context(poke_source())
+        notice = await notice_tests.queued(harness)
+        notice_task = notice_tests.start_response(harness, notice)
+        await notice_tests.wait(notice.entered)
+        stranger = followup(sender=8, group="300")
+        await accept(harness, stranger)
+        assert not stranger.is_at_or_wake_command
+        current = followup("戳完再发的正文", group="300")
+        task = harness.start(current)
+        await notice_tests.wait(current.prepared)
+        assert current.is_at_or_wake_command
+        assert current.get_sender_id() == "7"
+        assert not getattr(current, "notification_only", False)
+        assert notice_task.cancelled()
+        inputs = notice_tests.texts(harness.requests[-1])
+        assert len(inputs) == 2
+        assert "用户 7戳了你一下" in inputs[0]
+        assert inputs[1] == "戳完再发的正文"
+        assert notification_tools_restricted(current, config) is restricted
+        current.allow_reply.set()
+        await task
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generating", [False, True])
+async def test_poke_merged_into_another_members_batch_grants_initiator(
+    harness, monkeypatch, generating
+):
+    import asyncio
+
+    from test_debounce import ARRIVAL_KEY, Event as MessageEvent
+    from test_debounce_wake import accept, followup
+
+    harness.plugin.config["debounce"].update(
+        initial_window_seconds=0.0 if generating else 0.15,
+        followup_window_seconds=0.1,
+    )
+    first = MessageEvent("另一位成员的问题", 1, sender=8, group="300")
+    window = asyncio.Event()
+    original_wait = harness.plugin.debouncer._wait
+
+    async def observe_wait(*args):
+        window.set()
+        await original_wait(*args)
+
+    try:
+        first_task = harness.start(first)
+        await notice_tests.wait(first.prepared if generating else first.entered)
+        monkeypatch.setattr(harness.plugin.debouncer, "_wait", observe_wait)
+        await harness.plugin.capture_notice_context(poke_source())
+        if generating:
+            await notice_tests.wait(window)
+            previous_member = followup(sender=8, group="300")
+            await accept(harness, previous_member)
+            assert not previous_member.is_at_or_wake_command
+        assert "7" in first.get_extra(ARRIVAL_KEY).wake_senders
+        current = followup("发起戳一戳的成员补充", group="300")
+        task = harness.start(current)
+        await notice_tests.wait(current.prepared)
+        assert current.is_at_or_wake_command
+        assert first_task.cancelled()
+        inputs = notice_tests.texts(harness.requests[-1])
+        assert len(inputs) == 3
+        assert inputs[0] == "另一位成员的问题"
+        assert "用户 7戳了你一下" in inputs[1]
+        assert inputs[2] == "发起戳一戳的成员补充"
+        current.allow_reply.set()
+        await task
+        await notice_tests.drain_responses(harness)
+        assert harness.queue.empty()
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["context", "off", "other_target", "inherit_off"])
+async def test_poke_exclusions_do_not_grant_inheritance(harness, reason):
+    from test_debounce import Event as MessageEvent
+    from test_debounce_wake import accept, followup
+
+    config = harness.plugin.config
+    config["debounce"].update(initial_window_seconds=0.15)
+    if reason in {"context", "off"}:
+        config["notice_events"]["notify/poke"]["mode"] = reason
+    if reason == "inherit_off":
+        config["debounce"]["inherit_group_wake"] = False
+    if reason == "other_target":
+        config["notice_events"]["notify/poke"]["other_target_mode"] = "respond"
+    try:
+        first = MessageEvent("其他人的问题", 1, sender=8, group="300")
+        harness.start(first)
+        await notice_tests.wait(first.entered)
+        await harness.plugin.capture_notice_context(
+            poke_source(target_id=8 if reason == "other_target" else 99)
+        )
+        current = followup(group="300")
+        await accept(harness, current)
+        assert not current.is_at_or_wake_command
+    finally:
+        await harness.finish()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exposure_mode", ["full", "balanced", "compact"])
 @pytest.mark.parametrize("group_id", [30003, None])
 @pytest.mark.parametrize("target_id", [20002, 10002])
+@pytest.mark.parametrize("restrict_poke", [False, True], ids=["allowed", "restricted"])
 async def test_poke_context_and_tools_follow_actual_notice_scope(
-    harness, exposure_mode: str, group_id: int | None, target_id: int
+    harness,
+    exposure_mode: str,
+    group_id: int | None,
+    target_id: int,
+    restrict_poke: bool,
 ) -> None:
     raw = Event(
         {
@@ -57,6 +197,8 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
     plugin = harness.plugin
     plugin.config = validate_config({"toolsets": {"exposure_mode": exposure_mode}})
     plugin.config["notice_events"]["notify/poke"]["other_target_mode"] = "respond"
+    if restrict_poke:
+        plugin.config["notice_events"]["tool_restricted_events"].append("notify/poke")
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -112,9 +254,16 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
     request.conversation = await harness.manager.get_conversation(
         event.unified_msg_origin, "conversation"
     )
+    selected_tools = list(request.func_tool.tools)
     await plugin.prepare_platform_notification(event, request)
+    assert not event.is_stopped()
+    assert request.func_tool.tools
+    assert [tool.name for tool in request.func_tool.tools] == [
+        tool.name for tool in selected_tools
+    ]
     assert all(
-        isinstance(tool, NotificationOnlyTool) for tool in request.func_tool.tools
+        isinstance(tool, NotificationOnlyTool) is restrict_poke
+        for tool in request.func_tool.tools
     )
     adapter.bot.call_action.assert_not_awaited()
     await harness.finish()
