@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_group_component_context import core as core
 
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context
@@ -173,16 +174,19 @@ async def test_native_pipeline_skipping_plugin_releases_unclaimed_resume(continu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_group_context", [False, True])
 async def test_native_agent_build_and_reset_resume_saved_history_without_duplicate_input(
     continuation,
     monkeypatch,
     tmp_path,
+    core,
+    with_group_context,
 ):
     from astrbot.core import astr_main_agent
     from astrbot.core.agent.message import dump_messages_with_checkpoints
     from astrbot.core.provider import Provider
 
-    runtime, _, event, _, conversation = continuation
+    runtime, debouncer, event, source, conversation = continuation
     context = runtime.context
     context.persona_manager = SimpleNamespace(
         resolve_selected_persona=AsyncMock(
@@ -216,6 +220,14 @@ async def test_native_agent_build_and_reset_resume_saved_history_without_duplica
         astr_main_agent, "retrieve_knowledge_base", AsyncMock(return_value=None)
     )
     await runtime.prepare_resume(event)
+    if with_group_context:
+        earlier = source_message(source.get_group_id())
+        earlier.session_id = event.session_id
+        earlier.message_str = earlier.message_obj.message_str = "续接前的新群聊背景"
+        earlier.message_obj.message = [Plain(earlier.message_str)]
+        for message in (earlier, event):
+            async for _ in core.on_message(message):
+                pass
     async with session_lock_manager.acquire_lock(event.unified_msg_origin):
         built = await astr_main_agent.build_main_agent(
             event=event,
@@ -235,13 +247,31 @@ async def test_native_agent_build_and_reset_resume_saved_history_without_duplica
                 {"role": "user", "content": "another fact saved before acquiring lock"}
             )
             conversation.history = json.dumps(prefix)
+            if with_group_context:
+                await core.decorate_llm_req(event, built.provider_request)
             await runtime.finalize_resume(event, built.provider_request)
             await built.reset_coro
         finally:
             built.reset_coro.close()
     messages = dump_messages_with_checkpoints(built.agent_runner.run_context.messages)
     assert "Original session persona" in messages[0]["content"]
-    assert messages[1:] == prefix
+    assert messages[1 : len(prefix) + 1] == prefix
+    if with_group_context:
+        assert len(messages) == len(prefix) + 2
+        assert "续接前的新群聊背景" in json.dumps(messages[-1], ensure_ascii=False)
+        assert "继续处理已有的待回复批次" not in json.dumps(
+            messages, ensure_ascii=False
+        )
+        debouncer.bind_request(event, built.provider_request)
+        debouncer.snapshot(event, built.agent_runner.run_context)
+        assert event.get_extra(ARRIVAL_KEY).messages == [messages[-1]]
+        await runtime.persist(event.get_extra(ARRIVAL_KEY))
+        saved = context.conversation_manager.update_conversation.call_args.kwargs[
+            "history"
+        ]
+        assert saved == [*prefix, messages[-1]]
+    else:
+        assert messages[1:] == prefix
     assert built.provider_request.prompt is None
     assert built.provider_request.conversation.cid == "bound"
     provider.text_chat.assert_not_called()

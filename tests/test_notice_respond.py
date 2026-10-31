@@ -10,8 +10,12 @@ from weakref import WeakSet
 import pytest
 
 from test_debounce import Event, Harness, context_notice, texts, wait
+from test_debounce_runtime import source_message
+from test_group_component_context import core as core
 from test_notice_context import NoticeEvent, payload
 
+from astrbot.api.message_components import Plain
+from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.platform_metadata import PlatformMetadata
@@ -62,6 +66,16 @@ async def drain_responses(harness):
     jobs = list(harness.plugin.notice_context.response_jobs)
     if jobs:
         await asyncio.wait_for(asyncio.gather(*jobs), 3)
+
+
+async def record_group_background(core, event):
+    earlier = source_message(event.get_group_id())
+    earlier.session_id = event.session_id
+    earlier.message_str = earlier.message_obj.message_str = "群聊背景：周日下午讨论方案"
+    earlier.message_obj.message = [Plain(earlier.message_str)]
+    for message in (earlier, event):
+        async for _ in core.on_message(message):
+            pass
 
 
 def start_response(harness, event, **kwargs):
@@ -561,8 +575,9 @@ async def test_queued_notice_stays_deduplicated_after_seen_cache_expires(harness
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_group_context", [False, True])
 async def test_native_agent_build_preserves_persona_and_saved_event_without_duplicate(
-    harness, monkeypatch, tmp_path
+    harness, monkeypatch, tmp_path, core, with_group_context
 ):
     from astrbot.api.star import Context
     from astrbot.core import astr_main_agent
@@ -572,6 +587,8 @@ async def test_native_agent_build_preserves_persona_and_saved_event_without_dupl
     try:
         await harness.plugin.capture_notice_context(context_notice())
         event = await queued(harness)
+        if with_group_context:
+            await record_group_background(core, event)
         context = object.__new__(Context)
         context.get_config = harness.plugin.context.get_config
         context.conversation_manager = harness.manager
@@ -629,6 +646,17 @@ async def test_native_agent_build_preserves_persona_and_saved_event_without_dupl
         )
         assert built is not None
         try:
+            if with_group_context:
+                await core.decorate_llm_req(event, built.provider_request)
+                built.provider_request.extra_user_content_parts.extend(
+                    [
+                        TextPart(text="其他插件补充"),
+                        TextPart(text="仅本轮补充").mark_as_temp(),
+                    ]
+                )
+            await harness.plugin.add_verified_component_signal(
+                event, built.provider_request
+            )
             await harness.plugin.prepare_platform_notification(
                 event, built.provider_request
             )
@@ -644,15 +672,71 @@ async def test_native_agent_build_preserves_persona_and_saved_event_without_dupl
         await harness.plugin.snapshot_debounce_input(
             event, built.agent_runner.run_context
         )
-        messages = dump_messages_with_checkpoints(
-            built.agent_runner.run_context.messages
-        )
+        runtime_messages = built.agent_runner.run_context.messages
+        messages = dump_messages_with_checkpoints(runtime_messages)
         assert "当前会话人格" in messages[0]["content"]
-        assert len(messages[1:]) == 1
-        assert "group_card" in messages[1]["content"]
+        assert len(messages[1:]) == (2 if with_group_context else 1)
+        event_inputs = [
+            text for text in texts(messages) if "QQ 平台事件|group_card|" in text
+        ]
+        assert len(event_inputs) == 1
+        assert '<qq_verified_components types="notice"/>' in event_inputs[0]
+        assert '<qq_verified_components types=""/>' not in json.dumps(messages)
+        if with_group_context:
+            serialized = json.dumps(messages, ensure_ascii=False)
+            assert serialized.count("群聊背景：周日下午讨论方案") == 1
+            assert "其他插件补充" in serialized
+            assert "仅本轮补充" not in serialized
+            assert "仅本轮补充" in str(runtime_messages)
+            assert not core.group_chat_context.raw_records[event.unified_msg_origin]
         assert not json.loads(conversation.history)
         assert built.provider_request.prompt is None
         provider.text_chat.assert_not_called()
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enabled,replace", [(False, False), (True, False), (True, True)]
+)
+async def test_respond_group_background_is_saved_once_after_reply_or_replacement(
+    harness, monkeypatch, core, enabled, replace
+):
+    harness.plugin.config["debounce"]["enabled"] = enabled
+    prepare = harness.plugin.prepare_platform_notification
+
+    async def prepare_with_group_context(event, request):
+        await core.decorate_llm_req(event, request)
+        await prepare(event, request)
+
+    monkeypatch.setattr(
+        harness.plugin, "prepare_platform_notification", prepare_with_group_context
+    )
+    try:
+        await harness.plugin.capture_notice_context(context_notice())
+        event = await queued(harness)
+        await record_group_background(core, event)
+        first_task = task = start_response(harness, event)
+        await wait(event.prepared)
+        assert not harness.manager.history(event)
+        if replace:
+            followup = Event("补充普通消息", 2, group=300)
+            task = harness.start(followup)
+            await wait(followup.prepared)
+            assert first_task.cancelled()
+            followup.allow_reply.set()
+        else:
+            event.allow_reply.set()
+        request_text = "\n".join(texts(harness.requests[-1]))
+        assert request_text.count("群聊背景：周日下午讨论方案") == 1
+        assert request_text.count("QQ 平台事件|group_card|") == 1
+        await task
+        await harness.drain_notices()
+        history = "\n".join(texts(harness.manager.history(event)))
+        assert history.count("群聊背景：周日下午讨论方案") == 1
+        assert history.count("QQ 平台事件|group_card|") == 1
+        assert not core.group_chat_context.raw_records[event.unified_msg_origin]
     finally:
         await harness.finish()
 

@@ -8,10 +8,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrbot.api.message_components import At, AtAll, Plain, Reply
+from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY
-from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter
+from astrbot_plugin_qq_enhance.qq_debounce import ArrivalFilter, DebounceWakeHook
 from test_debounce import (
     Event,
     Harness,
@@ -32,6 +33,50 @@ def followup(text="补充内容", message_id=2, *, sender=7, group="10"):
     event.is_at_or_wake_command = False
     event.is_wake = False
     return event
+
+
+@pytest.mark.parametrize("another_wrapper", [False, True])
+@pytest.mark.asyncio
+async def test_early_wake_hook_unload_restores_only_its_own_wrapper(
+    monkeypatch, another_wrapper
+):
+    original = AsyncMock()
+    monkeypatch.setattr(WakingCheckStage, "process", original)
+    plugin = SimpleNamespace(inherit_debounce_wake=AsyncMock())
+    hook = DebounceWakeHook(plugin)
+    hook.install()
+    wrapped = WakingCheckStage.process
+    try:
+        hook.install()
+        assert WakingCheckStage.process is wrapped
+        if another_wrapper:
+
+            async def outer(stage, event):
+                return await wrapped(stage, event)
+
+            WakingCheckStage.process = outer
+        hook.close()
+        hook.close()
+        assert WakingCheckStage.process is (outer if another_wrapper else original)
+        # An enclosing plugin may retain the wrapper after unload; it must
+        # then forward native checks without invoking the unloaded plugin.
+        event = followup()
+        event.set_extra(
+            ARRIVAL_KEY, SimpleNamespace(wake_source=object(), wake_pending=None)
+        )
+        event.set_extra(
+            "activated_handlers",
+            [SimpleNamespace(handler=plugin.inherit_debounce_wake)],
+        )
+        stage = SimpleNamespace()
+        await WakingCheckStage.process(stage, event)
+        original.assert_awaited_once_with(stage, event)
+        plugin.inherit_debounce_wake.assert_not_awaited()
+        hook.install()
+        await WakingCheckStage.process(stage, event)
+        plugin.inherit_debounce_wake.assert_awaited_once_with(event)
+    finally:
+        hook.close()
 
 
 async def accept(harness, event):
@@ -502,12 +547,14 @@ async def test_native_waking_and_pure_at_open_a_window_without_an_empty_model_ca
 
     task = asyncio.create_task(initial_pipeline())
     harness.tasks.append(task)
+    hook = DebounceWakeHook(harness.plugin)
+    hook.install()
     try:
         await wait(waiting)
         assert first.is_at_or_wake_command
         await stage.process(second)
         assert not second.is_stopped()
-        assert not second.is_at_or_wake_command
+        assert second.is_at_or_wake_command
         assert second.get_extra(ARRIVAL_KEY).wake_source is not None
         activated = second.get_extra("activated_handlers")
         assert activated[0].handler_name == "inherit_debounce_wake"
@@ -522,4 +569,5 @@ async def test_native_waking_and_pure_at_open_a_window_without_an_empty_model_ca
         assert second.get_extra(ARRIVAL_KEY).batch
         await task
     finally:
+        hook.close()
         await harness.finish()

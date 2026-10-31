@@ -242,7 +242,7 @@ class AstrBotDebounceRuntime:
             return
         request.conversation = conversation
         request.contexts = json.loads(conversation.history or "[]")
+        # Preserve newly injected context; only the resume placeholder is fake.
         request.prompt = None
         request.image_urls = []
         request.audio_urls = []
-        request.extra_user_content_parts = []

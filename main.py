@@ -43,7 +43,7 @@ from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES
 from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
 from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
-from .qq_debounce import ArrivalFilter, find_message_arrival
+from .qq_debounce import ArrivalFilter, DebounceWakeHook, find_message_arrival
 from .notice_context import NoticeContext, QQNotice, format_notice_time
 from .inbound import (
     describe_inbound_event,
@@ -314,6 +314,7 @@ class QQEnhancePlugin(Star):
         self.debouncer = MessageDebouncer(
             AstrBotDebounceRuntime(context, self.config["debounce"])
         )
+        self.debounce_wake_hook = DebounceWakeHook(self)
         self.notice_context = NoticeContext(self)
         context.register_web_api(
             f"/{PLUGIN_NAME}/diagnostics",
@@ -574,6 +575,7 @@ class QQEnhancePlugin(Star):
                 "required": ["operation", "params"],
                 "additionalProperties": False,
             }
+        self.debounce_wake_hook.install()
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("QQ Enhance initialized")
 
@@ -1118,7 +1120,7 @@ class QQEnhancePlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1200)
     async def inherit_debounce_wake(self, event: AstrMessageEvent) -> None:
-        """Authorize recorded follow-ups before enrichment and group recording."""
+        """Authorize early via the wake hook, with normal dispatch as fallback."""
         await self.debouncer.authorize_wake(event)
 
     @filter.custom_filter(ArrivalFilter, priority=-20000)
@@ -1484,6 +1486,16 @@ class QQEnhancePlugin(Star):
                 if existing_system_prompt
                 else verified_components_prompt
             )
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if (
+            isinstance(event, ResumedMessageEvent)
+            or getattr(event, "notice_response", False)
+            or arrival is not None
+            and arrival.replayed
+        ):
+            # Synthetic prompts are discarded. Notice facts receive their own
+            # verification in NoticeContext; resumed inputs keep saved tags.
+            return
         event_verified_types = event.get_extra(
             "_qq_enhance_verified_component_types", []
         )
@@ -3093,6 +3105,8 @@ class QQEnhancePlugin(Star):
     async def terminate(self) -> None:
         """Stop cleanup without deleting persistent plugin data."""
 
+        if hasattr(self, "debounce_wake_hook"):
+            self.debounce_wake_hook.close()
         for event in self.notification_events:
             event.stop_event()
         self.notification_events.clear()

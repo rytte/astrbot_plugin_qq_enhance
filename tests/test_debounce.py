@@ -238,6 +238,7 @@ class Harness:
                     return
             else:
                 ArrivalFilter().filter(event, {})
+                arrival = event.get_extra(ARRIVAL_KEY)
             event.entered.set()
             try:
                 if preprocess:
@@ -250,6 +251,8 @@ class Harness:
                     conversation = await self.manager.get_conversation(
                         event.unified_msg_origin, self.manager.current_id
                     )
+                    # Synthetic test inputs have no configured sender reminders;
+                    # integration tests add native context through their hooks.
                     req = ProviderRequest(
                         prompt=event.message_str,
                         contexts=json.loads(conversation.history),
@@ -258,7 +261,13 @@ class Harness:
                             TextPart(
                                 text=f"<system_reminder>User ID: {event.sender}, Nickname: Test\nCurrent datetime: 2026-09-06 01:55 (CST), Weekday: Sunday</system_reminder>"
                             )
-                        ],
+                        ]
+                        if not (
+                            arrival is not None
+                            and arrival.replayed
+                            or getattr(event, "notice_response", False)
+                        )
+                        else [],
                     )
                     if added_contexts:
                         req.contexts.extend(deepcopy(added_contexts))
@@ -279,7 +288,12 @@ class Harness:
                     if self.request_hook is not None:
                         await self.request_hook(event, req)
                     messages = bind_checkpoint_messages(req.contexts)
-                    if req.prompt is not None:
+                    if (
+                        req.prompt is not None
+                        or req.image_urls
+                        or req.audio_urls
+                        or req.extra_user_content_parts
+                    ):
                         current = await req.assemble_context()
                         if parts:
                             current["content"].extend(deepcopy(parts))

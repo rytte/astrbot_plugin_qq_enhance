@@ -21,11 +21,13 @@ from astrbot.core.pipeline.process_stage.stage import ProcessStage, StarRequestS
 from astrbot.core.pipeline.scheduler import PipelineScheduler
 from astrbot.core.pipeline.waking_check import stage as waking
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
 from astrbot.core.star.star import StarMetadata
 from astrbot.core.star.star_handler import StarHandlerRegistry, star_handlers_registry
 from astrbot.core.utils.session_lock import session_lock_manager
 from astrbot_plugin_qq_enhance.debounce import ARRIVAL_KEY
+from astrbot_plugin_qq_enhance.qq_debounce import DebounceWakeHook
 from test_debounce import Harness, enabled_session as enabled_session, texts, wait
 from test_debounce_runtime import source_message
 
@@ -45,6 +47,7 @@ async def integration(monkeypatch):
     )
     gates = {}
     preprocess_gates = {}
+    preprocess_wakes = {}
     preprocessing = asyncio.Event()
     observed = asyncio.Event()
     window = asyncio.Event()
@@ -137,6 +140,7 @@ async def integration(monkeypatch):
     group_preprocess = group.observer._preprocess(PreProcessStage.process)
 
     async def prepare(event):
+        preprocess_wakes[event.message_obj.message_id] = event.is_at_or_wake_command
         if gate := preprocess_gates.get(event.message_obj.message_id):
             preprocessing.set()
             await gate.wait()
@@ -144,6 +148,8 @@ async def integration(monkeypatch):
 
     scheduler = PipelineScheduler(ctx)
     scheduler.stages = [wake_stage, SimpleNamespace(process=prepare), process]
+    wake_hook = DebounceWakeHook(harness.plugin)
+    wake_hook.install()
 
     def start(text, message_id):
         event = source_message("10")
@@ -167,11 +173,13 @@ async def integration(monkeypatch):
             start=start,
             gates=gates,
             preprocess_gates=preprocess_gates,
+            preprocess_wakes=preprocess_wakes,
             preprocessing=preprocessing,
             observed=observed,
             window=window,
         )
     finally:
+        wake_hook.close()
         for gate in (*gates.values(), *preprocess_gates.values()):
             gate.set()
         await harness.finish()
@@ -186,10 +194,58 @@ async def test_group_plugin_keyword_opens_inheritance_window(integration):
     second, second_task = integration.start("请帮我看看这件事", 2)
     await wait(second.prepared)
     assert second.is_at_or_wake_command
+    assert integration.preprocess_wakes["2"]
     assert texts(integration.harness.requests[-1]) == ["小爱", "请帮我看看这件事"]
     assert first_task.cancelled()
     second.allow_reply.set()
     await second_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "llm_disabled",
+        "plugin_disabled",
+        "filtered_handler",
+        "new_conversation",
+        "expired",
+    ],
+)
+async def test_early_inheritance_keeps_session_and_window_checks(
+    integration, monkeypatch, reason
+):
+    first, _ = integration.start("小爱", 1)
+    await wait(integration.window)
+    if reason == "llm_disabled":
+        SessionServiceManager.should_process_llm_request.return_value = False
+    elif reason == "plugin_disabled":
+        SessionPluginManager.is_plugin_enabled_for_session.return_value = False
+    elif reason == "filtered_handler":
+
+        async def filtered(event, handlers):
+            return [
+                handler
+                for handler in handlers
+                if handler.handler_module_path
+                != type(integration.harness.plugin).__module__
+            ]
+
+        monkeypatch.setattr(
+            SessionPluginManager, "filter_handlers_by_session", filtered
+        )
+    elif reason == "new_conversation":
+        integration.harness.manager.current_id = "new"
+    else:
+        first.get_extra(ARRIVAL_KEY).wait_deadline = (
+            asyncio.get_running_loop().time() - 1
+        )
+
+    second, task = integration.start("普通补充消息", 2)
+    await asyncio.wait_for(task, 1)
+    assert not integration.preprocess_wakes["2"]
+    assert not second.is_at_or_wake_command
+    assert not second.prepared.is_set()
 
 
 @pytest.mark.asyncio
@@ -206,6 +262,7 @@ async def test_keyword_followup_arriving_before_window_registration_is_retained(
     gate.set()
     await wait(second.prepared)
     assert second.is_at_or_wake_command
+    assert integration.preprocess_wakes["2"]
     assert texts(integration.harness.requests[-1]) == ["小爱", "请帮我看看这件事"]
     second.allow_reply.set()
     await second_task
@@ -222,6 +279,7 @@ async def test_followup_can_arrive_before_group_plugin_marks_keyword_wake(integr
     gate.set()
     await wait(second.prepared)
     assert second.is_at_or_wake_command
+    assert integration.preprocess_wakes["2"]
     assert texts(integration.harness.requests[-1]) == ["小爱", "紧接着发的正文"]
     second.allow_reply.set()
     await second_task
@@ -237,11 +295,16 @@ async def test_pending_keyword_inheritance_keeps_slow_preparation_and_several_in
     await wait(integration.observed)
     second, _ = integration.start("第一条补充", 2)
     third, third_task = integration.start("语音转写后的第二条补充", 3)
-    await wait(integration.preprocessing)
+    await asyncio.sleep(0)
+    assert third.get_extra(ARRIVAL_KEY).wake_pending is not None
+    assert "3" not in integration.preprocess_wakes
     first_gate.set()
     await wait(first.get_extra(ARRIVAL_KEY).wake_checked)
     assert second.get_extra(ARRIVAL_KEY).wake_source is not None
     assert third.get_extra(ARRIVAL_KEY).wake_source is not None
+    await wait(integration.preprocessing)
+    assert integration.preprocess_wakes["2"]
+    assert integration.preprocess_wakes["3"]
     await wait(second.prepared)
     slow_gate.set()
     await wait(third.prepared)

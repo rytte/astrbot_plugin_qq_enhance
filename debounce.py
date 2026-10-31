@@ -788,7 +788,11 @@ class MessageDebouncer:
             for item in arrival.context_inputs
             if item.saved.done() and not item.saved.cancelled() and item.saved.result()
         }
-        if arrival.replayed or getattr(event, "notice_response", False):
+        # A synthetic request can still have a new native user message made
+        # from injected context. Capture it so cancellation does not lose it.
+        if (
+            arrival.replayed or getattr(event, "notice_response", False)
+        ) and not request.extra_user_content_parts:
             arrival.ready.set()
             return
         current = run_context.messages[-1] if run_context.messages else None

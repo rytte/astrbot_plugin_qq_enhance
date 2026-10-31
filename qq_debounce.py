@@ -1,9 +1,58 @@
 """QQ input selection and message references, outside the batch scheduler."""
 
+from functools import wraps
+
 from astrbot.api.event import filter
+from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 
 from .debounce import ARRIVAL_KEY, ArrivalRegistry
 from .debounce_runtime import ResumedMessageEvent
+
+
+class DebounceWakeHook:
+    """Authorize inheritance after native wake checks, before preprocessing."""
+
+    def __init__(self, plugin):
+        self.plugin = plugin
+        self.active = False
+        self.original = None
+        self.wrapper = None
+
+    def install(self):
+        if self.active:
+            return
+        original = WakingCheckStage.process
+
+        @wraps(original)
+        async def process(stage, event):
+            result = await original(stage, event)
+            arrival = event.get_extra(ARRIVAL_KEY)
+            if (
+                self.active
+                and self.wrapper is process
+                and not event.is_stopped()
+                and arrival is not None
+                and (
+                    arrival.wake_source is not None or arrival.wake_pending is not None
+                )
+            ):
+                # Native plugin/session filtering must finish before granting
+                # wake authority. Filters themselves cannot await these checks.
+                for handler in event.get_extra("activated_handlers", []):
+                    if handler.handler == self.plugin.inherit_debounce_wake:
+                        await handler.handler(event)
+                        break
+            return result
+
+        self.original = original
+        self.wrapper = process
+        self.active = True
+        WakingCheckStage.process = process
+
+    def close(self):
+        self.active = False
+        if self.wrapper is not None and WakingCheckStage.process is self.wrapper:
+            WakingCheckStage.process = self.original
 
 
 class ArrivalFilter(filter.CustomFilter):

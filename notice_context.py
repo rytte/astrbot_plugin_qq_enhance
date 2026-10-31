@@ -780,10 +780,11 @@ class NoticeContext:
             return
         request.conversation = conversation
         request.contexts = json.loads(conversation.history or "[]")
+        # Native group history and other plugins' additions remain valid even
+        # though the synthetic event prompt is replaced at agent begin.
         request.prompt = None
         request.image_urls = []
         request.audio_urls = []
-        request.extra_user_content_parts = []
 
     async def queue_pinned(
         self,
