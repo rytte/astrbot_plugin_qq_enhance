@@ -43,6 +43,8 @@ class ContextInput:
     expected_count: int = 0
     verified_type: str | None = None
     platform_event_type: str | None = None
+    wake_sender_id: str | None = None
+    wake_applied: bool = False
 
 
 @dataclass(eq=False)
@@ -72,12 +74,29 @@ class Arrival:
     scope: tuple | None = None
     seen_context: set[tuple] = field(default_factory=set)
     order: int = field(default_factory=lambda: next(_ARRIVAL_ORDER))
+    debouncer: MessageDebouncer | None = None
+    wake_source: Arrival | None = None
+    wake_senders: set[str] = field(default_factory=set)
+    wait_deadline: float = 0.0
+    received_at: float = 0.0
+    wake_checked: asyncio.Event = field(default_factory=asyncio.Event)
+    wake_available: asyncio.Event = field(default_factory=asyncio.Event)
+    wake_pending: Arrival | None = None
+    wake_followups: set[Arrival] = field(default_factory=set)
+
+    def resolve_wake(self):
+        """Release continuations once window admission is known or abandoned."""
+        self.wake_checked.set()
+        for followup in self.wake_followups:
+            followup.wake_available.set()
+        self.wake_followups.clear()
 
 
 class ArrivalRegistry:
     """Platform-independent arrival order before asynchronous preparation."""
 
     tails: ClassVar[dict[tuple, Arrival]] = {}
+    wake_windows: ClassVar[set[Arrival]] = set()
 
     @classmethod
     def record(cls, event) -> bool:
@@ -91,7 +110,12 @@ class ArrivalRegistry:
             event.unified_msg_origin,
             debounce_sender(event),
         )
-        arrival = Arrival(event, task, cls.tails.get(key))
+        arrival = Arrival(
+            event,
+            task,
+            cls.tails.get(key),
+            received_at=asyncio.get_running_loop().time(),
+        )
         cls.tails[key] = arrival
         event.set_extra(ARRIVAL_KEY, arrival)
 
@@ -103,6 +127,10 @@ class ArrivalRegistry:
         def completed(_task):
             arrival.finished.set()
             arrival.ready.set()
+            arrival.resolve_wake()
+            if arrival.wake_pending is not None:
+                arrival.wake_pending.wake_followups.discard(arrival)
+                arrival.wake_pending = None
             if not arrival.superseded:
                 arrival.history_ready.set()
             arrival.previous = None
@@ -136,7 +164,81 @@ class MessageDebouncer:
         self.context_targets: dict[tuple, Arrival] = {}
         self.closed = False
 
+    def offer_wake(self, arrival: Arrival, owner: Arrival) -> bool:
+        """Remember eligibility at arrival, before asynchronous media preparation."""
+        event = arrival.event
+        scope = (
+            event.unified_msg_origin,
+            "group" if self.config["shared_group"] else event.get_sender_id(),
+        )
+        if (
+            self.closed
+            or not self.config["enabled"]
+            or not self.config["inherit_group_wake"]
+            or owner.task is None
+            or owner.task.get_loop() is not asyncio.get_running_loop()
+            or owner.scope != scope
+            or not owner.waiting
+            or owner.wait_deadline <= asyncio.get_running_loop().time()
+            or owner.finished.is_set()
+            or owner.protected
+            or owner.event.is_stopped()
+            or owner.event._has_send_oper
+            or event.get_sender_id() not in owner.wake_senders
+        ):
+            return False
+        arrival.debouncer = self
+        arrival.wake_source = owner
+        arrival.wake_senders = owner.wake_senders
+        return True
+
+    async def authorize_wake(self, event) -> None:
+        """Grant a recorded continuation only after native checks have passed."""
+        arrival = event.get_extra(ARRIVAL_KEY)
+        if arrival is not None and arrival.wake_pending is not None:
+            source = arrival.wake_pending
+            # Wait only for window registration, never for a model reply. Bound
+            # the wait so an unrelated handler cannot hold this pipeline open.
+            budget = max(
+                float(self.config["initial_window_seconds"]),
+                float(self.config["followup_window_seconds"]),
+            )
+            maximum = float(self.config["max_wait_seconds"])
+            if maximum > 0:
+                budget = min(budget, maximum)
+            timeout = budget - (asyncio.get_running_loop().time() - arrival.received_at)
+            try:
+                if (
+                    timeout > 0
+                    and not event.is_at_or_wake_command
+                    and not self.closed
+                    and self.config["enabled"]
+                    and self.config["inherit_group_wake"]
+                    and self.runtime.eligible(event, require_wake=False)
+                ):
+                    await asyncio.wait_for(arrival.wake_available.wait(), timeout)
+            except TimeoutError:
+                pass
+            finally:
+                source.wake_followups.discard(arrival)
+                arrival.wake_pending = None
+        if (
+            not self.closed
+            and arrival is not None
+            and arrival.debouncer is self
+            and arrival.wake_source is not None
+        ):
+            await self.runtime.inherit_wake(event, arrival.wake_source)
+
     async def capture(self, event) -> None:
+        arrival = event.get_extra(ARRIVAL_KEY)
+        try:
+            await self._capture(event)
+        finally:
+            if arrival is not None:
+                arrival.resolve_wake()
+
+    async def _capture(self, event) -> None:
         """Wait for preparation, then supersede a cancellable earlier pipeline.
 
         Args:
@@ -163,6 +265,30 @@ class MessageDebouncer:
             "group" if shared_group else debounce_sender(event),
         )
         arrival.scope = scope
+        wake_sender = next(
+            (
+                item.wake_sender_id
+                for item in arrival.context_inputs
+                if item.wake_sender_id and not item.wake_applied
+            ),
+            None,
+        )
+        if getattr(event.message_obj, "raw_message", {}).get("post_type") == "message":
+            wake_sender = event.get_sender_id()
+        if config["inherit_group_wake"] and event.get_group_id() and wake_sender:
+            arrival.debouncer = self
+            arrival.conversation_id = await self.runtime.context.conversation_manager.get_curr_conversation_id(
+                event.unified_msg_origin
+            )
+            owner = self.active.get(scope)
+            if (
+                owner is not None
+                and owner.waiting
+                and owner.wait_deadline > asyncio.get_running_loop().time()
+                and owner.conversation_id == arrival.conversation_id
+            ):
+                arrival.wake_senders = owner.wake_senders
+            arrival.wake_senders.add(wake_sender)
         if (
             job := self.context_jobs.get(scope)
         ) and arrival.order > self.context_targets[scope].order:
@@ -235,7 +361,28 @@ class MessageDebouncer:
             start + max(maximum - already_waited, 0.0) if maximum > 0 else float("inf")
         )
         deadline = min(start + seconds, limit)
+        arrival.wait_deadline = deadline
         arrival.waiting = True
+        for item in arrival.context_inputs:
+            self._offer_context_wake(arrival, item)
+        if arrival.debouncer is self:
+            ArrivalRegistry.wake_windows.add(arrival)
+            # Inputs can arrive after a plugin wakes the source but before it
+            # reaches capture. Preserve their qualification here even if their
+            # own media preparation outlasts this window.
+            pending = list(arrival.wake_followups)
+            while pending:
+                followup = pending.pop()
+                pending.extend(followup.wake_followups)
+                if (
+                    not followup.finished.is_set()
+                    and followup.wake_source is None
+                    and not followup.event.is_at_or_wake_command
+                    and followup.received_at - arrival.received_at < deadline - start
+                    and self.offer_wake(followup, arrival)
+                ):
+                    followup.wake_available.set()
+        arrival.resolve_wake()
         try:
             while deadline > loop.time():
                 arrival.wait_changed.clear()
@@ -251,8 +398,13 @@ class MessageDebouncer:
                 deadline = min(
                     loop.time() + float(self.config["followup_window_seconds"]), limit
                 )
+                arrival.wait_deadline = deadline
         finally:
+            ArrivalRegistry.wake_windows.discard(arrival)
             arrival.waiting = False
+            # Accepted arrivals retain the shared set; later context-only waits
+            # must not revive the expired members' wake authority.
+            arrival.wake_senders = set()
             arrival.waited_seconds = already_waited + min(
                 loop.time() - start, max(deadline - start, 0.0)
             )
@@ -284,7 +436,7 @@ class MessageDebouncer:
         return job
 
     def submit_context(self, related: Arrival, item: ContextInput) -> bool:
-        """Join an existing input without granting a source wake authority."""
+        """Join platform facts and retain an explicitly responding poke's sender."""
         if (
             self.closed
             or not self.config["enabled"]
@@ -331,6 +483,7 @@ class MessageDebouncer:
         item.owners.append(owner)
         if owner.waiting:
             item.wait_applied = True
+            self._offer_context_wake(owner, item)
             owner.wait_changed.set()
         previous_job = self.context_jobs.get(scope)
         if (
@@ -357,6 +510,26 @@ class MessageDebouncer:
 
             job.add_done_callback(completed)
         return True
+
+    def _offer_context_wake(self, owner, item):
+        if (
+            not self.closed
+            and self.config["enabled"]
+            and self.config["inherit_group_wake"]
+            and item.wake_sender_id
+            and not item.wake_applied
+            and owner.waiting
+            and owner.event.get_group_id()
+            and (
+                owner.conversation_id is None
+                or item.conversation_id in (None, owner.conversation_id)
+            )
+        ):
+            owner.debouncer = self
+            owner.conversation_id = owner.conversation_id or item.conversation_id
+            owner.wake_senders.add(item.wake_sender_id)
+            item.wake_applied = True
+            ArrivalRegistry.wake_windows.add(owner)
 
     def arrivals(self, umo=None):
         """Snapshot inputs including queued continuations and media preparation."""

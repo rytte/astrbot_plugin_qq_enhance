@@ -2,7 +2,7 @@
 
 from astrbot.api.event import filter
 
-from .debounce import ArrivalRegistry
+from .debounce import ARRIVAL_KEY, ArrivalRegistry
 from .debounce_runtime import ResumedMessageEvent
 
 
@@ -20,7 +20,33 @@ class ArrivalFilter(filter.CustomFilter):
             and raw.get("post_type") != "message"
         ):
             return False
-        return ArrivalRegistry.record(event)
+        if not ArrivalRegistry.record(event):
+            return False
+        if (
+            not event.is_at_or_wake_command
+            and event.get_group_id()
+            and raw.get("post_type") == "message"
+        ):
+            arrival = event.get_extra(ARRIVAL_KEY)
+            for owner in tuple(ArrivalRegistry.wake_windows):
+                if owner.debouncer is not None and owner.debouncer.offer_wake(
+                    arrival, owner
+                ):
+                    break
+            if arrival.wake_source is None:
+                source = arrival.previous
+                # A rapid continuation may precede both a plugin's wake hook
+                # and the debounce handler. Qualification still requires the
+                # earlier input to open a real window.
+                if (
+                    source is not None
+                    and not source.wake_checked.is_set()
+                    and not source.event.is_stopped()
+                    and not source.event._has_send_oper
+                ):
+                    arrival.wake_pending = source
+                    source.wake_followups.add(arrival)
+        return True
 
 
 def message_reference(event) -> tuple | None:

@@ -242,6 +242,7 @@ class Harness:
             try:
                 if preprocess:
                     await preprocess.wait()
+                await self.plugin.inherit_debounce_wake(event)
                 if enrich:
                     await self.plugin.enrich_inbound_qq_components(event)
                 await self.plugin.debounce_inbound_message(event)
@@ -1061,6 +1062,7 @@ async def test_conversation_switch_does_not_move_old_input():
     "config",
     [
         {"enabled": 1},
+        {"inherit_group_wake": 1},
         {"max_messages": 1},
         {"max_messages": True},
         {"max_chars": 3000},

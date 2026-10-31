@@ -1116,6 +1116,11 @@ class QQEnhancePlugin(Star):
         """Keep native tool deliveries inside the current user's reply quota."""
         self.temporary_sessions.wrap_tools(event, request)
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1200)
+    async def inherit_debounce_wake(self, event: AstrMessageEvent) -> None:
+        """Authorize recorded follow-ups before enrichment and group recording."""
+        await self.debouncer.authorize_wake(event)
+
     @filter.custom_filter(ArrivalFilter, priority=-20000)
     async def debounce_inbound_message(self, event: AstrMessageEvent) -> None:
         """Coordinate consecutive QQ inputs after normal plugin processing.

@@ -5,7 +5,7 @@ from copy import copy, deepcopy
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import At, AtAll, Plain, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 from astrbot.core.star.session_plugin_manager import SessionPluginManager
@@ -93,10 +93,10 @@ class AstrBotDebounceRuntime:
         self.config = config
         self.conflict_reported = False
 
-    def eligible(self, event):
+    def eligible(self, event, *, require_wake=True):
         if event.is_stopped() or event._has_send_oper or event.call_llm:
             return False
-        if not event.is_at_or_wake_command:
+        if require_wake and not event.is_at_or_wake_command:
             return False
         cfg = self.context.get_config(umo=event.unified_msg_origin)
         if (
@@ -131,6 +131,23 @@ class AstrBotDebounceRuntime:
                     self.conflict_reported = True
                 return False
         return True
+
+    async def inherit_wake(self, event, source):
+        """Inherit only wake authority while retaining the new sender's checks."""
+        if event.is_at_or_wake_command or not self.eligible(event, require_wake=False):
+            return
+        if any(
+            isinstance(component, AtAll)
+            or isinstance(component, At)
+            and str(component.qq) != str(event.get_self_id())
+            or isinstance(component, Reply)
+            and str(component.sender_id) != str(event.get_self_id())
+            for component in event.get_messages()
+        ):
+            return
+        if await self.request_allowed(event) and await self.can_resume(source):
+            event.is_wake = True
+            event.is_at_or_wake_command = True
 
     async def can_resume(self, arrival):
         event = arrival.event
