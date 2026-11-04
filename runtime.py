@@ -118,7 +118,7 @@ DEFAULT_CONFIG = {
     "files": {
         "allowed_roots": [],
         "max_file_size_mb": 100,
-        "max_base64_size_mb": 10,
+        "max_base64_size_mb": 32,
         "temp_ttl_seconds": 21600,
         "cleanup_interval_seconds": 600,
     },

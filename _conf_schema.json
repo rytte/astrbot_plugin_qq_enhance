@@ -1063,7 +1063,7 @@
         "type": "int",
         "description": "Base64 解码上限（MiB）",
         "hint": "限制媒体输入及协议端返回的 Base64 数据解码后的文件大小。",
-        "default": 10,
+        "default": 32,
         "minimum": 1,
         "maximum": 100
       },
