@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 from astrbot_plugin_qq_enhance.catalog import TOOL_OPERATIONS
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.message_context import GroupMessageIdHook
 from astrbot_plugin_qq_enhance.providers import NAPCAT, SNOWLUMA
 from astrbot_plugin_qq_enhance.providers.base import ProviderBinding, VersionInfo
 from astrbot_plugin_qq_enhance.providers.napcat import NapCatProvider
+from astrbot_plugin_qq_enhance.qq_debounce import DebounceWakeHook
 from astrbot_plugin_qq_enhance.runtime import (
     DEFAULT_QQ_TOOL_DIALOGUE_PROMPT,
     QQRuntime,
@@ -419,10 +421,13 @@ async def test_initialize_uses_registered_tool_manager_api(
     plugin.recall_tasks = set()
     plugin.web_reader = SimpleNamespace(cleanup=lambda: None, close=AsyncMock())
     plugin.notice_context = SimpleNamespace(close=AsyncMock())
+    plugin.debounce_wake_hook = DebounceWakeHook(plugin)
+    plugin.group_message_id_hook = GroupMessageIdHook(plugin)
 
     await plugin.initialize()
 
     plugin.storage.initialize.assert_awaited_once()
+    assert plugin.group_message_id_hook.active
     assert all(manager.get_func(tool_name) is not None for tool_name in TOOL_OPERATIONS)
     for name in WEB_TOOL_NAMES:
         tool = manager.get_func(name)
