@@ -47,7 +47,18 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
     assert all(item.display_name.strip() for item in OPERATIONS)
     assert len(TOOL_OPERATIONS) == 29
-    assert len(OPERATIONS) == 80
+    assert len(OPERATIONS) == 78
+    assert TOOL_OPERATIONS["qq_status"] == (
+        "login",
+        "runtime",
+        "version",
+        "capabilities",
+    )
+    assert TOOL_OPERATIONS["qq_message_manage"] == (
+        "recall",
+        "reaction_add",
+        "reaction_remove",
+    )
     assert TOOL_OPERATIONS["qq_media"] == (
         "get_image",
         "get_record",
@@ -88,13 +99,40 @@ def test_legacy_user_query_rules_migrate_without_duplicates(
     assert validate_config(result) == result
 
 
-def test_legacy_user_query_rules_are_saved_after_migration(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "group,key", [("toolsets", "disabled_operations"), ("confirmation", "operations")]
+)
+@pytest.mark.parametrize("remaining", [[], ["qq_message_manage.recall"]])
+@pytest.mark.parametrize(
+    "removed",
+    [
+        ["qq_message_manage.mark_read"],
+        ["qq_status.clients"],
+        ["qq_message_manage.mark_read", "qq_status.clients"],
+    ],
+)
+def test_removed_operation_rules_migrate_without_mutating_input(
+    group, key, remaining, removed
+) -> None:
+    raw = {group: {key: [*removed, *remaining]}}
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result[group][key] == remaining
+    assert raw == original
+    assert validate_config(result) == result
+
+
+def test_legacy_operation_rules_are_saved_after_migration(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
                 "toolsets": {
                     "disabled_operations": [
+                        "qq_message_manage.mark_read",
+                        "qq_status.clients",
                         "qq_user_info.group_member",
                         "qq_group_members.detail",
                         "qq_user_info.stranger",
@@ -102,7 +140,12 @@ def test_legacy_user_query_rules_are_saved_after_migration(tmp_path) -> None:
                     ]
                 },
                 "confirmation": {
-                    "operations": ["qq_user_info.group_member", "qq_user_info.stranger"]
+                    "operations": [
+                        "qq_user_info.group_member",
+                        "qq_message_manage.mark_read",
+                        "qq_status.clients",
+                        "qq_user_info.stranger",
+                    ]
                 },
                 "notice_events": {"notify/poke": {"mode": "context"}},
             }

@@ -28,9 +28,6 @@ class SnowLumaProvider:
         "qq_notice.send": ("title",),
     }
     limitations = {
-        "qq_status.clients": (
-            "仅返回本次 QQ 会话已观察到的设备快照，不支持强制刷新；尚无快照时查询会失败",
-        ),
         "qq_friend_list.friends": ("不支持 no_cache=true 强制刷新",),
         "qq_user_info.detail": (
             "不支持 no_cache=true；缺少可靠来源的资料字段可能省略或为空",
@@ -116,7 +113,6 @@ class SnowLumaProvider:
                     "SnowLuma 历史锚点 message_id 必须是有符号 32 位整数",
                 )
         if operation_id in {
-            "qq_status.clients",
             "qq_friend_list.friends",
             "qq_user_info.detail",
         } and params.get("no_cache"):

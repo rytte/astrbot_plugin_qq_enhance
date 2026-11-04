@@ -504,14 +504,17 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "qq_user_info.group_member": "qq_group_members.detail",
         "qq_user_info.stranger": "qq_user_info.detail",
     }
+    removed_operations = {"qq_message_manage.mark_read", "qq_status.clients"}
     for group, key in (
         ("toolsets", "disabled_operations"),
         ("confirmation", "operations"),
     ):
-        # Preserve existing restrictions when renaming or removing query entries.
+        # Preserve renamed restrictions and discard rules for removed operations.
         result[group][key] = list(
             dict.fromkeys(
-                operation_renames.get(name, name) for name in result[group][key]
+                operation_renames.get(name, name)
+                for name in result[group][key]
+                if name not in removed_operations
             )
         )
         unknown = set(result[group][key]) - set(OPERATION_MAP)

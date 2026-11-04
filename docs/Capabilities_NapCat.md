@@ -9,10 +9,10 @@
 | 项目 | 数量 |
 |---|---:|
 | NapCat 已注册动作 | 177 |
-| 插件公开能力 | 29 个工具、80 个操作 |
-| 插件覆盖的 NapCat 动作 | 72 |
+| 插件公开能力 | 29 个工具、78 个操作 |
+| 插件覆盖的 NapCat 动作 | 70 |
 
-统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 67 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
+统计口径：NapCat 数量来自实际注册的动作处理器，不计 `unknown` 和没有处理器的 `.get_word_slices`；插件覆盖数由 65 个直接映射动作、4 个安全封装发送动作和 1 个配置驱动的入站语音识别动作组成。
 
 状态说明：
 
@@ -118,7 +118,7 @@
 | 消息接口 | `forward_group_single_msg` | 转发单条消息到群 | ❌️ | — |
 | 消息接口 | `get_msg` | 获取消息 | ✅️ | `qq_message_get.get` |
 | 消息接口 | `mark_group_msg_as_read` | 标记群聊已读 | ❌️ | — |
-| 消息接口 | `mark_msg_as_read` | 标记消息已读 (Go-CQHTTP) | ✅️ | `qq_message_manage.mark_read` |
+| 消息接口 | `mark_msg_as_read` | 标记消息已读 (Go-CQHTTP) | ❌️ | — |
 | 消息接口 | `mark_private_msg_as_read` | 标记私聊已读 | ❌️ | — |
 | 消息接口 | `send_msg` | 发送消息 | ❌️ | — |
 | 消息接口 | `send_private_msg` | 发送私聊消息 | ⚠️ 受限封装 | `qq_send_message.send` |
@@ -176,7 +176,7 @@
 | Go-CQHTTP | `get_group_honor_info` | 获取群荣誉信息 | ✅️ | `qq_group_info.honor` |
 | Go-CQHTTP | `get_group_msg_history` | 获取群历史消息 | ✅️ | `qq_group_history.list` |
 | Go-CQHTTP | `get_group_root_files` | 获取群根目录文件列表 | ✅️ | `qq_group_files.list_root` |
-| Go-CQHTTP | `get_online_clients` | 获取在线客户端 | ✅️ | `qq_status.clients` |
+| Go-CQHTTP | `get_online_clients` | 获取在线客户端 | ❌️ | — |
 | Go-CQHTTP | `get_stranger_info` | 获取陌生人信息 | ✅️ | `qq_user_info.detail` |
 | Go-CQHTTP | `send_forward_msg` | 发送合并转发消息 | ❌️ | — |
 | Go-CQHTTP | `send_group_forward_msg` | 发送群合并转发消息 | ⚠️ 受限封装 | `qq_send_forward.send` |
@@ -214,7 +214,7 @@
 | `read_url` | read | 本地受控 HTTP(S) 下载与正文提取 |
 | `read_page_section` | read | 原调用者、原会话的网页快照分段读取 |
 | `find_in_page` | find | 网页快照的字面量关键词查找 |
-| `qq_status` | `login`、`runtime`、`version`、`clients`、`capabilities` | `get_login_info`<br>`get_online_clients`<br>`get_status`<br>`get_version_info`<br>本地编排：`capabilities` |
+| `qq_status` | `login`、`runtime`、`version`、`capabilities` | `get_login_info`<br>`get_status`<br>`get_version_info`<br>本地编排：`capabilities` |
 | `qq_account_manage` | `set_profile`、`set_avatar`、`set_online_status` | `set_online_status`<br>`set_qq_avatar`<br>`set_qq_profile` |
 | `qq_user_info` | `detail` | `get_stranger_info` |
 | `qq_friend_list` | `friends`、`unidirectional` | `get_friend_list`<br>`get_unidirectional_friend_list` |
@@ -233,7 +233,7 @@
 | `qq_send_forward` | `send` | `send_group_forward_msg`<br>`send_private_forward_msg`<br>本地编排：`send` |
 | `qq_message_get` | `get` | `get_msg` |
 | `qq_forward_get` | `get` | `get_forward_msg` |
-| `qq_message_manage` | `recall`、`mark_read`、`reaction_add`、`reaction_remove` | `delete_msg`<br>`mark_msg_as_read`<br>`set_msg_emoji_like` |
+| `qq_message_manage` | `recall`、`reaction_add`、`reaction_remove` | `delete_msg`<br>`set_msg_emoji_like` |
 | `qq_recent_contacts` | `list` | `get_recent_contact` |
 | `qq_media` | `get_image`、`get_record`、`convert_record`、`ocr` | `get_image`<br>`get_record`<br>`ocr_image` |
 | `qq_group_files` | `info`、`list_root`、`list_folder`、`url`、`upload`、`mkdir`、`delete`、`rmdir`、`move`、`rename`、`transfer` | `create_group_file_folder`<br>`delete_group_file`<br>`delete_group_folder`<br>`get_group_file_system_info`<br>`get_group_file_url`<br>`get_group_files_by_folder`<br>`get_group_root_files`<br>`move_group_file`<br>`rename_group_file`<br>`trans_group_file`<br>`upload_group_file` |

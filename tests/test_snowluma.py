@@ -92,7 +92,6 @@ def test_snowluma_wire_parameters(operation, params, expected):
         ("qq_friend_history.list", {"message_seq": 123}),
         ("qq_group_history.list", {"message_id": 2**31}),
         ("qq_friend_history.list", {"message_id": -(2**31) - 1}),
-        ("qq_status.clients", {"no_cache": True}),
         ("qq_friend_list.friends", {"no_cache": True}),
         ("qq_user_info.detail", {"no_cache": True}),
         ("qq_account_manage.set_profile", {"company": "test"}),

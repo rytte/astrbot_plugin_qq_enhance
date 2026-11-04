@@ -2469,7 +2469,7 @@ class QQEnhancePlugin(Star):
         """查询 QQ 账号与协议状态。
 
         Args:
-            operation(string): login、runtime、version、clients 或 capabilities。
+            operation(string): login、runtime、version 或 capabilities。
             params(object): 当前 operation 的严格参数对象。
         """
 
@@ -2717,10 +2717,10 @@ class QQEnhancePlugin(Star):
     async def qq_message_manage(
         self, event: AstrMessageEvent, operation: str, params: dict
     ) -> str:
-        """撤回、已读或管理消息表情回应。
+        """撤回消息或管理消息表情回应。
 
         Args:
-            operation(string): recall、mark_read、reaction_add 或 reaction_remove。
+            operation(string): recall、reaction_add 或 reaction_remove。
             params(object): 当前 operation 的严格参数对象。
         """
 
