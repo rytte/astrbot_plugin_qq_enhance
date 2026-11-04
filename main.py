@@ -43,6 +43,7 @@ from .errors import QQToolError
 from .face_names import QQ_FACE_CATEGORIES
 from .debounce import ARRIVAL_KEY, ContextInput, MessageDebouncer
 from .debounce_runtime import AstrBotDebounceRuntime, ResumedMessageEvent
+from .message_context import GroupMessageIdHook
 from .qq_debounce import ArrivalFilter, DebounceWakeHook, find_message_arrival
 from .notice_context import NoticeContext, QQNotice, format_notice_time
 from .inbound import (
@@ -311,6 +312,7 @@ class QQEnhancePlugin(Star):
             AstrBotDebounceRuntime(context, self.config["debounce"])
         )
         self.debounce_wake_hook = DebounceWakeHook(self)
+        self.group_message_id_hook = GroupMessageIdHook(self)
         self.notice_context = NoticeContext(self)
         context.register_web_api(
             f"/{PLUGIN_NAME}/diagnostics",
@@ -572,6 +574,7 @@ class QQEnhancePlugin(Star):
                 "additionalProperties": False,
             }
         self.debounce_wake_hook.install()
+        self.group_message_id_hook.install()
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("QQ Enhance initialized")
 
@@ -1408,21 +1411,6 @@ class QQEnhancePlugin(Star):
         ):
             return ""
         return f'<qq_message_id value="{int(message_id)}"/>'
-
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=900)
-    async def record_group_message_id(self, event: AstrMessageEvent) -> None:
-        """Retain IDs in AstrBot's structured group-context recorder."""
-        tag = self._message_id_tag(event)
-        if (
-            not tag
-            or not event.get_group_id()
-            or event.get_extra("_qq_enhance_message_id_recorded", False)
-        ):
-            return
-        # Keep command text and wake-prefix matching unchanged. The current
-        # LLM input gets its tag separately through extra_user_content_parts.
-        event.message_obj.message.append(Plain(tag))
-        event.set_extra("_qq_enhance_message_id_recorded", True)
 
     @filter.on_llm_request(priority=-1000)
     async def add_message_id_signal(
@@ -3103,6 +3091,8 @@ class QQEnhancePlugin(Star):
 
         if hasattr(self, "debounce_wake_hook"):
             self.debounce_wake_hook.close()
+        if hasattr(self, "group_message_id_hook"):
+            self.group_message_id_hook.close()
         for event in self.notification_events:
             event.stop_event()
         self.notification_events.clear()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy, deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,10 +12,16 @@ from astrbot.api.message_components import Plain
 from astrbot.api.platform import PlatformMetadata
 from astrbot.api.provider import ProviderRequest
 from astrbot.builtin_stars.astrbot.main import Main
+from astrbot.core.config.default import DEFAULT_CONFIG
+from astrbot.core.pipeline.process_stage.stage import StarRequestSubStage
+from astrbot.core.pipeline.waking_check import stage as waking
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
     AiocqhttpAdapter,
 )
+from astrbot.core.star.star import StarMetadata
+from astrbot.core.star.star_handler import StarHandlerRegistry, star_handlers_registry
 from astrbot_plugin_qq_enhance.main import QQEnhancePlugin
+from astrbot_plugin_qq_enhance.message_context import GroupMessageIdHook
 from astrbot_plugin_qq_enhance.runtime import validate_config
 
 
@@ -33,6 +40,16 @@ def plugin():
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(None)
     return plugin
+
+
+@pytest.fixture
+def group_message_ids(plugin):
+    hook = GroupMessageIdHook(plugin)
+    hook.install()
+    try:
+        yield hook
+    finally:
+        hook.close()
 
 
 @pytest.fixture
@@ -307,16 +324,45 @@ async def test_disabled_semantics_do_not_add_component_history(adapter, plugin, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("semanticize", [False, True])
 async def test_message_ids_reach_group_context_and_current_input_separately(
-    adapter, plugin, core, semanticize
+    adapter, plugin, core, semanticize, group_message_ids, monkeypatch
 ):
+    registry = StarHandlerRegistry()
+    for instance, name, plugin_name in (
+        (plugin, "enrich_inbound_qq_components", "astrbot_plugin_qq_enhance"),
+        (core, "on_message", "astrbot"),
+    ):
+        module = type(instance).__module__
+        monkeypatch.setitem(waking.star_map, module, StarMetadata(name=plugin_name))
+        metadata = copy(
+            next(
+                handler
+                for handler in star_handlers_registry._handlers
+                if handler.handler_module_path == module
+                and handler.handler_name == name
+            )
+        )
+        metadata.handler = getattr(instance, name)
+        registry.append(metadata)
+    monkeypatch.setattr(waking, "star_handlers_registry", registry)
+    monkeypatch.setattr("astrbot.core.sp.get_async", AsyncMock(return_value={}))
+    config = deepcopy(DEFAULT_CONFIG)
+    context = SimpleNamespace(
+        astrbot_config=config,
+        plugin_manager=SimpleNamespace(),
+        db_helper=None,
+        astrbot_config_id="test",
+    )
+    wake = waking.WakingCheckStage()
+    await wake.initialize(context)
+    process = StarRequestSubStage()
+    await process.initialize(context)
     plugin.config["inbound"]["semanticize_components"] = semanticize
     earlier = await make_event(
         adapter, [{"type": "text", "data": {"text": "earlier-text"}}]
     )
     earlier.message_obj.raw_message["message_id"] = 101
-    await plugin.enrich_inbound_qq_components(earlier)
-    await plugin.record_group_message_id(earlier)
-    async for _ in core.on_message(earlier):
+    await wake.process(earlier)
+    async for _ in process.process(earlier):
         pass
 
     current = await make_event(
@@ -324,9 +370,8 @@ async def test_message_ids_reach_group_context_and_current_input_separately(
     )
     current.message_obj.raw_message["message_id"] = 102
     current.is_at_or_wake_command = True
-    await plugin.enrich_inbound_qq_components(current)
-    await plugin.record_group_message_id(current)
-    async for _ in core.on_message(current):
+    await wake.process(current)
+    async for _ in process.process(current):
         pass
 
     request = ProviderRequest(prompt=current.message_str)
@@ -338,3 +383,5 @@ async def test_message_ids_reach_group_context_and_current_input_separately(
     assert '<qq_message_id value="102"/>' not in background
     assert request.extra_user_content_parts[-1].text == '<qq_message_id value="102"/>'
     assert request.prompt == "what happened?"
+    assert earlier.get_messages() == [Plain("earlier-text")]
+    assert current.get_messages() == [Plain("what happened?")]
