@@ -2,7 +2,7 @@
 
 让 AstrBot 通过自然语言操作 QQ，也能读懂 QQ 特有的消息与互动。
 
-`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、80 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
+`astrbot_plugin_qq_enhance` 面向 **AstrBot + OneBot v11（NapCat / SnowLuma）**，提供 **29 个模型工具、78 个操作**，覆盖消息发送、好友互动、群管理、文件处理与申请审批；同时能将表情、戳一戳、卡片和语音转写整理成模型可理解的内容。
 
 [功能亮点](#features) · [快速开始](#quick-start) · [能力速览](#configuration) · [技术原理与配置](./docs/技术原理与配置.md#configuration) · [开发验证](./docs/技术原理与配置.md#development) · [更新日志](./CHANGELOG.md)
 
@@ -17,7 +17,7 @@
 | 能力 | 可以做什么 |
 | --- | --- |
 | 消息发送与互动 | 发送文字、图片、语音、视频、文件与卡片，支持引用、At、表情、骰子、猜拳、戳一戳和合并转发 |
-| 消息查询与管理 | 查询单条消息和私聊、群聊历史，读取合并转发，撤回消息、标记已读、添加或移除表情回应 |
+| 消息查询与管理 | 查询单条消息和私聊、群聊历史，读取合并转发，撤回消息、添加或移除表情回应 |
 | 好友与资料 | 查询用户资料、好友与最近联系人，点赞、修改备注、删除好友，查询、审批好友申请 |
 | 账号与状态 | 更新机器人资料、头像与在线状态，查询登录账号、运行状态、协议版本及插件能力 |
 | 群聊管理 | 查询群与成员资料，管理群名片、头衔、禁言、成员、群设置、公告和精华消息，处理入群申请与群邀请 |
@@ -143,31 +143,15 @@ QQ Enhance initialized
 
 | 枚举值 | 对应工具 |
 | --- | --- |
-| `status` | `qq_status`：登录、运行、版本、客户端、插件能力目录 |
+| `status` | `qq_status`：登录、运行、版本、插件能力目录 |
 | `account` | `qq_account_manage`：修改账号资料、头像、在线状态 |
 | `friend` | `qq_user_info`：用户公开资料<br>`qq_friend_list`：好友、单向好友列表<br>`qq_friend_history`：私聊历史<br>`qq_friend_interact`：点赞、好友戳一戳<br>`qq_friend_manage`：删除好友、修改备注 |
 | `group` | `qq_group_list`：群列表<br>`qq_group_info`：群详情、扩展详情、荣誉、@全体余量、禁言列表<br>`qq_group_members`：群成员列表与详情<br>`qq_group_history`：群消息历史<br>`qq_group_member_manage`：群成员戳一戳、名片、头衔、禁言、踢人、管理员身份<br>`qq_group_manage`：全员禁言、群名、群头像、签到、退群<br>`qq_essence`：群精华消息<br>`qq_notice`：群公告 |
-| `message` | `qq_send_message`：发送结构化消息，查询 QQ 内置表情名称、编号与分类<br>`qq_send_forward`：群聊和私聊合并转发<br>`qq_message_get`：获取单条消息<br>`qq_forward_get`：读取并按深度展开合并转发<br>`qq_message_manage`：撤回、已读、消息表情回应<br>`qq_recent_contacts`：最近联系人 |
+| `message` | `qq_send_message`：发送结构化消息，查询 QQ 内置表情名称、编号与分类<br>`qq_send_forward`：群聊和私聊合并转发<br>`qq_message_get`：获取单条消息<br>`qq_forward_get`：读取并按深度展开合并转发<br>`qq_message_manage`：撤回消息、消息表情回应<br>`qq_recent_contacts`：最近联系人 |
 | `media` | `qq_media`：图片信息与语音文件、语音格式转换、OCR |
 | `file` | `qq_group_files`：群文件查询、上传、目录与文件管理<br>`qq_private_files`：私聊文件链接与上传 |
 | `request` | `qq_friend_request`：查询、通过、拒绝好友申请<br>`qq_group_request`：加群申请、邀请和已忽略通知 |
 | `web` | `read_url`：读取公开网页正文并建立隔离快照<br>`read_page_section`：按行继续阅读已缓存网页<br>`find_in_page`：在网页快照内查找字面量关键词 |
-
-### 工具暴露模式
-
-插件将 QQ 操作封装为模型工具，并按平台和启用配置决定可用范围。工具暴露模式控制每次请求向模型提供哪些工具。
-
-| 模式 | 选择方式 |
-| --- | --- |
-| `compact`（精简） | 常用工具加上请求匹配的工具，每次最多保留 10 个 QQ 工具 |
-| `balanced`（平衡） | 在按需选择的基础上，为 AstrBot 管理员补充好友或群列表、最近联系人等工具，每次最多保留 15 个 QQ 工具 |
-| `full`（完整，默认） | 群聊提供配置启用的全量工具；私聊保留会话与权限筛选后可见的全部工具 |
-
-> [!WARNING]
->
-> **模型缓存提示**
->
-> 精简和平衡模式会动态改变工具列表及相关提示词，可能降低缓存命中率，工具更少不一定更省费用。完整模式在群聊中的列表更稳定，有利于缓存复用；实际效果取决于模型服务的缓存机制与完整请求前缀。
 
 ### 组件语义化与防伪
 

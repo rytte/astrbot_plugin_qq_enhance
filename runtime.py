@@ -80,7 +80,6 @@ SENT_RANDOM_HISTORY_DELAYS = (0.0, 0.5, 1.0, 2.0, 4.0)
 DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
-        "exposure_mode": "full",
         "enabled_packs": [],
         "disabled_operations": [],
     },
@@ -119,7 +118,7 @@ DEFAULT_CONFIG = {
     "files": {
         "allowed_roots": [],
         "max_file_size_mb": 100,
-        "max_base64_size_mb": 10,
+        "max_base64_size_mb": 32,
         "temp_ttl_seconds": 21600,
         "cleanup_interval_seconds": 600,
     },
@@ -445,8 +444,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
     if not isinstance(result["platform"]["platform_id"], str):
         raise ValueError("platform.platform_id 必须是字符串")
-    if result["toolsets"]["exposure_mode"] not in {"compact", "balanced", "full"}:
-        raise ValueError("toolsets.exposure_mode 必须是 compact、balanced 或 full")
     dialogue_prompt = result["dialogue"]["prompt"]
     if not isinstance(dialogue_prompt, str) or not dialogue_prompt.strip():
         raise ValueError("dialogue.prompt 必须是非空字符串")
@@ -507,14 +504,17 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "qq_user_info.group_member": "qq_group_members.detail",
         "qq_user_info.stranger": "qq_user_info.detail",
     }
+    removed_operations = {"qq_message_manage.mark_read", "qq_status.clients"}
     for group, key in (
         ("toolsets", "disabled_operations"),
         ("confirmation", "operations"),
     ):
-        # Preserve existing restrictions when renaming or removing query entries.
+        # Preserve renamed restrictions and discard rules for removed operations.
         result[group][key] = list(
             dict.fromkeys(
-                operation_renames.get(name, name) for name in result[group][key]
+                operation_renames.get(name, name)
+                for name in result[group][key]
+                if name not in removed_operations
             )
         )
         unknown = set(result[group][key]) - set(OPERATION_MAP)

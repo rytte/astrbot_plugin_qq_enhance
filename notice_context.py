@@ -222,13 +222,16 @@ def normalize_notice(raw: object) -> QQNotice | None:
         "online_file_send",
         "bot_offline",
     }
+    user_field = "operator_id" if kind == "notify/profile_like" else "user_id"
     if kind == "notify/poke":
         target_id = _integer(raw, "target_id", 1)
-        if str(_integer(raw, "user_id", 1)) == self_id:
-            return None
         private = raw.get("group_id") in (None, "", 0, "0")
+        # SnowLuma's private user_id is the peer; sender_id is the actual actor.
+        if private and "sender_id" in raw:
+            user_field = "sender_id"
+        if str(_integer(raw, user_field, 1)) == self_id:
+            return None
     group_id = "" if private else str(_integer(raw, "group_id", 1))
-    user_field = "operator_id" if kind == "notify/profile_like" else "user_id"
     if kind in {"online_file_receive", "online_file_send"}:
         user_field = "peer_id"
     user_id = (

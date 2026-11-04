@@ -19,6 +19,11 @@ def migrate_legacy_settings(config: dict, default_dialogue_prompt: str) -> dict:
     legacy_dialogue = {}
     toolsets = config.get("toolsets", {})
     if isinstance(toolsets, dict):
+        if "exposure_mode" in toolsets:
+            if toolsets.pop("exposure_mode") not in ("compact", "balanced", "full"):
+                raise ValueError(
+                    "旧版 toolsets.exposure_mode 必须是 compact、balanced 或 full"
+                )
         for legacy_key, key in (
             ("inject_dialogue_prompt", "enabled"),
             ("dialogue_prompt", "prompt"),
@@ -74,6 +79,7 @@ def migrate_config_file(config_path: Path, default_dialogue_prompt: str) -> bool
     )
     if not (
         any(value is not None for value in legacy_values)
+        or "exposure_mode" in groups.get("toolsets", {})
         or "enabled" in dialogue
         and dialogue["enabled"] is None
         or isinstance(poke, dict)
@@ -98,7 +104,7 @@ def migrate_config_file(config_path: Path, default_dialogue_prompt: str) -> bool
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    logger.info("QQ 旧版对话提示词与戳一戳配置已迁移")
+    logger.info("QQ 旧版配置已迁移")
     return True
 
 

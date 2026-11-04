@@ -47,7 +47,18 @@ def test_catalog_is_complete_and_matches_contract() -> None:
     assert all(item.action is None or item.action in actions for item in OPERATIONS)
     assert all(item.display_name.strip() for item in OPERATIONS)
     assert len(TOOL_OPERATIONS) == 29
-    assert len(OPERATIONS) == 80
+    assert len(OPERATIONS) == 78
+    assert TOOL_OPERATIONS["qq_status"] == (
+        "login",
+        "runtime",
+        "version",
+        "capabilities",
+    )
+    assert TOOL_OPERATIONS["qq_message_manage"] == (
+        "recall",
+        "reaction_add",
+        "reaction_remove",
+    )
     assert TOOL_OPERATIONS["qq_media"] == (
         "get_image",
         "get_record",
@@ -88,13 +99,40 @@ def test_legacy_user_query_rules_migrate_without_duplicates(
     assert validate_config(result) == result
 
 
-def test_legacy_user_query_rules_are_saved_after_migration(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "group,key", [("toolsets", "disabled_operations"), ("confirmation", "operations")]
+)
+@pytest.mark.parametrize("remaining", [[], ["qq_message_manage.recall"]])
+@pytest.mark.parametrize(
+    "removed",
+    [
+        ["qq_message_manage.mark_read"],
+        ["qq_status.clients"],
+        ["qq_message_manage.mark_read", "qq_status.clients"],
+    ],
+)
+def test_removed_operation_rules_migrate_without_mutating_input(
+    group, key, remaining, removed
+) -> None:
+    raw = {group: {key: [*removed, *remaining]}}
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result[group][key] == remaining
+    assert raw == original
+    assert validate_config(result) == result
+
+
+def test_legacy_operation_rules_are_saved_after_migration(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
                 "toolsets": {
                     "disabled_operations": [
+                        "qq_message_manage.mark_read",
+                        "qq_status.clients",
                         "qq_user_info.group_member",
                         "qq_group_members.detail",
                         "qq_user_info.stranger",
@@ -102,7 +140,12 @@ def test_legacy_user_query_rules_are_saved_after_migration(tmp_path) -> None:
                     ]
                 },
                 "confirmation": {
-                    "operations": ["qq_user_info.group_member", "qq_user_info.stranger"]
+                    "operations": [
+                        "qq_user_info.group_member",
+                        "qq_message_manage.mark_read",
+                        "qq_status.clients",
+                        "qq_user_info.stranger",
+                    ]
                 },
                 "notice_events": {"notify/poke": {"mode": "context"}},
             }
@@ -215,12 +258,42 @@ def test_tool_dialogue_prompt_requires_a_boolean(value) -> None:
         validate_config({"dialogue": {"enabled": value}})
 
 
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+def test_removed_exposure_mode_migrates_before_schema_fill(tmp_path, mode) -> None:
+    original = {
+        "toolsets": {
+            "exposure_mode": mode,
+            "enabled_packs": ["group", "message"],
+            "disabled_operations": ["qq_group_manage.leave"],
+        }
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    assert "exposure_mode" not in schema["toolsets"]["items"]
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    result = validate_config(dict(config))
+    expected = {
+        key: value
+        for key, value in original["toolsets"].items()
+        if key != "exposure_mode"
+    }
+    assert result["toolsets"] == expected
+    assert validate_config(original)["toolsets"] == expected
+    assert original["toolsets"]["exposure_mode"] == mode
+    saved = config_path.read_bytes()
+    assert not migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    assert config_path.read_bytes() == saved
+
+
 def test_legacy_dialogue_settings_migrate_without_mutating_input() -> None:
     raw = {
         "toolsets": {
             "inject_dialogue_prompt": False,
             "dialogue_prompt": "\n请简短回应。\n",
-            "exposure_mode": "balanced",
         }
     }
     original = deepcopy(raw)
@@ -229,7 +302,6 @@ def test_legacy_dialogue_settings_migrate_without_mutating_input() -> None:
 
     assert result["dialogue"] == {"enabled": False, "prompt": "\n请简短回应。\n"}
     assert result["toolsets"] == {
-        "exposure_mode": "balanced",
         "enabled_packs": [],
         "disabled_operations": [],
     }
@@ -644,7 +716,7 @@ def test_invalid_config_fails_fast(config: dict) -> None:
 def test_valid_config_preserves_explicit_values() -> None:
     result = validate_config(
         {
-            "toolsets": {"exposure_mode": "compact", "enabled_packs": ["group"]},
+            "toolsets": {"enabled_packs": ["group"]},
             "permissions": {"allow_cross_group": False, "allow_cross_private": False},
             "confirmation": {"ttl_seconds": 60},
             "events": {"retention_days": 30},
@@ -660,7 +732,7 @@ def test_valid_config_preserves_explicit_values() -> None:
             },
         }
     )
-    assert result["toolsets"]["exposure_mode"] == "compact"
+    assert result["toolsets"]["enabled_packs"] == ["group"]
     assert "admin_users" not in result["permissions"]
     assert result["permissions"]["allow_cross_group"] is False
     assert result["permissions"]["allow_cross_private"] is False

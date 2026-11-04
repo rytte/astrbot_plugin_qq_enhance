@@ -196,6 +196,26 @@ async def make_runtime(tmp_path, config: dict | None = None):
     return runtime, client, storage
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,operation,params",
+    [
+        ("qq_message_manage", "mark_read", {"message_id": 123}),
+        ("qq_status", "clients", {}),
+    ],
+)
+async def test_removed_operation_is_rejected_before_calling_platform(
+    tmp_path, tool, operation, params
+) -> None:
+    runtime, client, _ = await make_runtime(tmp_path)
+
+    result = json.loads(await runtime.execute(FakeEvent(), tool, operation, params))
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_parameters"
+    assert client.calls == []
+
+
 def notice_tool_event(runtime, client, group_id=""):
     owner = SimpleNamespace(
         plugin=SimpleNamespace(context=runtime.context), closed=False

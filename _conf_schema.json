@@ -17,22 +17,6 @@
     "description": "模型工具集",
     "default": {},
     "items": {
-      "exposure_mode": {
-        "type": "string",
-        "description": "工具暴露模式",
-        "hint": "默认完整模式：群聊提供配置启用的全量工具，权限在执行时校验；私聊仍按会话与权限筛选。精简和平衡模式按请求动态裁剪工具，可能降低提示词缓存命中率，产生更多费用，请谨慎开启。",
-        "default": "full",
-        "options": [
-          "compact",
-          "balanced",
-          "full"
-        ],
-        "labels": [
-          "精简",
-          "平衡",
-          "完整"
-        ]
-      },
       "inject_dialogue_prompt": {
         "type": "bool",
         "description": "旧版对话提示词开关（自动迁移）",
@@ -1079,7 +1063,7 @@
         "type": "int",
         "description": "Base64 解码上限（MiB）",
         "hint": "限制媒体输入及协议端返回的 Base64 数据解码后的文件大小。",
-        "default": 10,
+        "default": 32,
         "minimum": 1,
         "maximum": 100
       },

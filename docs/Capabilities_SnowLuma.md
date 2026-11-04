@@ -2,7 +2,7 @@
 
 核对日期：2026-10-15。
 
-本文件复制 [Capabilities_NapCat.md](./Capabilities_NapCat.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，保留原有五列、行序和插件支持标记，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。原五列保留核对时的仓库快照；当前插件适配范围见下文“当前适配状态”和 README，表内原插件支持标记不代表 SnowLuma 的支持承诺。
+本文件复制 [Capabilities_NapCat.md](./Capabilities_NapCat.md) 中“NapCat 全部动作与插件覆盖”表格的全部 177 行，在右侧增加“SnowLuma v1.14.22 支持情况”和“核对记录／差异”两列。前五列随插件入口变更同步维护，右侧保留固定版本的源码核对记录；当前插件适配范围见下文“当前适配状态”和 README，表内插件支持标记不代表 SnowLuma 的支持承诺。
 
 核对基线为 [SnowLuma v1.14.22 正式版](https://github.com/SnowLuma/SnowLuma/releases/tag/v1.14.22)，固定提交 [87527cb7641a5a42f8f0efb73cb066102e004dee](https://github.com/SnowLuma/SnowLuma/commit/87527cb7641a5a42f8f0efb73cb066102e004dee)。插件源码基线为 `e6ec4653a4ef3ff952e6ff666d0cdc853876a803`。
 
@@ -123,7 +123,7 @@ SnowLuma 列的状态口径：
 | 消息接口 | `forward_group_single_msg` | 转发单条消息到群 | ❌️ | — | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L1254) | 转发单条消息到群。主要参数：message_id、group_id。 |
 | 消息接口 | `get_msg` | 获取消息 | ✅️ | `qq_message_get.get` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/message.ts#L141) | 从消息存储查询，未命中时失败；补 real_id 并刷新图片 URL，不提供任意消息的无缓存远端查询。 |
 | 消息接口 | `mark_group_msg_as_read` | 标记群聊已读 | ❌️ | — | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L654) | 必须提供可查到元数据的 message_id，可选 group_id 用于核对所属群；不是仅传 group_id 即可调用。 |
-| 消息接口 | `mark_msg_as_read` | 标记消息已读 (Go-CQHTTP) | ✅️ | `qq_message_manage.mark_read` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L698) | 标记消息已读（群聊/私聊自动路由）。主要参数：message_id、target_id。 |
+| 消息接口 | `mark_msg_as_read` | 标记消息已读 (Go-CQHTTP) | ❌️ | — | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L698) | 标记消息已读（群聊/私聊自动路由）。主要参数：message_id、target_id。 |
 | 消息接口 | `mark_private_msg_as_read` | 标记私聊已读 | ❌️ | — | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L676) | 必须提供可查到元数据的 message_id，可选 user_id 用于核对所属私聊；不是仅传 user_id 即可调用。 |
 | 消息接口 | `send_msg` | 发送消息 | ❌️ | — | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/message.ts#L82) | 支持群聊/私聊自动路由及群临时会话；返回 message_id。 |
 | 消息接口 | `send_private_msg` | 发送私聊消息 | ⚠️ 受限封装 | `qq_send_message.send` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/message.ts#L109) | 支持 user_id、message、auto_escape；可带来源 group_id 回复临时会话，返回 message_id。 |
@@ -181,7 +181,7 @@ SnowLuma 列的状态口径：
 | Go-CQHTTP | `get_group_honor_info` | 获取群荣誉信息 | ✅️ | `qq_group_info.honor` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/group-info.ts#L200) | 获取群荣誉信息。主要参数：group_id、type。 |
 | Go-CQHTTP | `get_group_msg_history` | 获取群历史消息 | ✅️ | `qq_group_history.list` | [⚠️ 锚点不匹配](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L600) | 返回 {messages}；锚点是 `message_id`，插件发送的 `message_seq` 不会被读取，非零锚点查询需要调整。 |
 | Go-CQHTTP | `get_group_root_files` | 获取群根目录文件列表 | ✅️ | `qq_group_files.list_root` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/group-file.ts#L99) | 获取群根目录文件列表。主要参数：group_id。返回说明：群文件系统信息（文件与文件夹列表）。 |
-| Go-CQHTTP | `get_online_clients` | 获取在线客户端 | ✅️ | `qq_status.clients` | [⚠️ 快照受限](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L1585) | 返回本次会话已观测到的在线设备快照 {clients}；`no_cache=true` 明确失败，未观测到快照也失败。 |
+| Go-CQHTTP | `get_online_clients` | 获取在线客户端 | ❌️ | — | [⚠️ 快照受限](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L1585) | 返回本次会话已观测到的在线设备快照 {clients}；`no_cache=true` 明确失败，未观测到快照也失败。 |
 | Go-CQHTTP | `get_stranger_info` | 获取陌生人信息 | ✅️ | `qq_user_info.detail` | [⚠️ 参数受限](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/friend.ts#L32) | 有用户资料查询；不声明 no_cache，缺少可靠来源的会员/注册字段省略，查不到资料时部分基础字段使用空值。 |
 | Go-CQHTTP | `send_forward_msg` | 发送合并转发消息 | ❌️ | — | [⚠️ 无目标仅上传](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L2469) | 按目标发送并返回 message_id、res_id、forward_id；无目标时仅上传转发内容，`message_id=0`。 |
 | Go-CQHTTP | `send_group_forward_msg` | 发送群合并转发消息 | ⚠️ 受限封装 | `qq_send_forward.send` | [✅️ 有实现](https://github.com/SnowLuma/SnowLuma/blob/87527cb7641a5a42f8f0efb73cb066102e004dee/packages/onebot/src/actions/extended.ts#L2505) | 发送群合并转发。主要参数：group_id、messages、message。返回说明：{ message_id, res_id, forward_id }。 |
@@ -215,7 +215,7 @@ SnowLuma 列的状态口径：
 
 已新增独立的 [SnowLuma provider](../providers/snowluma.py) 和 [v1.14.22 动作契约](../contracts/snowluma_v1_14_22.json)，运行时及诊断通过统一识别流程接入，接受 `>=1.14.22` 的版本，版本标识可为 `x.y.z` / `x.y.z-node`，且要求协议为 `v11`。原表保留最初的源码核对记录，当前用户入口以 [README 的支持范围](../README.md#snowluma-支持范围) 为准。
 
-1. **动作注册与实际能力分别判断。** 74 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。
+1. **动作注册与实际能力分别判断。** 72 个契约名称均已注册；最近联系人占位和扩展群资料入口禁用，在执行、工具筛选和诊断中使用相同判定。
 2. **群文件移动已转换目录参数。** 公开的 `current_parent_directory` / `target_parent_directory` 转为 `parent_directory` / `target_directory`。
 3. **历史锚点按实现区分。** SnowLuma 使用允许负数的 `message_id`；NapCat 使用 `message_seq`。错用或混用明确报错，不做语义不等价的改名。
 4. **OCR 按输入语义接入。** SnowLuma 只开放 URL 和缓存图片 `file_id`，URL 通过现有网络校验后转发最终地址；本地路径、Base64 和 `media_ref` 明确拒绝。结构化 `texts` 结果支持分页。
@@ -241,7 +241,7 @@ SnowLuma 列的状态口径：
 
 | 事件标识 | SnowLuma 支持情况 | 简要说明 |
 | --- | --- | --- |
-| `notify/poke` | 已接入 | 按被戳对象分别选择模式：机器人被戳默认 `respond`，其他用户被戳默认 `context`；忽略机器人主动戳人。统一使用平台事件格式、`notice` 防伪类型和 `off` / `context` / `respond` 模式。 |
+| `notify/poke` | 已接入 | 私聊以 `sender_id` 识别实际发起者，`user_id` 为会话对方；按被戳对象分别选择模式：机器人被戳默认 `respond`，其他用户被戳默认 `context`；忽略机器人主动戳人。统一使用平台事件格式、`notice` 防伪类型和 `off` / `context` / `respond` 模式。 |
 | `friend_add` | 已接入 | 使用好友添加成功上报。 |
 | `message_recall` | 已接入 | 接收 `friend_recall` / `group_recall`，允许负数消息 ID；仍须命中插件保存的原消息映射。 |
 | `group_increase` | 已接入 | 支持审批入群和邀请入群。 |
