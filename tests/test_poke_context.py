@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -384,6 +385,80 @@ def test_poke_ignores_bot_initiated_events(user, target):
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["context", "respond"])
+@pytest.mark.parametrize("group_id", [None, 0, "0"])
+@pytest.mark.parametrize("bot_initiated", [False, True])
+async def test_snowluma_private_poke_uses_actual_sender(
+    harness, mode, group_id, bot_initiated
+):
+    raw = Event(
+        {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": 99,
+            "user_id": 7,
+            "sender_id": 99 if bot_initiated else 7,
+            "target_id": 7 if bot_initiated else 99,
+            "time": 1000,
+        }
+    )
+    if group_id is not None:
+        raw["group_id"] = group_id
+    original = deepcopy(raw)
+    adapter = object.__new__(AiocqhttpAdapter)
+    adapter.metadata = PlatformMetadata(name="aiocqhttp", description="", id="qq")
+    adapter.bot = AsyncMock()
+    source = adapter.create_event(await adapter.convert_message(raw))
+    policy = harness.plugin.config["notice_events"]["notify/poke"]
+    policy.update(mode=mode, other_target_mode=mode)
+    try:
+        await harness.plugin.capture_notice_context(source)
+        if bot_initiated:
+            assert normalize_notice(raw) is None
+            assert not harness.manager.histories
+            assert not harness.plugin.notice_context.pending
+        else:
+            notice = normalize_notice(raw)
+            assert notice.user_id == "7"
+            assert notice.description == "私聊，用户 7戳了你一下"
+            if mode == "respond":
+                response = await notice_tests.queued(harness)
+                assert response.unified_msg_origin == "qq:FriendMessage:7"
+                task = notice_tests.start_response(harness, response)
+                await notice_tests.wait(response.prepared)
+                response.allow_reply.set()
+                await task
+            await harness.drain_notices()
+            history = harness.manager.histories["qq:FriendMessage:7", "conversation"]
+            assert len(history) == (2 if mode == "respond" else 1)
+            assert notice.render() in str(history[0])
+        assert raw == original
+        assert not source.is_at_or_wake_command
+        assert harness.queue.empty()
+        adapter.bot.call_action.assert_not_awaited()
+    finally:
+        await harness.finish()
+
+
+@pytest.mark.parametrize("sender_id", [None, True, 0, "invalid"])
+def test_private_poke_rejects_invalid_explicit_sender(sender_id):
+    with pytest.raises(ValueError, match="sender_id"):
+        normalize_notice(
+            {
+                "post_type": "notice",
+                "notice_type": "notify",
+                "sub_type": "poke",
+                "self_id": 99,
+                "user_id": 7,
+                "sender_id": sender_id,
+                "target_id": 99,
+                "time": 1000,
+            }
+        )
 
 
 @pytest.mark.asyncio

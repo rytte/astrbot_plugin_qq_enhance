@@ -241,7 +241,7 @@ SnowLuma 列的状态口径：
 
 | 事件标识 | SnowLuma 支持情况 | 简要说明 |
 | --- | --- | --- |
-| `notify/poke` | 已接入 | 按被戳对象分别选择模式：机器人被戳默认 `respond`，其他用户被戳默认 `context`；忽略机器人主动戳人。统一使用平台事件格式、`notice` 防伪类型和 `off` / `context` / `respond` 模式。 |
+| `notify/poke` | 已接入 | 私聊以 `sender_id` 识别实际发起者，`user_id` 为会话对方；按被戳对象分别选择模式：机器人被戳默认 `respond`，其他用户被戳默认 `context`；忽略机器人主动戳人。统一使用平台事件格式、`notice` 防伪类型和 `off` / `context` / `respond` 模式。 |
 | `friend_add` | 已接入 | 使用好友添加成功上报。 |
 | `message_recall` | 已接入 | 接收 `friend_recall` / `group_recall`，允许负数消息 ID；仍须命中插件保存的原消息映射。 |
 | `group_increase` | 已接入 | 支持审批入群和邀请入群。 |
