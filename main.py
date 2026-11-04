@@ -14,7 +14,7 @@ from mcp.types import CallToolResult, TextContent
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Plain, Record, Reply
+from astrbot.api.message_components import Plain, Record, Reply
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import json_response
@@ -32,7 +32,6 @@ from astrbot.core.utils.session_lock import session_lock_manager
 from .capabilities import operation_availability
 from .config_migration import migrate_installed_config
 from .catalog import (
-    KEYWORD_TOOLS,
     OPERATION_MAP,
     OPERATION_PARAMETERS,
     OPERATIONS,
@@ -821,7 +820,6 @@ class QQEnhancePlugin(Star):
                 "platforms": platforms,
                 "configuration": {
                     "platform_id": configured_platform_id,
-                    "exposure_mode": self.config["toolsets"]["exposure_mode"],
                     "enabled_packs": self.config["toolsets"]["enabled_packs"],
                     "disabled_operations": len(
                         self.config["toolsets"]["disabled_operations"]
@@ -2008,7 +2006,7 @@ class QQEnhancePlugin(Star):
     async def select_tools(
         self, event: AstrMessageEvent, request: ProviderRequest
     ) -> None:
-        """Prune only this plugin's request-local tool set.
+        """Keep configured tools stable across message content and history.
 
         Args:
             event: Current message event.
@@ -2023,7 +2021,6 @@ class QQEnhancePlugin(Star):
                 request.func_tool.remove_tool(tool_name)
             return
 
-        mode = self.config["toolsets"]["exposure_mode"]
         try:
             provider = await self.runtime.verify_platform(event)
         except QQToolError as exc:
@@ -2035,52 +2032,28 @@ class QQEnhancePlugin(Star):
             provider = None
         is_admin = event.is_admin()
         current_group = str(event.get_group_id() or "")
-        raw = getattr(event.message_obj, "raw_message", {})
-        raw_sender = raw.get("sender", {}) if isinstance(raw, dict) else {}
-        qq_role = str(raw_sender.get("role", "member"))
         visible = set()
         for tool_name, operations in TOOL_OPERATIONS.items():
             for operation in operations:
                 operation_id = f"{tool_name}.{operation}"
-                if provider is None and OPERATION_MAP[operation_id].category != "web":
+                spec = OPERATION_MAP[operation_id]
+                if provider is None and spec.category != "web":
                     continue
-                if not operation_availability(
-                    self.config, OPERATION_MAP[operation_id], provider
-                ).enabled:
+                if not operation_availability(self.config, spec, provider).enabled:
                     continue
-                if mode == "full" and current_group:
+                if current_group:
                     # Group tool visibility stays stable; execution authorizes callers.
                     visible.add(tool_name)
                     break
-                spec = OPERATION_MAP[operation_id]
-                if spec.permission == "astrbot_admin" and not is_admin:
+                # Private chats keep scope and permission filtering; message
+                # content never affects which configured tools are visible.
+                if not is_admin and spec.permission in {
+                    "astrbot_admin",
+                    "group_admin",
+                    "group_owner",
+                }:
                     continue
-                if spec.permission == "group_admin" and not is_admin:
-                    if not current_group or qq_role not in {"admin", "owner"}:
-                        continue
-                    if (
-                        qq_role == "admin"
-                        and not self.config["permissions"]["allow_group_admin"]
-                    ):
-                        continue
-                    if (
-                        qq_role == "owner"
-                        and not self.config["permissions"]["allow_group_owner"]
-                    ):
-                        continue
-                if spec.permission == "group_owner" and not is_admin:
-                    if (
-                        not current_group
-                        or qq_role != "owner"
-                        or not self.config["permissions"]["allow_group_owner"]
-                    ):
-                        continue
-                if current_group and spec.target_kind == "private":
-                    if not (
-                        is_admin and self.config["permissions"]["allow_cross_private"]
-                    ):
-                        continue
-                if not current_group and spec.target_kind == "group":
+                if spec.target_kind == "group":
                     if not (
                         is_admin
                         and (
@@ -2092,194 +2065,6 @@ class QQEnhancePlugin(Star):
                 visible.add(tool_name)
                 break
 
-        prompt = request.prompt or event.message_str or ""
-        arrival = event.get_extra(ARRIVAL_KEY) if hasattr(event, "get_extra") else None
-        if arrival is not None and (len(arrival.batch) > 1 or arrival.replayed):
-            # Tool selection must consider every pending intent, while model
-            # messages themselves remain separate and unchanged.
-            prompt = self.debouncer.batch_text(event)
-        notification_tool = ""
-        if len(prompt.strip()) <= 16 and not any(
-            keyword in prompt for keyword in KEYWORD_TOOLS
-        ):
-            notification_bindings = {}
-            if (
-                is_admin
-                and request.conversation is not None
-                and any(
-                    keyword in prompt
-                    for keyword in ("通过", "同意", "批准", "接受", "拒绝", "驳回")
-                )
-            ):
-                notification_bindings = {
-                    binding["prompt_hash"]: binding
-                    for binding in await self.storage.get_request_notification_bindings(
-                        event.get_platform_id(),
-                        event.unified_msg_origin,
-                        request.conversation.cid,
-                    )
-                }
-            for context_item in reversed(request.contexts):
-                if not isinstance(context_item, dict) or context_item.get(
-                    "role"
-                ) not in {"user", "assistant"}:
-                    continue
-                content = context_item.get("content", "")
-                if isinstance(content, str):
-                    context_texts = [content]
-                elif isinstance(content, list):
-                    context_texts = [
-                        str(part.get("text", ""))
-                        for part in content
-                        if isinstance(part, dict)
-                        and part.get("type") in {"text", "input_text"}
-                    ]
-                else:
-                    context_texts = []
-                previous_prompt = "".join(context_texts)
-                if context_item.get("role") == "user" and notification_bindings:
-                    binding = next(
-                        (
-                            notification_bindings[digest]
-                            for context_text in context_texts
-                            if (
-                                digest := hashlib.sha256(
-                                    context_text.encode("utf-8")
-                                ).hexdigest()
-                            )
-                            in notification_bindings
-                        ),
-                        None,
-                    )
-                    if binding is not None:
-                        if binding["status"] == "pending":
-                            notification_tool = (
-                                "qq_friend_request"
-                                if binding["request_type"] == "friend"
-                                else "qq_group_request"
-                            )
-                        break
-                if (
-                    context_item.get("role") == "user"
-                    and previous_prompt.strip()
-                    and previous_prompt.strip() != prompt.strip()
-                    and any(keyword in previous_prompt for keyword in KEYWORD_TOOLS)
-                ):
-                    prompt = f"{previous_prompt}\n{prompt}"
-                    break
-        requested = set()
-        for keyword, tool_names in KEYWORD_TOOLS.items():
-            if keyword in prompt:
-                requested.update(tool_names)
-        if notification_tool:
-            requested.add(notification_tool)
-        if mode != "full":
-            # A short follow-up can refer to media recorded in group context.
-            reference_texts = [prompt]
-            reference_texts.extend(
-                part.text
-                for part in request.extra_user_content_parts
-                if isinstance(part, TextPart)
-            )
-            reference_texts.extend(
-                json.dumps(item, ensure_ascii=False)
-                for item in request.contexts[-12:]
-                if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
-            )
-            if any(
-                "[QQ ForwardRef " in text
-                or "[QQ component|QQ合并转发消息；res_id=" in text
-                for text in reference_texts
-            ):
-                requested.add("qq_forward_get")
-        if re.search(r"https?://", prompt, re.IGNORECASE):
-            requested.update(WEB_TOOL_NAMES)
-        for context_item in request.contexts[-12:]:
-            if not isinstance(context_item, dict):
-                continue
-            calls = context_item.get("tool_calls") or []
-            if any(
-                isinstance(call, dict)
-                and isinstance(call.get("function"), dict)
-                and call["function"].get("name") in WEB_TOOL_NAMES
-                for call in calls
-            ):
-                requested.update(WEB_TOOL_NAMES)
-                break
-            if context_item.get("role") == "tool":
-                content = context_item.get("content")
-                if isinstance(content, str):
-                    try:
-                        result = json.loads(content)
-                    except (ValueError, TypeError):
-                        continue
-                    if isinstance(result, dict) and result.get("operation") in {
-                        "read_url.read",
-                        "read_page_section.read",
-                        "find_in_page.find",
-                    }:
-                        requested.update(WEB_TOOL_NAMES)
-                        break
-        message_components = getattr(event.message_obj, "message", [])
-        if arrival is not None and len(arrival.batch) > 1:
-            message_components = [
-                component
-                for item in arrival.batch
-                for component in getattr(item.event.message_obj, "message", [])
-            ]
-        if not current_group and any(
-            isinstance(component, File) for component in message_components
-        ):
-            requested.add("qq_private_files")
-        if mode != "full":
-            if current_group:
-                selected = {
-                    "qq_status",
-                    "qq_group_info",
-                    "qq_group_members",
-                    "qq_group_history",
-                    "qq_send_message",
-                    "qq_message_get",
-                    "qq_message_manage",
-                    "qq_media",
-                }
-            else:
-                selected = {
-                    "qq_status",
-                    "qq_user_info",
-                    "qq_friend_history",
-                    "qq_friend_interact",
-                    "qq_send_message",
-                    "qq_message_get",
-                    "qq_message_manage",
-                    "qq_media",
-                }
-                if is_admin and self.config["permissions"]["allow_cross_group"]:
-                    selected.add("qq_group_members")
-            if mode == "balanced":
-                selected.update(requested)
-                if is_admin:
-                    selected.update(
-                        {
-                            "qq_friend_list" if not current_group else "qq_group_list",
-                            "qq_recent_contacts",
-                        }
-                    )
-                    if not current_group:
-                        selected.add("qq_friend_request")
-                maximum = 15
-            else:
-                selected.update(requested)
-                maximum = 10
-            ordered = sorted(
-                selected & visible,
-                key=lambda name: (
-                    name not in requested,
-                    name not in WEB_TOOL_NAMES,
-                    name,
-                ),
-            )
-            visible &= set(ordered[:maximum])
         visible &= self.runtime.enabled_tools(provider)
         for tool_name in plugin_tools - visible:
             request.func_tool.remove_tool(tool_name)

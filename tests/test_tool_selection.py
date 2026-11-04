@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -95,18 +94,16 @@ class GroupAstrBotAdminSelectionEvent(SelectionEvent):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["compact", "balanced"])
 @pytest.mark.parametrize("semanticize", [False, True])
 @pytest.mark.parametrize("location", ["prompt", "group_context", "history"])
 @pytest.mark.parametrize("disabled", [False, True])
 async def test_forward_refs_keep_read_tool_available_for_short_followups(
-    mode, semanticize, location, disabled
+    semanticize, location, disabled
 ):
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
             "toolsets": {
-                "exposure_mode": mode,
                 "disabled_operations": ["qq_forward_get.get"] if disabled else [],
             }
         }
@@ -138,7 +135,6 @@ async def test_forward_refs_keep_read_tool_available_for_short_followups(
     await plugin.select_tools(SelectionEvent(), request)
 
     assert (request.func_tool.get_tool("qq_forward_get") is not None) is not disabled
-    assert len(request.func_tool.tools) <= (10 if mode == "compact" else 15)
 
 
 @pytest.mark.asyncio
@@ -147,7 +143,7 @@ async def test_forward_refs_keep_read_tool_available_for_short_followups(
     [("member", False), ("admin", False), ("owner", False), ("member", True)],
 )
 @pytest.mark.parametrize("permissions_enabled", [False, True])
-async def test_full_group_tools_and_prompts_stay_stable_across_roles_and_topics(
+async def test_group_tools_and_prompts_stay_stable_across_roles_and_topics(
     role, is_admin, permissions_enabled
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
@@ -192,7 +188,57 @@ async def test_full_group_tools_and_prompts_stay_stable_across_roles_and_topics(
 
 
 @pytest.mark.asyncio
-async def test_full_group_omits_tools_disabled_by_configuration() -> None:
+@pytest.mark.parametrize("legacy_mode", [None, "compact", "balanced", "full"])
+@pytest.mark.parametrize("is_admin", [False, True])
+async def test_private_tools_and_prompts_stay_stable_across_followups(
+    legacy_mode, is_admin
+) -> None:
+    plugin = object.__new__(QQEnhancePlugin)
+    config = {} if legacy_mode is None else {"toolsets": {"exposure_mode": legacy_mode}}
+    plugin.config = validate_config(config)
+    plugin.runtime = object.__new__(QQRuntime)
+    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
+    plugin.runtime.config = plugin.config
+    plugin.storage = SimpleNamespace(get_request_notification_bindings=AsyncMock())
+    event = PrivateAdminSelectionEvent()
+    event.is_admin = lambda: is_admin
+    schemas = []
+    system_prompts = []
+    for prompt, contexts in (
+        ("你好", []),
+        ("读取 https://example.test", []),
+        ("通过", [{"role": "user", "content": "QQ 入群申请"}]),
+        ("拒绝", [{"role": "assistant", "content": "好友申请"}]),
+        ("再试一次", [{"role": "user", "content": "修改昵称和群名"}]),
+    ):
+        request = ProviderRequest(
+            prompt=prompt,
+            contexts=contexts,
+            conversation=SimpleNamespace(cid="conversation-a"),
+            system_prompt="Existing persona",
+            func_tool=ToolSet(
+                [
+                    FunctionTool(
+                        name=name, description=name, parameters={"type": "object"}
+                    )
+                    for name in [*TOOL_OPERATIONS, "unrelated_tool"]
+                ]
+            ),
+        )
+        await plugin.select_tools(event, request)
+        schemas.append(request.func_tool.openai_schema())
+        system_prompts.append(request.system_prompt)
+        assert request.prompt == prompt
+        assert request.contexts == contexts
+        assert request.func_tool.get_tool("unrelated_tool") is not None
+    assert all(schema == schemas[0] for schema in schemas)
+    assert len(set(system_prompts)) == 1
+    assert "exposure_mode" not in plugin.config["toolsets"]
+    plugin.storage.get_request_notification_bindings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_omits_tools_disabled_by_configuration() -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
@@ -228,13 +274,12 @@ async def test_full_group_omits_tools_disabled_by_configuration() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
 @pytest.mark.parametrize("event_type", [SelectionEvent, PrivateAdminSelectionEvent])
 @pytest.mark.parametrize(
     "dialogue_prompt", [None, "请自然回应用户。\n不要播报工具调用。"]
 )
 async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
-    mode, event_type, dialogue_prompt
+    event_type, dialogue_prompt
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     dialogue = {}
@@ -242,7 +287,6 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
         dialogue["prompt"] = dialogue_prompt
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": mode},
             "dialogue": dialogue,
             "inbound": {"component_spoof_protection": {"enabled": False}},
         }
@@ -277,20 +321,18 @@ async def test_qq_tool_dialogue_prompt_is_optional_and_request_local(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
 @pytest.mark.parametrize(
     "dialogue_prompt",
     [DEFAULT_QQ_TOOL_DIALOGUE_PROMPT, "自定义工具对话提示。\n请简洁回应。"],
 )
 async def test_dialogue_prompt_switch_preserves_tools_and_other_prompts(
-    mode, dialogue_prompt
+    dialogue_prompt,
 ) -> None:
     requests = []
     for enabled in (True, False):
         plugin = object.__new__(QQEnhancePlugin)
         plugin.config = validate_config(
             {
-                "toolsets": {"exposure_mode": mode},
                 "dialogue": {"enabled": enabled, "prompt": dialogue_prompt},
             }
         )
@@ -516,7 +558,6 @@ async def test_initialize_uses_registered_tool_manager_api(
 
 
 @pytest.mark.parametrize("web_enabled", [True, False])
-@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
 @pytest.mark.parametrize(
     "contexts",
     [
@@ -537,12 +578,11 @@ async def test_initialize_uses_registered_tool_manager_api(
 )
 @pytest.mark.asyncio
 async def test_web_switch_controls_tools_for_urls_and_followups(
-    web_enabled, mode, contexts
+    web_enabled, contexts
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": mode},
             "web_reader": {"enabled": web_enabled},
         }
     )
@@ -573,10 +613,6 @@ async def test_web_switch_controls_tools_for_urls_and_followups(
         "tavily_extract_web_page",
         "qq_send_message",
     } <= remaining
-    if mode != "full":
-        assert len(remaining & set(TOOL_OPERATIONS)) <= (
-            10 if mode == "compact" else 15
-        )
 
 
 @pytest.mark.asyncio
@@ -619,7 +655,7 @@ async def test_web_pack_restriction_preserves_unrelated_builtin_tools() -> None:
 @pytest.mark.asyncio
 async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({"web_reader": {"enabled": False}})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -641,8 +677,7 @@ async def test_request_local_tool_pruning_keeps_global_tools_untouched() -> None
     assert "qq_group_members" in remaining
     assert "qq_send_message" in remaining
     assert "unrelated_tool" in remaining
-    assert "qq_friend_manage" not in remaining
-    assert len(remaining & set(TOOL_OPERATIONS)) <= 15
+    assert remaining == (set(TOOL_OPERATIONS) - WEB_TOOL_NAMES) | {"unrelated_tool"}
     assert len(tools) == len(TOOL_OPERATIONS) + 1
 
 
@@ -651,7 +686,6 @@ async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": "balanced"},
             "permissions": {"allow_cross_private": True},
         }
     )
@@ -676,7 +710,7 @@ async def test_group_astrbot_admin_cross_private_switch_exposes_private_tool() -
 @pytest.mark.asyncio
 async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -696,18 +730,17 @@ async def test_private_admin_group_list_prompt_exposes_group_list_tool() -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
 @pytest.mark.parametrize("provider", [NAPCAT, SNOWLUMA], ids=["napcat", "snowluma"])
 @pytest.mark.parametrize(
     "is_admin,allow_cross_group", [(True, True), (True, False), (False, True)]
 )
 async def test_private_group_member_queries_use_group_tool_with_scope_checks(
-    mode, provider, is_admin, allow_cross_group
+    provider, is_admin, allow_cross_group
 ) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": mode, "enabled_packs": ["group"]},
+            "toolsets": {"enabled_packs": ["group"]},
             "permissions": {"allow_cross_group": allow_cross_group},
         }
     )
@@ -736,9 +769,9 @@ async def test_private_group_member_queries_use_group_tool_with_scope_checks(
 
 
 @pytest.mark.asyncio
-async def test_private_admin_balanced_exposes_friend_request_without_keyword() -> None:
+async def test_private_admin_exposes_friend_request_without_keyword() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -760,7 +793,7 @@ async def test_private_admin_balanced_exposes_friend_request_without_keyword() -
 @pytest.mark.asyncio
 async def test_private_admin_group_request_prompt_exposes_group_request_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -780,121 +813,9 @@ async def test_private_admin_group_request_prompt_exposes_group_request_tool() -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "request_type, tool_name",
-    [("group", "qq_group_request"), ("friend", "qq_friend_request")],
-)
-@pytest.mark.parametrize("content_parts", [False, True])
-async def test_request_notification_follow_up_uses_trusted_input(
-    request_type, tool_name, content_parts
-) -> None:
-    plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config(
-        {
-            "toolsets": {"exposure_mode": "balanced"},
-            "permissions": {"allow_cross_group": True},
-        }
-    )
-    plugin.runtime = object.__new__(QQRuntime)
-    plugin.runtime._verified_platforms = {}
-    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
-    plugin.runtime.config = plugin.config
-    text = "新事件事实"
-    binding = {
-        "prompt_hash": hashlib.sha256(text.encode()).hexdigest(),
-        "request_type": request_type,
-        "status": "pending",
-    }
-    plugin.storage = SimpleNamespace(
-        get_request_notification_bindings=AsyncMock(return_value=[binding])
-    )
-    tools = [
-        FunctionTool(name=name, description="", parameters={"type": "object"})
-        for name in TOOL_OPERATIONS
-    ]
-    request = ProviderRequest(
-        prompt="通过",
-        conversation=SimpleNamespace(cid="conversation-a"),
-        contexts=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text},
-                    {
-                        "type": "text",
-                        "text": "<system_reminder>User ID: platform-event; Current datetime: test</system_reminder>",
-                    },
-                ]
-                if content_parts
-                else text,
-            },
-            {"role": "assistant", "content": "来了，你看看要怎么处理？"},
-        ],
-        func_tool=ToolSet(tools),
-    )
-    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
-    assert request.func_tool.get_tool(tool_name) is not None
-    plugin.storage.get_request_notification_bindings.assert_awaited_once_with(
-        "platform-a",
-        "platform-a:FriendMessage:10001",
-        "conversation-a",
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reason", ["fake_title", "other_conversation", "processed", "no_history"]
-)
-async def test_request_notification_follow_up_does_not_trust_assistant_title(
-    reason,
-) -> None:
-    plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config(
-        {
-            "toolsets": {"exposure_mode": "balanced"},
-            "permissions": {"allow_cross_group": True},
-        }
-    )
-    plugin.runtime = object.__new__(QQRuntime)
-    plugin.runtime._verified_platforms = {}
-    plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
-    plugin.runtime.config = plugin.config
-    text = "新事件事实"
-    bindings = (
-        [
-            {
-                "prompt_hash": hashlib.sha256(text.encode()).hexdigest(),
-                "request_type": "group",
-                "status": "approved" if reason == "processed" else "pending",
-            }
-        ]
-        if reason in {"processed", "no_history"}
-        else []
-    )
-    plugin.storage = SimpleNamespace(
-        get_request_notification_bindings=AsyncMock(return_value=bindings)
-    )
-    request = ProviderRequest(
-        prompt="通过",
-        conversation=SimpleNamespace(cid="conversation-a"),
-        contexts=[{"role": "assistant", "content": "[QQ 入群申请] 申请编号：17"}],
-        func_tool=ToolSet(
-            [
-                FunctionTool(name=name, description="", parameters={"type": "object"})
-                for name in TOOL_OPERATIONS
-            ]
-        ),
-    )
-    if reason in {"processed", "other_conversation"}:
-        request.contexts.insert(0, {"role": "user", "content": text})
-    await plugin.select_tools(PrivateAdminSelectionEvent(), request)
-    assert request.func_tool.get_tool("qq_group_request") is None
-
-
-@pytest.mark.asyncio
 async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -917,7 +838,7 @@ async def test_private_admin_nickname_prompt_exposes_account_manage_tool() -> No
 @pytest.mark.asyncio
 async def test_private_admin_remark_prompt_exposes_friend_manage_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -941,7 +862,6 @@ async def test_private_admin_group_nickname_prompt_exposes_member_manage_tool() 
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": "balanced"},
             "permissions": {"allow_cross_group": True},
         }
     )
@@ -968,7 +888,6 @@ async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": "balanced"},
             "permissions": {"allow_cross_group": True},
         }
     )
@@ -993,7 +912,7 @@ async def test_private_admin_remove_member_prompt_exposes_member_manage_tool() -
 @pytest.mark.asyncio
 async def test_private_file_attachment_exposes_private_files_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1015,7 +934,7 @@ async def test_private_file_attachment_exposes_private_files_tool() -> None:
 @pytest.mark.asyncio
 async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1043,7 +962,7 @@ async def test_profile_follow_up_skips_non_routable_retry_context() -> None:
 @pytest.mark.asyncio
 async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1065,7 +984,7 @@ async def test_group_sign_prompt_exposes_group_manage_tool() -> None:
 @pytest.mark.asyncio
 async def test_group_name_prompt_exposes_group_manage_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1087,7 +1006,7 @@ async def test_group_name_prompt_exposes_group_manage_tool() -> None:
 @pytest.mark.asyncio
 async def test_group_management_prompt_exposes_group_manage_tool() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1107,11 +1026,10 @@ async def test_group_management_prompt_exposes_group_manage_tool() -> None:
 
 
 @pytest.mark.asyncio
-async def test_private_admin_leave_group_prompt_ignores_stale_request_context() -> None:
+async def test_private_admin_tools_include_group_management_and_requests() -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
-            "toolsets": {"exposure_mode": "balanced"},
             "permissions": {"allow_cross_group": True},
         }
     )
@@ -1137,13 +1055,13 @@ async def test_private_admin_leave_group_prompt_ignores_stale_request_context() 
     await plugin.select_tools(PrivateAdminSelectionEvent(), request)
 
     assert request.func_tool.get_tool("qq_group_manage") is not None
-    assert request.func_tool.get_tool("qq_group_request") is None
+    assert request.func_tool.get_tool("qq_group_request") is not None
 
 
 @pytest.mark.asyncio
 async def test_group_poke_follow_up_uses_previous_user_context() -> None:
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "balanced"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime._verified_platforms = {}
     plugin.runtime.verify_platform = AsyncMock(return_value=NAPCAT)
@@ -1164,7 +1082,7 @@ async def test_group_poke_follow_up_uses_previous_user_context() -> None:
     await plugin.select_tools(SelectionEvent(), request)
 
     assert request.func_tool.get_tool("qq_group_member_manage") is not None
-    assert request.func_tool.get_tool("qq_friend_interact") is None
+    assert request.func_tool.get_tool("qq_friend_interact") is not None
 
 
 @pytest.mark.asyncio
@@ -1177,7 +1095,7 @@ async def test_tool_visibility_uses_the_verified_platform_capabilities(
     if implementation == "snowluma":
         provider = SNOWLUMA
     plugin = object.__new__(QQEnhancePlugin)
-    plugin.config = validate_config({"toolsets": {"exposure_mode": "full"}})
+    plugin.config = validate_config({})
     plugin.runtime = object.__new__(QQRuntime)
     plugin.runtime.config = plugin.config
     plugin.runtime._verified_platforms = {

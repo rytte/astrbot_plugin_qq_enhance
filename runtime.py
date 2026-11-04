@@ -80,7 +80,6 @@ SENT_RANDOM_HISTORY_DELAYS = (0.0, 0.5, 1.0, 2.0, 4.0)
 DEFAULT_CONFIG = {
     "platform": {"platform_id": ""},
     "toolsets": {
-        "exposure_mode": "full",
         "enabled_packs": [],
         "disabled_operations": [],
     },
@@ -445,8 +444,6 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
     if not isinstance(result["platform"]["platform_id"], str):
         raise ValueError("platform.platform_id 必须是字符串")
-    if result["toolsets"]["exposure_mode"] not in {"compact", "balanced", "full"}:
-        raise ValueError("toolsets.exposure_mode 必须是 compact、balanced 或 full")
     dialogue_prompt = result["dialogue"]["prompt"]
     if not isinstance(dialogue_prompt, str) or not dialogue_prompt.strip():
         raise ValueError("dialogue.prompt 必须是非空字符串")

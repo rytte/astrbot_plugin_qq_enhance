@@ -163,13 +163,11 @@ async def test_poke_exclusions_do_not_grant_inheritance(harness, reason):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exposure_mode", ["full", "balanced", "compact"])
 @pytest.mark.parametrize("group_id", [30003, None])
 @pytest.mark.parametrize("target_id", [20002, 10002])
 @pytest.mark.parametrize("restrict_poke", [False, True], ids=["allowed", "restricted"])
 async def test_poke_context_and_tools_follow_actual_notice_scope(
     harness,
-    exposure_mode: str,
     group_id: int | None,
     target_id: int,
     restrict_poke: bool,
@@ -195,7 +193,7 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
     original_origin = event.unified_msg_origin
 
     plugin = harness.plugin
-    plugin.config = validate_config({"toolsets": {"exposure_mode": exposure_mode}})
+    plugin.config = validate_config({})
     plugin.config["notice_events"]["notify/poke"]["other_target_mode"] = "respond"
     if restrict_poke:
         plugin.config["notice_events"]["tool_restricted_events"].append("notify/poke")
@@ -233,12 +231,7 @@ async def test_poke_context_and_tools_follow_actual_notice_scope(
         assert f"：群聊（群号 {group_id}），用户 10001戳了" in request.prompt
         assert normalize_notice(raw).description in request.prompt
         assert request.func_tool.get_tool("qq_group_member_manage") is not None
-        if exposure_mode == "full":
-            assert {tool.name for tool in request.func_tool.tools} == set(
-                TOOL_OPERATIONS
-            )
-        else:
-            assert request.func_tool.get_tool("qq_friend_interact") is None
+        assert {tool.name for tool in request.func_tool.tools} == set(TOOL_OPERATIONS)
     else:
         assert event.get_message_type() == MessageType.FRIEND_MESSAGE
         assert event.get_group_id() == ""

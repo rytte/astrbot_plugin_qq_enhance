@@ -215,12 +215,42 @@ def test_tool_dialogue_prompt_requires_a_boolean(value) -> None:
         validate_config({"dialogue": {"enabled": value}})
 
 
+@pytest.mark.parametrize("mode", ["compact", "balanced", "full"])
+def test_removed_exposure_mode_migrates_before_schema_fill(tmp_path, mode) -> None:
+    original = {
+        "toolsets": {
+            "exposure_mode": mode,
+            "enabled_packs": ["group", "message"],
+            "disabled_operations": ["qq_group_manage.leave"],
+        }
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    assert migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    assert "exposure_mode" not in schema["toolsets"]["items"]
+    config = AstrBotConfig(config_path=str(config_path), schema=schema)
+    result = validate_config(dict(config))
+    expected = {
+        key: value
+        for key, value in original["toolsets"].items()
+        if key != "exposure_mode"
+    }
+    assert result["toolsets"] == expected
+    assert validate_config(original)["toolsets"] == expected
+    assert original["toolsets"]["exposure_mode"] == mode
+    saved = config_path.read_bytes()
+    assert not migrate_config_file(config_path, DEFAULT_QQ_TOOL_DIALOGUE_PROMPT)
+    assert config_path.read_bytes() == saved
+
+
 def test_legacy_dialogue_settings_migrate_without_mutating_input() -> None:
     raw = {
         "toolsets": {
             "inject_dialogue_prompt": False,
             "dialogue_prompt": "\n请简短回应。\n",
-            "exposure_mode": "balanced",
         }
     }
     original = deepcopy(raw)
@@ -229,7 +259,6 @@ def test_legacy_dialogue_settings_migrate_without_mutating_input() -> None:
 
     assert result["dialogue"] == {"enabled": False, "prompt": "\n请简短回应。\n"}
     assert result["toolsets"] == {
-        "exposure_mode": "balanced",
         "enabled_packs": [],
         "disabled_operations": [],
     }
@@ -644,7 +673,7 @@ def test_invalid_config_fails_fast(config: dict) -> None:
 def test_valid_config_preserves_explicit_values() -> None:
     result = validate_config(
         {
-            "toolsets": {"exposure_mode": "compact", "enabled_packs": ["group"]},
+            "toolsets": {"enabled_packs": ["group"]},
             "permissions": {"allow_cross_group": False, "allow_cross_private": False},
             "confirmation": {"ttl_seconds": 60},
             "events": {"retention_days": 30},
@@ -660,7 +689,7 @@ def test_valid_config_preserves_explicit_values() -> None:
             },
         }
     )
-    assert result["toolsets"]["exposure_mode"] == "compact"
+    assert result["toolsets"]["enabled_packs"] == ["group"]
     assert "admin_users" not in result["permissions"]
     assert result["permissions"]["allow_cross_group"] is False
     assert result["permissions"]["allow_cross_private"] is False

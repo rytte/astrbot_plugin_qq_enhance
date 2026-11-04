@@ -142,7 +142,6 @@ function renderPlatforms(platforms) {
 function renderConfiguration(config) {
   const items = [
     ["绑定平台", config.platform_id || "全部 aiocqhttp"],
-    ["工具暴露模式", config.exposure_mode],
     ["启用分类", config.enabled_packs.length ? config.enabled_packs.join(", ") : "全部"],
     ["显式禁用操作", config.disabled_operations],
     ["组件语义化", config.semanticize_components ? "开启" : "关闭"],
