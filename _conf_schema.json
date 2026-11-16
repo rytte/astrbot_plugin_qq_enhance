@@ -59,8 +59,8 @@
       },
       "disabled_operations": {
         "type": "list",
-        "description": "禁用的内部操作",
-        "hint": "使用 tool.operation 格式，例如 qq_group_manage.leave。",
+        "description": "禁用的工具或操作",
+        "hint": "填写工具名（如 qq_media）禁用整个工具，或 '工具名.操作名'（如 qq_media.ocr）禁用单个操作，可混填。禁用整个工具后不再向模型提供该工具，可减少工具上下文。",
         "default": []
       }
     }

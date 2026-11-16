@@ -143,7 +143,7 @@ function renderConfiguration(config) {
   const items = [
     ["绑定平台", config.platform_id || "全部 aiocqhttp"],
     ["启用分类", config.enabled_packs.length ? config.enabled_packs.join(", ") : "全部"],
-    ["显式禁用操作", config.disabled_operations],
+    ["禁用规则数（工具或操作）", config.disabled_operations],
     ["组件语义化", config.semanticize_components ? "开启" : "关闭"],
     ["QQ 语音回退", config.enhance_voice_messages ? "开启" : "关闭"],
     ["组件防伪", config.component_spoof_protection_enabled ? "开启" : "关闭"],

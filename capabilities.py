@@ -34,7 +34,10 @@ def operation_availability(
         and spec.category not in config["toolsets"]["enabled_packs"]
     ):
         reason = "pack_not_enabled"
-    elif spec.operation_id in config["toolsets"]["disabled_operations"]:
+    elif (
+        spec.tool in config["toolsets"]["disabled_operations"]
+        or spec.operation_id in config["toolsets"]["disabled_operations"]
+    ):
         reason = "disabled_by_config"
     configured = not reason
     # Web reading is local and independent of the OneBot implementation.

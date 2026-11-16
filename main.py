@@ -35,6 +35,7 @@ from .catalog import (
     OPERATION_MAP,
     OPERATION_PARAMETERS,
     OPERATIONS,
+    QQ_SEND_MESSAGE_DESCRIPTIONS,
     TOOL_DESCRIPTIONS,
     TOOL_OPERATIONS,
 )
@@ -350,8 +351,14 @@ class QQEnhancePlugin(Star):
                     detail += f"。{rule.hint}"
                 details.append(detail)
             tool.description = TOOL_DESCRIPTIONS[tool_name]
+            if tool_name == "qq_send_message":
+                tool.description = "".join(
+                    QQ_SEND_MESSAGE_DESCRIPTIONS[operation]
+                    for operation in enabled_operations
+                )
             if (
                 tool_name == "qq_send_message"
+                and "send" in enabled_operations
                 and self.config["cross_session_handoff"]["enabled"]
                 and self.config["permissions"]["allow_cross_private_to_admin"]
             ):
@@ -364,14 +371,20 @@ class QQEnhancePlugin(Star):
                 "description": "；".join(details),
             }
             if tool_name == "qq_send_message":
+                component_id_description = (
+                    "at/reply/face/contact/平台音乐必填。"
+                    "face 使用 QQ 内置表情 ID，含普通、超级和动态表情。"
+                )
+                if "lookup_face" in enabled_operations:
+                    component_id_description += "未知表情编号先 lookup_face 查询。"
                 params_schema.update(
                     {
                         "properties": {
                             "target": {
                                 "type": "object",
                                 "description": (
-                                    "发送目标。当前会话只填写 type=current；跨会话目标"
-                                    "填写 type 和正整数 id；temporary 还需 group_id。"
+                                    "优先 current=当前会话；group/private=指定群/用户，需正整数 id；"
+                                    "temporary=非好友群成员，需 id 和共同群 group_id。"
                                 ),
                                 "properties": {
                                     "type": {
@@ -402,10 +415,6 @@ class QQEnhancePlugin(Star):
                                     "properties": {
                                         "type": {
                                             "type": "string",
-                                            "description": (
-                                                "消息组件类型；face 按 QQ 内置表情 ID 发送，"
-                                                "包括小黄脸及协议端支持的超级表情、动态大表情。"
-                                            ),
                                             "enum": [
                                                 "text",
                                                 "image",
@@ -457,10 +466,7 @@ class QQEnhancePlugin(Star):
                                         },
                                         "id": {
                                             "type": "string",
-                                            "description": (
-                                                "At、引用、表情、联系人或平台音乐的 ID；对应类型必填。"
-                                                "不确定表情编号时先用 lookup_face 按名称查询。"
-                                            ),
+                                            "description": component_id_description,
                                         },
                                         "title": {
                                             "type": "string",
@@ -531,25 +537,25 @@ class QQEnhancePlugin(Star):
                         "query": {
                             "type": "string",
                             "maxLength": 128,
-                            "description": "lookup_face 的表情名称、关键词或 ID；省略或空串时列出所选分类。",
+                            "description": "表情名称、关键词或 ID；省略或空串时列出所选分类。",
                         },
                         "category": {
                             "type": "string",
                             "enum": list(QQ_FACE_CATEGORIES),
                             "description": (
-                                "lookup_face 的分类筛选，默认 all；super 包含所有超级表情，"
-                                "random 为随机超级表情，chain 为连击超级表情。"
+                                "默认 all；super 含全部超级表情，random=随机，chain=连击。"
+                                "列出全部超级表情用 category=super，不用 query=超级。"
                             ),
                         },
                         "cursor": {
                             "type": "string",
-                            "description": "lookup_face 上一页返回的 next_cursor；保持查询条件不变。",
+                            "description": "上一页返回的 next_cursor；保持 query/category 不变。",
                         },
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": self.config["limits"]["max_page_size"],
-                            "description": "lookup_face 每页返回数量，省略时使用配置默认值。",
+                            "description": "每页条数；省略时使用配置默认值。",
                         },
                     }
                     if "send" in enabled_operations:
