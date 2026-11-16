@@ -238,15 +238,22 @@ async def test_private_tools_and_prompts_stay_stable_across_followups(
 
 
 @pytest.mark.asyncio
-async def test_group_omits_tools_disabled_by_configuration() -> None:
+@pytest.mark.parametrize(
+    "disabled_operations",
+    [
+        ["qq_account_manage"],
+        [
+            f"qq_account_manage.{operation}"
+            for operation in TOOL_OPERATIONS["qq_account_manage"]
+        ],
+    ],
+)
+async def test_group_omits_tools_disabled_by_configuration(disabled_operations) -> None:
     plugin = object.__new__(QQEnhancePlugin)
     plugin.config = validate_config(
         {
             "toolsets": {
-                "disabled_operations": [
-                    f"qq_account_manage.{operation}"
-                    for operation in TOOL_OPERATIONS["qq_account_manage"]
-                ]
+                "disabled_operations": disabled_operations,
             },
             "web_reader": {"enabled": False},
         }
@@ -441,7 +448,8 @@ async def test_initialize_uses_registered_tool_manager_api(
         {
             "web_reader": {"enabled": web_enabled},
             "toolsets": {
-                "disabled_operations": [
+                "disabled_operations": ["qq_account_manage"]
+                + [
                     f"qq_send_message.{operation}"
                     for operation in ("send", "lookup_face")
                     if operation not in send_operations
@@ -478,8 +486,10 @@ async def test_initialize_uses_registered_tool_manager_api(
             assert tool.parameters == WEB_TOOL_SCHEMAS[name]
             assert "operation" not in tool.parameters["properties"]
     assert all(
-        manager.get_func(name).active for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES
+        manager.get_func(name).active
+        for name in set(TOOL_OPERATIONS) - WEB_TOOL_NAMES - {"qq_account_manage"}
     )
+    assert not manager.get_func("qq_account_manage").active
     user_info_tool = manager.get_func("qq_user_info")
     assert user_info_tool.parameters["properties"]["operation"]["enum"] == ["detail"]
     assert "stranger" not in str(user_info_tool.parameters)

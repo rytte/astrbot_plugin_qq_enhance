@@ -124,6 +124,42 @@ def test_removed_operation_rules_migrate_without_mutating_input(
     assert validate_config(result) == result
 
 
+@pytest.mark.parametrize(
+    "disabled",
+    [
+        ["qq_media"],
+        ["qq_media", "qq_status.runtime", "read_url"],
+    ],
+)
+def test_disabled_tools_and_operations_are_preserved_without_expansion(
+    disabled,
+) -> None:
+    raw = {"toolsets": {"disabled_operations": disabled}}
+    original = deepcopy(raw)
+
+    result = validate_config(raw)
+
+    assert result["toolsets"]["disabled_operations"] == disabled
+    assert raw == original
+    assert validate_config(result) == result
+
+
+@pytest.mark.parametrize(
+    "group,key,entries",
+    [
+        ("toolsets", "disabled_operations", ["qq_unknown"]),
+        ("toolsets", "disabled_operations", ["qq_media", "qq_unknown"]),
+        ("toolsets", "disabled_operations", ["qq_media.unknown"]),
+        ("confirmation", "operations", ["qq_media"]),
+    ],
+)
+def test_unknown_disabled_rules_and_tool_confirmation_rules_are_rejected(
+    group, key, entries
+) -> None:
+    with pytest.raises(ValueError):
+        validate_config({group: {key: entries}})
+
+
 def test_legacy_operation_rules_are_saved_after_migration(tmp_path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

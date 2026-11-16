@@ -135,6 +135,45 @@ def test_capability_support_is_independent_of_configuration() -> None:
         NAPCAT.prepare_action(unsupported, {"file": "image"}, page_size=20)
 
 
+@pytest.mark.parametrize(
+    "disabled,disabled_ids",
+    [
+        (
+            ["qq_media"],
+            {
+                "qq_media.get_image",
+                "qq_media.get_record",
+                "qq_media.convert_record",
+                "qq_media.ocr",
+            },
+        ),
+        (["qq_media.get_image"], {"qq_media.get_image"}),
+        (
+            ["qq_media", "qq_status.runtime"],
+            {
+                "qq_media.get_image",
+                "qq_media.get_record",
+                "qq_media.convert_record",
+                "qq_media.ocr",
+                "qq_status.runtime",
+            },
+        ),
+    ],
+)
+def test_disabled_tool_names_and_operations_only_affect_matching_operations(
+    disabled, disabled_ids
+) -> None:
+    config = validate_config({"toolsets": {"disabled_operations": disabled}})
+
+    for spec in OPERATIONS:
+        state = operation_availability(config, spec, NAPCAT)
+        assert state.configured is (spec.operation_id not in disabled_ids)
+        assert state.enabled is state.configured
+        assert state.disabled_reason == (
+            "disabled_by_config" if spec.operation_id in disabled_ids else ""
+        )
+
+
 def test_unknown_upstream_is_reported_without_claiming_support() -> None:
     state = operation_availability(
         validate_config(None), OPERATION_MAP["qq_media.get_image"]

@@ -517,10 +517,15 @@ def validate_config(config: dict[str, Any] | None) -> dict[str, Any]:
                 if name not in removed_operations
             )
         )
-        unknown = set(result[group][key]) - set(OPERATION_MAP)
+        allowed = set(OPERATION_MAP)
+        entry_kind = "操作"
+        if group == "toolsets":
+            allowed.update(TOOL_OPERATIONS)
+            entry_kind = "工具或操作"
+        unknown = set(result[group][key]) - allowed
         if unknown:
             raise ValueError(
-                f"{group}.{key} 包含未知操作: {', '.join(sorted(unknown))}"
+                f"{group}.{key} 包含未知{entry_kind}: {', '.join(sorted(unknown))}"
             )
 
     if any(

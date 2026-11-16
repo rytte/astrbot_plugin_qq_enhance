@@ -2963,10 +2963,11 @@ async def test_unknown_face_lookup_returns_empty_page_without_claiming_unsupport
 
 
 @pytest.mark.asyncio
-async def test_disabled_face_lookup_cannot_be_executed(tmp_path):
+@pytest.mark.parametrize("disabled", ["qq_send_message.lookup_face", "qq_send_message"])
+async def test_disabled_face_lookup_cannot_be_executed(tmp_path, disabled):
     runtime, client, _ = await make_runtime(
         tmp_path,
-        {"toolsets": {"disabled_operations": ["qq_send_message.lookup_face"]}},
+        {"toolsets": {"disabled_operations": [disabled]}},
     )
     result = json.loads(
         await runtime.execute(FakeEvent(), "qq_send_message", "lookup_face", {})
