@@ -2022,6 +2022,12 @@ class QQEnhancePlugin(Star):
         if request.func_tool is None:
             return
         plugin_tools = set(TOOL_OPERATIONS)
+        try:
+            event = self.runtime.resolve_tool_event(event)
+        except QQToolError:
+            for tool_name in plugin_tools:
+                request.func_tool.remove_tool(tool_name)
+            return
         if event.get_platform_name() != "aiocqhttp":
             for tool_name in plugin_tools:
                 request.func_tool.remove_tool(tool_name)

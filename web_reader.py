@@ -144,6 +144,7 @@ class WebReader:
                 raise QQToolError(
                     "capability_unavailable", "网页工具未启用或插件已停止"
                 )
+            event = await self.runtime.prepare_tool_event(event)
             if event.get_platform_name() != "aiocqhttp":
                 raise QQToolError(
                     "unsupported_platform", "本插件的网页工具仅支持 aiocqhttp"

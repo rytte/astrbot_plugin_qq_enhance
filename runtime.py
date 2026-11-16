@@ -22,6 +22,8 @@ import aiohttp
 
 from astrbot.api import logger
 from astrbot.api.message_components import File
+from astrbot.core.cron.events import CronMessageEvent
+from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
     get_astrbot_temp_path,
@@ -52,6 +54,7 @@ from .request_notification import (
     tool_session_user_id,
 )
 from .storage import Storage
+from .scheduled import bind_scheduled_event
 from .verification import component_spoof_protection_enabled
 
 DEFAULT_QQ_TOOL_DIALOGUE_PROMPT = """【表情包解读规则】
@@ -722,6 +725,31 @@ class QQRuntime:
         binding = self._verified_platforms.get(platform_id)
         return binding.provider if binding else None
 
+    def resolve_tool_event(self, event: Any) -> Any:
+        """Resolve a scheduler's actual QQ adapter without mutating its event."""
+        if (
+            not isinstance(event, CronMessageEvent)
+            or event.get_platform_name() != "cron"
+        ):
+            return event
+        return bind_scheduled_event(event, self.context, self.config)
+
+    async def prepare_tool_event(self, event: Any) -> Any:
+        """Resolve and verify the QQ account used by scheduled tool calls."""
+        event = self.resolve_tool_event(event)
+        if isinstance(event, CronMessageEvent) and not event.get_self_id():
+            await self.verify_platform(event)
+            login = await self.call_action(
+                event, "get_login_info", {}, skip_contract=True
+            )
+            self_id = str(login.get("user_id") or "") if isinstance(login, dict) else ""
+            if not self_id.isdecimal() or int(self_id) <= 0:
+                raise QQToolError(
+                    "response_invalid", "无法识别定时任务所用机器人的 QQ 号"
+                )
+            event.message_obj.self_id = self_id
+        return event
+
     def enabled_tools(self, provider: OneBotProvider | None = None) -> set[str]:
         """Return tools with at least one enabled operation.
 
@@ -771,6 +799,8 @@ class QQRuntime:
                 )
             if not self.operation_enabled(operation_id):
                 raise QQToolError("capability_unavailable", "该 QQ 操作已被配置禁用")
+            event = await self.prepare_tool_event(event)
+            caller_id = str(event.get_sender_id() or "")
             provider = await self.verify_platform(event)
             capability = provider.capability(spec)
             capability.require()
@@ -1336,6 +1366,7 @@ class QQRuntime:
             QQToolError: If the platform or upstream version is unsupported.
         """
 
+        event = self.resolve_tool_event(event)
         if event.get_platform_name() != "aiocqhttp":
             raise QQToolError("unsupported_platform", "QQ 能力增强仅支持 aiocqhttp")
         configured_id = self.config["platform"]["platform_id"]
@@ -1608,6 +1639,23 @@ class QQRuntime:
         is_private = event.is_private_chat()
         target_kind = spec.target_kind
         target_id = ""
+        if (
+            isinstance(event, CronMessageEvent)
+            and event.session.message_type == MessageType.OTHER_MESSAGE
+        ):
+            target = params.get("target", {})
+            if (
+                spec.operation_id in {"qq_send_message.send", "qq_send_forward.send"}
+                and target.get("type") == "current"
+            ) or (
+                target_kind in {"group", "private"}
+                and not params.get("group_id" if target_kind == "group" else "user_id")
+                and spec.operation_id != "qq_group_request.list"
+            ):
+                raise QQToolError(
+                    "invalid_parameters",
+                    "定时任务未绑定 QQ 会话，请显式指定目标，或在未来任务中选择 QQ 会话",
+                )
         if spec.operation_id in {"qq_send_message.send", "qq_send_forward.send"}:
             target = params.get("target", {})
             target_type = target.get("type")
@@ -2488,6 +2536,8 @@ class QQRuntime:
         skip_contract: bool = False,
     ) -> Any:
         """Share private reply accounting with native message delivery."""
+
+        event = self.resolve_tool_event(event)
 
         async def deliver():
             return await self._call_action(
