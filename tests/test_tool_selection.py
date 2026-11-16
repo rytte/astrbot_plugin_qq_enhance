@@ -497,17 +497,25 @@ async def test_initialize_uses_registered_tool_manager_api(
         [] if "lookup_face" in send_operations else ["target", "components"]
     )
     if "lookup_face" in send_operations:
-        assert "列出全部超级表情时用 category=super" in params_description
-        assert params_schema["properties"]["category"]["enum"] == [
+        category_schema = params_schema["properties"]["category"]
+        assert category_schema["enum"] == [
             "all",
             "normal",
             "super",
             "random",
             "chain",
         ]
+        assert "category=super" in category_schema["description"]
+        assert "query=超级" in category_schema["description"]
+        assert (
+            "query/category 不变"
+            in params_schema["properties"]["cursor"]["description"]
+        )
         assert params_schema["properties"]["page_size"]["maximum"] == 100
     else:
         assert "query" not in params_schema["properties"]
+        assert "lookup_face" not in send_tool.description
+        assert "lookup_face" not in str(params_schema)
     if "send" not in send_operations:
         assert set(params_schema["properties"]) == {
             "query",
@@ -516,6 +524,8 @@ async def test_initialize_uses_registered_tool_manager_api(
             "page_size",
         }
         assert params_schema["additionalProperties"] is False
+        for send_only_text in ("成功", "骰子", "猜拳", "跨会话"):
+            assert send_only_text not in send_tool.description
         await plugin.terminate()
         return
     assert "oneOf" not in params_schema
@@ -535,18 +545,31 @@ async def test_initialize_uses_registered_tool_manager_api(
         '{"operation":"send","params":{"target":{"type":"current"},'
         '"components":[{"type":"rps"}]}}' in params_description
     )
-    assert "operation 和 params 必须同级" in params_description
-    assert "target 和 components 必须位于 params 内" in params_description
-    assert "不得使用 data 包装" in params_description
-    assert '"type":"share"' in params_description
-    assert "不要自行拼接分享卡片 JSON" in params_description
-    assert "不得擅自替换用户提供的 URL" in params_description
-    assert '"music_type":"custom"' in params_description
-    assert '"music_type":"qq_search"' in params_description
-    assert "不得凭记忆猜歌曲 ID" in params_description
-    assert "音乐卡片必须作为唯一组件单独发送" in params_description
-    assert "调用成功仅表示 QQ 接口已接受发送请求" in params_description
-    assert "最终回复不得重复其中的正文或卡片" in params_description
+    assert (
+        "operation/params 同级，target/components 位于 params 内" in params_description
+    )
+    assert "除 json 外不得使用 data 包装" in params_description
+    assert "path/url/base64/media_ref 必须四选一" in params_description
+    assert "share/music 必须作为唯一组件单独发送" in params_description
+    assert "保留用户 URL，不要自行拼接卡片 JSON" in params_description
+    assert "music_type=qq_search" in params_description
+    assert "不得猜歌曲 ID" in params_description
+    assert "用户当前消息明确提供的 id" in params_description
+    assert "custom" in params_description
+    assert "必填 url/image" in params_description
+    assert "可选 audio/title/content" in params_description
+    assert "三种音乐模式的字段不得混用" in params_description
+    assert "不要发送测试或占位消息" in params_description
+    assert "成功仅表示接口接受" in send_tool.description
+    assert "最终回复勿重复已发送的正文或卡片" in send_tool.description
+    assert "成功" not in params_description
+    assert "最终回复" not in params_description
+    face_description = component_schema["properties"]["id"]["description"]
+    assert "face" in face_description
+    assert all(kind in face_description for kind in ("普通", "超级", "动态"))
+    assert ("lookup_face" in face_description) is ("lookup_face" in send_operations)
+    assert "超级" not in params_description
+    assert "超级" not in send_tool.description
     request_tool = manager.get_func("qq_group_request")
     request_description = request_tool.parameters["properties"]["params"]["description"]
     assert "通知中的 request_id" in request_description
